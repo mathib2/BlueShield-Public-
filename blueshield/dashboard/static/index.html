@@ -1,105 +1,173 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BlueShield - Bluetooth Security Monitor</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 <body>
-    <!-- Header -->
-    <header id="header">
-        <div class="header-left">
-            <div class="logo">
-                <span class="logo-icon">&#9678;</span>
-                <span class="logo-text">BLUESHIELD</span>
-                <span class="version">v0.1.0</span>
+    <!-- ─── Top Nav ─── -->
+    <nav class="topnav">
+        <div class="nav-left">
+            <div class="brand">
+                <svg class="brand-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6.5 6.5l11 11M6.5 17.5l11-11M12 2v20"/>
+                    <circle cx="12" cy="12" r="10" opacity="0.2" fill="currentColor"/>
+                </svg>
+                <span class="brand-name">BlueShield</span>
+                <span class="brand-tag">v2.0</span>
             </div>
         </div>
-        <div class="header-center">
-            <span class="status-badge" id="scanner-status">IDLE</span>
-            <span class="status-badge" id="jammer-status-badge">JAMMER OFF</span>
-            <span class="status-badge platform-badge" id="platform-badge">--</span>
+        <div class="nav-center">
+            <div class="status-pills">
+                <span class="pill" id="pill-status">
+                    <span class="pill-dot"></span>
+                    <span id="scanner-status-text">Connecting</span>
+                </span>
+                <span class="pill pill-jammer" id="pill-jammer">
+                    <span class="pill-dot"></span>
+                    <span id="jammer-status-text">Jammer Off</span>
+                </span>
+                <span class="pill pill-platform" id="pill-platform">--</span>
+            </div>
         </div>
-        <div class="header-right">
-            <span id="clock">--:--:--</span>
+        <div class="nav-right">
+            <button class="icon-btn" id="btn-theme" title="Toggle light/dark mode">
+                <svg id="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                </svg>
+                <svg id="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+            </button>
+            <span class="clock" id="clock">--:--:--</span>
         </div>
-    </header>
+    </nav>
 
-    <!-- Summary Cards -->
-    <section class="summary-cards">
-        <div class="card card-total" id="card-total">
-            <div class="card-value">0</div>
-            <div class="card-label">Total Devices</div>
+    <!-- ─── Toolbar ─── -->
+    <div class="toolbar">
+        <div class="toolbar-left">
+            <button id="btn-scan" class="btn btn-primary">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                Scan Now
+            </button>
+            <button id="btn-autoscan" class="btn btn-outline active">Auto: ON</button>
+            <div class="toolbar-divider"></div>
+            <label class="range-selector">
+                <span class="range-label">Range:</span>
+                <select id="range-select">
+                    <option value="all">All Devices</option>
+                    <option value="far">Far (&lt;30m)</option>
+                    <option value="mid">Mid (&lt;10m)</option>
+                    <option value="close">Close (&lt;3m)</option>
+                    <option value="immediate">Immediate (&lt;1m)</option>
+                </select>
+            </label>
+            <div class="toolbar-divider"></div>
+            <label class="view-toggle">
+                <span class="view-label">View:</span>
+                <button class="btn btn-tab active" id="btn-view-clustered" title="Physical devices (fingerprinted)">Devices</button>
+                <button class="btn btn-tab" id="btn-view-raw" title="Raw MAC addresses">Raw MACs</button>
+            </label>
         </div>
-        <div class="card card-known" id="card-known">
-            <div class="card-value">0</div>
-            <div class="card-label">Known (Trusted)</div>
+        <div class="toolbar-right">
+            <label class="slider-group">
+                <span id="interval-value">5</span>s interval
+                <input type="range" id="scan-interval" min="2" max="30" value="5" class="slider">
+            </label>
         </div>
-        <div class="card card-unknown" id="card-unknown">
-            <div class="card-value">0</div>
-            <div class="card-label">Unknown</div>
+    </div>
+
+    <!-- ─── Summary Cards ─── -->
+    <section class="cards-row">
+        <div class="stat-card" id="card-physical">
+            <div class="stat-icon" style="--accent: var(--blue)">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            </div>
+            <div class="stat-body">
+                <div class="stat-value" id="val-physical">0</div>
+                <div class="stat-label">Physical Devices</div>
+            </div>
         </div>
-        <div class="card card-alerts" id="card-alerts">
-            <div class="card-value">0</div>
-            <div class="card-label">Critical Alerts</div>
+        <div class="stat-card" id="card-macs">
+            <div class="stat-icon" style="--accent: var(--purple)">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            </div>
+            <div class="stat-body">
+                <div class="stat-value" id="val-macs">0</div>
+                <div class="stat-label">MAC Addresses</div>
+            </div>
         </div>
-        <div class="card card-scans" id="card-scans">
-            <div class="card-value">0</div>
-            <div class="card-label">Total Scans</div>
+        <div class="stat-card" id="card-known">
+            <div class="stat-icon" style="--accent: var(--green)">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg>
+            </div>
+            <div class="stat-body">
+                <div class="stat-value" id="val-known">0</div>
+                <div class="stat-label">Trusted</div>
+            </div>
+        </div>
+        <div class="stat-card" id="card-unknown">
+            <div class="stat-icon" style="--accent: var(--orange)">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+            </div>
+            <div class="stat-body">
+                <div class="stat-value" id="val-unknown">0</div>
+                <div class="stat-label">Unknown</div>
+            </div>
+        </div>
+        <div class="stat-card" id="card-reduced">
+            <div class="stat-icon" style="--accent: var(--cyan)">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/></svg>
+            </div>
+            <div class="stat-body">
+                <div class="stat-value" id="val-reduced">0</div>
+                <div class="stat-label">MACs Clustered</div>
+            </div>
+        </div>
+        <div class="stat-card" id="card-scans">
+            <div class="stat-icon" style="--accent: var(--text-secondary)">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            </div>
+            <div class="stat-body">
+                <div class="stat-value" id="val-scans">0</div>
+                <div class="stat-label">Scans</div>
+            </div>
         </div>
     </section>
 
-    <!-- Main Content -->
-    <main class="dashboard-grid">
-        <!-- Left: Device Table -->
+    <!-- ─── Main Content ─── -->
+    <main class="main-grid">
+        <!-- Device Table -->
         <section class="panel device-panel">
-            <div class="panel-header">
-                <h2>Discovered Devices</h2>
-                <div class="panel-actions">
-                    <button id="btn-scan" class="btn btn-cyan" title="Manual Scan">Scan Now</button>
-                    <button id="btn-autoscan" class="btn btn-outline active" title="Toggle Auto-Scan">Auto: ON</button>
-                    <label class="interval-label">
-                        <span id="interval-value">5</span>s
-                        <input type="range" id="scan-interval" min="2" max="30" value="5" class="slider">
-                    </label>
-                </div>
+            <div class="panel-head">
+                <h2 id="table-title">Discovered Devices</h2>
+                <span class="device-count" id="device-count">0 devices</span>
             </div>
-            <div class="table-container">
+            <div class="table-wrap">
                 <table id="device-table">
                     <thead>
-                        <tr>
-                            <th>Address</th>
-                            <th>Name</th>
-                            <th>Category</th>
-                            <th>Manufacturer</th>
-                            <th>Type</th>
-                            <th>RSSI</th>
-                            <th>Signal</th>
-                            <th>Alert</th>
-                            <th>Seen</th>
-                            <th>Action</th>
+                        <tr id="table-header-row">
+                            <!-- Headers injected by JS based on view mode -->
                         </tr>
                     </thead>
                     <tbody id="device-table-body">
-                        <tr class="empty-row">
-                            <td colspan="10">Waiting for first scan...</td>
-                        </tr>
+                        <tr class="empty-row"><td colspan="9">Waiting for first scan...</td></tr>
                     </tbody>
                 </table>
             </div>
         </section>
 
-        <!-- Right Column -->
-        <aside class="right-column">
-            <!-- Jammer Panel -->
-            <section class="panel jammer-panel" id="jammer-panel">
-                <div class="panel-header">
-                    <h2>Jammer Control</h2>
-                </div>
-                <div class="jammer-controls">
-                    <div class="control-group">
+        <!-- Right Sidebar -->
+        <aside class="sidebar">
+            <!-- Jammer -->
+            <section class="panel">
+                <div class="panel-head"><h2>Jammer Control</h2></div>
+                <div class="panel-body">
+                    <div class="field">
                         <label>Mode</label>
                         <select id="jammer-mode">
                             <option value="sweep">Sweep (All Channels)</option>
@@ -108,7 +176,7 @@
                             <option value="targeted">Targeted (Address)</option>
                         </select>
                     </div>
-                    <div class="control-group">
+                    <div class="field">
                         <label>Channel</label>
                         <select id="jammer-channel">
                             <option value="37">Ch 37</option>
@@ -116,61 +184,53 @@
                             <option value="39" selected>Ch 39</option>
                         </select>
                     </div>
-                    <div class="control-group" id="target-group" style="display:none;">
+                    <div class="field" id="target-group" style="display:none">
                         <label>Target Address</label>
-                        <input type="text" id="jammer-target" placeholder="AA:BB:CC:DD:EE:FF" class="input-field">
+                        <input type="text" id="jammer-target" placeholder="AA:BB:CC:DD:EE:FF" class="input">
                     </div>
                     <button id="btn-jam-toggle" class="btn btn-jam">Start Jammer</button>
-                    <div class="jammer-stats" id="jammer-stats" style="display:none;">
-                        <div class="stat-row">
-                            <span>Packets Sent:</span>
-                            <span id="jam-packets" class="stat-value">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>Mode:</span>
-                            <span id="jam-mode-display" class="stat-value">--</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>Channel:</span>
-                            <span id="jam-channel-display" class="stat-value">--</span>
-                        </div>
-                        <div class="stat-row">
-                            <span>Backend:</span>
-                            <span id="jam-backend-display" class="stat-value">--</span>
-                        </div>
+                    <div class="jam-stats" id="jammer-stats" style="display:none">
+                        <div class="jam-row"><span>Packets</span><span class="mono" id="jam-packets">0</span></div>
+                        <div class="jam-row"><span>Mode</span><span class="mono" id="jam-mode-display">--</span></div>
+                        <div class="jam-row"><span>Channel</span><span class="mono" id="jam-channel-display">--</span></div>
+                        <div class="jam-row"><span>Backend</span><span class="mono" id="jam-backend-display">--</span></div>
                     </div>
-                    <div class="jammer-warning">
-                        Research use only. FCC regulated.
-                    </div>
+                    <div class="jam-notice">Research use only. FCC regulated.</div>
                 </div>
             </section>
 
-            <!-- RSSI Chart -->
-            <section class="panel rssi-panel">
-                <div class="panel-header">
-                    <h2>Signal Strength</h2>
+            <!-- Signal Chart -->
+            <section class="panel">
+                <div class="panel-head"><h2>Signal Strength</h2></div>
+                <div class="panel-body" id="rssi-chart">
+                    <div class="empty-msg">No devices detected</div>
                 </div>
-                <div id="rssi-chart" class="rssi-chart">
-                    <div class="empty-state">No devices detected</div>
+            </section>
+
+            <!-- Category Breakdown -->
+            <section class="panel">
+                <div class="panel-head"><h2>Device Categories</h2></div>
+                <div class="panel-body" id="category-chart">
+                    <div class="empty-msg">No data yet</div>
                 </div>
             </section>
         </aside>
     </main>
 
-    <!-- Bottom: Alerts + Actions -->
-    <section class="bottom-section">
+    <!-- ─── Bottom Bar ─── -->
+    <section class="bottom-bar">
         <div class="panel alert-panel">
-            <div class="panel-header">
+            <div class="panel-head">
                 <h2>Alert Feed</h2>
-                <span id="alert-count" class="badge">0</span>
+                <span class="badge" id="alert-count">0</span>
             </div>
-            <div id="alert-feed" class="alert-feed">
-                <div class="empty-state">No alerts. System clean.</div>
+            <div id="alert-feed" class="alert-list">
+                <div class="empty-msg">No alerts. System clean.</div>
             </div>
         </div>
         <div class="bottom-actions">
             <button id="btn-export" class="btn btn-outline">Export Report</button>
-            <button id="btn-reset" class="btn btn-danger-outline">Reset All</button>
+            <button id="btn-reset" class="btn btn-danger">Reset All</button>
         </div>
     </section>
 

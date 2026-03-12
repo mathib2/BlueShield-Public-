@@ -217,7 +217,7 @@ def build_pdf():
     story.append(HRFlowable(width="40%", thickness=2, color=BLUE, spaceBefore=0, spaceAfter=20, hAlign='CENTER'))
     story.append(Paragraph("Product & Technical Guide", ParagraphStyle(
         'CoverSub', fontName='Helvetica', fontSize=14, textColor=DARK_TEXT, alignment=TA_CENTER, spaceAfter=8)))
-    story.append(Paragraph("Version 0.2.0  |  March 2026", ParagraphStyle(
+    story.append(Paragraph("Version 2.0.0  |  March 2026", ParagraphStyle(
         'CoverVer', fontName='Helvetica', fontSize=10, textColor=MED_GRAY, alignment=TA_CENTER, spaceAfter=30)))
 
     story.append(Spacer(1, 1.0 * inch))
@@ -255,13 +255,14 @@ def build_pdf():
         ("2.", "The Problem"),
         ("3.", "Product Overview"),
         ("4.", "Technical Architecture"),
-        ("5.", "Installation & Setup"),
-        ("6.", "Web Dashboard Guide"),
-        ("7.", "Jammer Module (Research)"),
-        ("8.", "Raspberry Pi Deployment"),
-        ("9.", "API Reference"),
-        ("10.", "Revenue Model"),
-        ("11.", "Roadmap & Future Work"),
+        ("5.", "BLE Fingerprinting Engine"),
+        ("6.", "Installation & Setup"),
+        ("7.", "Web Dashboard Guide"),
+        ("8.", "Jammer Module (Research)"),
+        ("9.", "Raspberry Pi Deployment"),
+        ("10.", "API Reference"),
+        ("11.", "Revenue Model"),
+        ("12.", "Roadmap & Future Work"),
     ]
     for num, title in toc_items:
         story.append(Paragraph(f"<b>{num}</b>  {title}", ParagraphStyle(
@@ -290,14 +291,17 @@ def build_pdf():
     story.append(Paragraph("Key Capabilities", styles['SubSection']))
     for item in [
         "Real-time BLE and Classic Bluetooth device scanning with manufacturer identification",
+        "BLE Fingerprinting Engine: clusters rotating MAC addresses into unique physical devices",
         "Automatic device classification: phones, AirPods, watches, speakers, IoT, mice, keyboards",
         "Apple continuity protocol decoding (identifies AirPods, Apple Watch, iPhone, HomePod, etc.)",
         "GATT-based device name resolution for user-assigned names",
-        "Web-based dashboard with live device tracking and RSSI visualization",
+        "Professional web dashboard with light/dark mode and real-time RSSI visualization",
+        "Range-based scanning: filter by proximity (immediate, close, mid, far, all)",
+        "Dual view modes: fingerprinted physical devices vs raw MAC address list",
         "Automatic unknown device detection with configurable alert thresholds",
         "Research-grade BLE jamming with raw HCI sockets (4 modes: sweep, continuous, reactive, targeted)",
         "Comprehensive JSON audit logging for compliance and incident response",
-        "Device whitelisting and trust management",
+        "Device whitelisting and trust management (per-MAC and per-fingerprint)",
         "Cross-platform: Windows (BLE), Linux/Raspberry Pi (full BLE + Classic BT + jamming)",
     ]:
         story.append(bullet(item, styles))
@@ -403,8 +407,77 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 5. INSTALLATION & SETUP ───────────────────────────────────────
-    story.append(Paragraph("5. Installation & Setup", styles['SectionTitle']))
+    # ── 5. BLE FINGERPRINTING ENGINE ─────────────────────────────────
+    story.append(Paragraph("5. BLE Fingerprinting Engine", styles['SectionTitle']))
+    story.append(hr())
+    story.append(Paragraph(
+        "Modern BLE devices frequently randomize their MAC addresses for privacy. This means a single "
+        "device like an iPhone or AirPods can appear as multiple devices in a traditional scanner. "
+        "BlueShield's fingerprinting engine solves this by building behavioral fingerprints from "
+        "advertisement patterns and clustering rotating MACs into unique physical devices.",
+        styles['Body']))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("How It Works", styles['SubSection']))
+    story.append(Paragraph(
+        "Instead of identifying devices by MAC address alone, the engine builds a multi-dimensional "
+        "feature vector from consistent behavioral signals in BLE advertisements:",
+        styles['Body']))
+
+    fp_features = [
+        ["Feature", "Description", "Reliability"],
+        ["Manufacturer ID", "Bluetooth SIG company identifier (e.g., Apple=0x004C)", "Very High"],
+        ["Payload Length", "Total size of advertisement data", "High"],
+        ["Service UUIDs", "Advertised BLE service identifiers", "High"],
+        ["RSSI Pattern", "Signal strength trajectory over time", "Medium"],
+        ["Adv. Interval", "Time between consecutive advertisements", "Medium"],
+        ["Category", "Inferred device type from combined signals", "Medium"],
+    ]
+    story.append(make_table(fp_features[0], fp_features[1:], [1.3*inch, 3.0*inch, 1.2*inch]))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Similarity Scoring", styles['SubSection']))
+    story.append(Paragraph(
+        "The engine compares all active MAC fingerprints pairwise using a weighted scoring system. "
+        "If two MACs score above the similarity threshold, they are merged into a single cluster "
+        "representing one physical device. The dashboard then displays physical device counts and "
+        "shows how many rotating MACs each device has used.",
+        styles['Body']))
+    story.append(Spacer(1, 8))
+
+    scoring = [
+        ["Signal", "Weight", "Condition"],
+        ["Manufacturer match", "+3", "Same Bluetooth SIG company ID"],
+        ["Manufacturer mismatch", "-3", "Different company IDs (strong negative)"],
+        ["Payload length", "+2", "Within 2 bytes of each other"],
+        ["Service UUID overlap", "+2", "More than 50% UUID overlap"],
+        ["RSSI proximity", "+1", "Average RSSI within 8 dBm"],
+        ["Temporal correlation", "+2", "One disappears as other appears within 3 seconds"],
+        ["Category match", "+1", "Same inferred device category"],
+    ]
+    story.append(make_table(scoring[0], scoring[1:], [1.8*inch, 0.8*inch, 3.7*inch]))
+    story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Range-Based Scanning", styles['SubSection']))
+    story.append(Paragraph(
+        "The dashboard includes a range filter that controls which devices appear based on signal "
+        "strength (RSSI). This helps focus on nearby threats or survey the full environment:",
+        styles['Body']))
+
+    ranges = [
+        ["Preset", "RSSI Threshold", "Approximate Distance"],
+        ["Immediate", "-45 dBm", "Within ~1 meter"],
+        ["Close", "-60 dBm", "Within ~3 meters"],
+        ["Mid", "-75 dBm", "Within ~10 meters"],
+        ["Far", "-90 dBm", "Within ~30 meters"],
+        ["All", "-100 dBm", "Everything detectable"],
+    ]
+    story.append(make_table(ranges[0], ranges[1:], [1.2*inch, 1.5*inch, 2.5*inch]))
+
+    story.append(PageBreak())
+
+    # ── 6. INSTALLATION & SETUP ───────────────────────────────────────
+    story.append(Paragraph("6. Installation & Setup", styles['SectionTitle']))
     story.append(hr())
 
     story.append(Paragraph("Windows (Development/Testing)", styles['SubSection']))
@@ -449,8 +522,8 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 6. WEB DASHBOARD GUIDE ────────────────────────────────────────
-    story.append(Paragraph("6. Web Dashboard Guide", styles['SectionTitle']))
+    # ── 7. WEB DASHBOARD GUIDE ────────────────────────────────────────
+    story.append(Paragraph("7. Web Dashboard Guide", styles['SectionTitle']))
     story.append(hr())
     story.append(Paragraph(
         "The web dashboard provides a real-time view of all Bluetooth activity in the "
@@ -461,10 +534,13 @@ def build_pdf():
     story.append(Paragraph("Dashboard Sections", styles['SubSection']))
     sections = [
         ["Section", "Description"],
-        ["Summary Cards", "Total devices, known/trusted, unknown, alerts, scan count"],
-        ["Device Table", "Live table: address, name, category, manufacturer, type, RSSI, signal bar, alert, seen count, trust action"],
+        ["Summary Cards", "Physical devices, MAC addresses, trusted, unknown, MACs clustered, scan count"],
+        ["Device Table", "Dual view: fingerprinted physical devices (clustered) or raw MAC addresses. Includes category, RSSI, signal bar, trust actions."],
+        ["Range Filter", "Dropdown to filter by proximity: Immediate (<1m), Close (<3m), Mid (<10m), Far (<30m), All"],
+        ["Theme Toggle", "Switch between professional light and dark modes. Persists across sessions."],
         ["Jammer Controls", "Mode selection (sweep/continuous/reactive/targeted), channel, target address, backend indicator"],
         ["RSSI Chart", "Signal strength bars with device category icons for top detected devices"],
+        ["Category Breakdown", "Visual breakdown of detected device types (phones, audio, IoT, etc.)"],
         ["Alert Feed", "Scrolling log of security alerts with timestamps and severity"],
         ["Scan Controls", "Manual scan button, auto-scan toggle, interval slider"],
     ]
@@ -482,8 +558,8 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 7. JAMMER MODULE ──────────────────────────────────────────────
-    story.append(Paragraph("7. Jammer Module (Research Only)", styles['SectionTitle']))
+    # ── 8. JAMMER MODULE ──────────────────────────────────────────────
+    story.append(Paragraph("8. Jammer Module (Research Only)", styles['SectionTitle']))
     story.append(hr())
     story.append(Paragraph(
         "WARNING: Bluetooth jamming is regulated by the FCC and equivalent agencies worldwide. "
@@ -522,8 +598,8 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 8. RASPBERRY PI DEPLOYMENT ────────────────────────────────────
-    story.append(Paragraph("8. Raspberry Pi Deployment", styles['SectionTitle']))
+    # ── 9. RASPBERRY PI DEPLOYMENT ────────────────────────────────────
+    story.append(Paragraph("9. Raspberry Pi Deployment", styles['SectionTitle']))
     story.append(hr())
 
     story.append(Paragraph("Systemd Service File", styles['SubSection']))
@@ -566,8 +642,8 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 9. API REFERENCE ──────────────────────────────────────────────
-    story.append(Paragraph("9. API Reference", styles['SectionTitle']))
+    # ── 10. API REFERENCE ─────────────────────────────────────────────
+    story.append(Paragraph("10. API Reference", styles['SectionTitle']))
     story.append(hr())
     story.append(Paragraph(
         "The dashboard exposes a REST API for programmatic access and a Socket.IO "
@@ -578,17 +654,21 @@ def build_pdf():
     story.append(Paragraph("REST Endpoints", styles['SubSection']))
     endpoints = [
         ["Method", "Endpoint", "Description"],
-        ["GET", "/api/status", "Full dashboard state snapshot"],
-        ["GET", "/api/devices", "All discovered devices"],
+        ["GET", "/api/status", "Full dashboard state (includes clustered devices)"],
+        ["GET", "/api/devices", "All raw MAC-level devices"],
+        ["GET", "/api/devices/clustered", "Fingerprint-clustered physical devices"],
         ["GET", "/api/summary", "Device count summary"],
+        ["GET", "/api/cluster-summary", "Fingerprint cluster statistics"],
         ["POST", "/api/scan", "Trigger manual scan"],
+        ["GET", "/api/range", "Get current range filter settings"],
+        ["POST", "/api/range", "Set range preset (body: {preset} or {rssi})"],
         ["GET", "/api/jammer", "Jammer status"],
         ["POST", "/api/jammer/start", "Start jamming (body: {mode, channel})"],
         ["POST", "/api/jammer/stop", "Stop jamming"],
-        ["POST", "/api/whitelist", "Add device to whitelist (body: {address})"],
-        ["DELETE", "/api/whitelist", "Remove from whitelist (body: {address})"],
+        ["POST", "/api/whitelist", "Trust device (body: {address} or {fingerprint_id})"],
+        ["DELETE", "/api/whitelist", "Remove trust (body: {address} or {fingerprint_id})"],
         ["POST", "/api/export", "Export and download JSON report"],
-        ["POST", "/api/reset", "Clear all scanner state"],
+        ["POST", "/api/reset", "Clear all scanner state and clusters"],
     ]
     story.append(make_table(endpoints[0], endpoints[1:], [0.8*inch, 2.0*inch, 3.5*inch]))
 
@@ -605,8 +685,8 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 10. REVENUE MODEL ─────────────────────────────────────────────
-    story.append(Paragraph("10. Revenue Model", styles['SectionTitle']))
+    # ── 11. REVENUE MODEL ─────────────────────────────────────────────
+    story.append(Paragraph("11. Revenue Model", styles['SectionTitle']))
     story.append(hr())
 
     tiers = [
@@ -620,11 +700,11 @@ def build_pdf():
 
     story.append(PageBreak())
 
-    # ── 11. ROADMAP ───────────────────────────────────────────────────
-    story.append(Paragraph("11. Roadmap & Future Work", styles['SectionTitle']))
+    # ── 12. ROADMAP ───────────────────────────────────────────────────
+    story.append(Paragraph("12. Roadmap & Future Work", styles['SectionTitle']))
     story.append(hr())
 
-    story.append(Paragraph("Phase 1: Research MVP (Current)", styles['SubSection']))
+    story.append(Paragraph("Phase 1: Research MVP (Complete)", styles['SubSection']))
     for item in [
         "BLE + Classic BT passive scanning",
         "Web dashboard with real-time updates",
@@ -634,10 +714,12 @@ def build_pdf():
     ]:
         story.append(bullet(item, styles))
 
-    story.append(Paragraph("Phase 2: Enhanced Detection", styles['SubSection']))
+    story.append(Paragraph("Phase 2: Enhanced Detection (Current)", styles['SubSection']))
     for item in [
-        "Bluetooth 5.x extended advertisement parsing",
-        "Device fingerprinting and classification",
+        "BLE Fingerprinting Engine with MAC address clustering (DONE)",
+        "Range-based scanning with proximity presets (DONE)",
+        "Professional UI with light/dark mode (DONE)",
+        "Device category breakdown visualization (DONE)",
         "Anomaly detection using ML-based pattern analysis",
         "Multi-sensor mesh network support",
     ]:

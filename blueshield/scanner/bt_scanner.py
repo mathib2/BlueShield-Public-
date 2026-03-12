@@ -286,8 +286,12 @@ class BluetoothScanner:
 
         return devices
 
-    async def scan_ble_bleak(self) -> list[BluetoothDevice]:
-        """Scan for BLE devices using bleak with full advertisement parsing."""
+    async def scan_ble_bleak(self, rssi_filter: int = -100) -> list[BluetoothDevice]:
+        """Scan for BLE devices using bleak with full advertisement parsing.
+
+        Args:
+            rssi_filter: Minimum RSSI to include a device (-100 = all, -60 = close range)
+        """
         devices = []
         try:
             from bleak import BleakScanner
@@ -296,6 +300,11 @@ class BluetoothScanner:
 
             def detection_callback(device, advertisement_data):
                 rssi = advertisement_data.rssi if advertisement_data else 0
+
+                # Apply RSSI filter (range filtering)
+                if rssi < rssi_filter and rssi != 0:
+                    return
+
                 name = device.name or (
                     advertisement_data.local_name if advertisement_data else None
                 ) or "Unknown"
@@ -303,11 +312,15 @@ class BluetoothScanner:
                 # ── Manufacturer resolution ──
                 manufacturer = "Unknown"
                 apple_type = ""
+                mfr_id_main = 0
                 mfr_ids = []
+                raw_mfr_data_len = 0
                 if advertisement_data and advertisement_data.manufacturer_data:
                     for mfr_id, mfr_bytes in advertisement_data.manufacturer_data.items():
                         mfr_ids.append(mfr_id)
+                        mfr_id_main = mfr_id
                         manufacturer = resolve_company(mfr_id)
+                        raw_mfr_data_len = len(mfr_bytes)
                         # Decode Apple continuity data
                         if mfr_id == 76 and len(mfr_bytes) >= 2:
                             apple_type = decode_apple_device(mfr_bytes)
@@ -321,6 +334,9 @@ class BluetoothScanner:
                 tx_power = 0
                 if advertisement_data and advertisement_data.tx_power is not None:
                     tx_power = advertisement_data.tx_power
+
+                # ── Payload length estimate ──
+                payload_len = raw_mfr_data_len + sum(len(u) for u in svc_uuids) + len(name.encode())
 
                 # Use Apple type as name if device name is unknown
                 display_name = name
@@ -336,10 +352,12 @@ class BluetoothScanner:
                     "name": display_name,
                     "rssi": rssi,
                     "manufacturer": manufacturer,
+                    "manufacturer_id": mfr_id_main,
                     "category": category,
                     "category_icon": icon,
                     "service_uuids": svc_uuids,
                     "tx_power": tx_power,
+                    "payload_len": payload_len,
                 }
 
             scanner = BleakScanner(detection_callback=detection_callback)
@@ -359,6 +377,11 @@ class BluetoothScanner:
                     service_uuids=info["service_uuids"],
                     tx_power=info["tx_power"],
                 )
+                # Store extra fingerprint data on the object for the engine
+                dev._fingerprint_data = {
+                    "manufacturer_id": info["manufacturer_id"],
+                    "payload_len": info["payload_len"],
+                }
                 devices.append(dev)
         except ImportError:
             pass  # bleak not installed
@@ -454,15 +477,19 @@ class BluetoothScanner:
             pass
         return packets
 
-    async def run_scan(self) -> dict:
-        """Execute a full scan cycle (classic + BLE) and return results."""
+    async def run_scan(self, rssi_filter: int = -100) -> dict:
+        """Execute a full scan cycle (classic + BLE) and return results.
+
+        Args:
+            rssi_filter: Minimum RSSI threshold. -100=all, -60=close, -80=mid range
+        """
         self.is_scanning = True
         self.total_scans += 1
         scan_start = datetime.now(timezone.utc).isoformat()
         new_devices = []
         unknown_devices = []
 
-        ble_devices = await self.scan_ble_bleak()
+        ble_devices = await self.scan_ble_bleak(rssi_filter=rssi_filter)
         classic_devices = self.scan_classic_hcitool()
         all_found = ble_devices + classic_devices
 
