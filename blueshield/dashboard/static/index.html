@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BlueShield - Bluetooth Security Monitor</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header id="header">
+        <div class="header-left">
+            <div class="logo">
+                <span class="logo-icon">&#9678;</span>
+                <span class="logo-text">BLUESHIELD</span>
+                <span class="version">v0.1.0</span>
+            </div>
+        </div>
+        <div class="header-center">
+            <span class="status-badge" id="scanner-status">IDLE</span>
+            <span class="status-badge" id="jammer-status-badge">JAMMER OFF</span>
+            <span class="status-badge platform-badge" id="platform-badge">--</span>
+        </div>
+        <div class="header-right">
+            <span id="clock">--:--:--</span>
+        </div>
+    </header>
+
+    <!-- Summary Cards -->
+    <section class="summary-cards">
+        <div class="card card-total" id="card-total">
+            <div class="card-value">0</div>
+            <div class="card-label">Total Devices</div>
+        </div>
+        <div class="card card-known" id="card-known">
+            <div class="card-value">0</div>
+            <div class="card-label">Known (Trusted)</div>
+        </div>
+        <div class="card card-unknown" id="card-unknown">
+            <div class="card-value">0</div>
+            <div class="card-label">Unknown</div>
+        </div>
+        <div class="card card-alerts" id="card-alerts">
+            <div class="card-value">0</div>
+            <div class="card-label">Critical Alerts</div>
+        </div>
+        <div class="card card-scans" id="card-scans">
+            <div class="card-value">0</div>
+            <div class="card-label">Total Scans</div>
+        </div>
+    </section>
+
+    <!-- Main Content -->
+    <main class="dashboard-grid">
+        <!-- Left: Device Table -->
+        <section class="panel device-panel">
+            <div class="panel-header">
+                <h2>Discovered Devices</h2>
+                <div class="panel-actions">
+                    <button id="btn-scan" class="btn btn-cyan" title="Manual Scan">Scan Now</button>
+                    <button id="btn-autoscan" class="btn btn-outline active" title="Toggle Auto-Scan">Auto: ON</button>
+                    <label class="interval-label">
+                        <span id="interval-value">5</span>s
+                        <input type="range" id="scan-interval" min="2" max="30" value="5" class="slider">
+                    </label>
+                </div>
+            </div>
+            <div class="table-container">
+                <table id="device-table">
+                    <thead>
+                        <tr>
+                            <th>Address</th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>RSSI</th>
+                            <th>Signal</th>
+                            <th>Alert</th>
+                            <th>Seen</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="device-table-body">
+                        <tr class="empty-row">
+                            <td colspan="8">Waiting for first scan...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Right Column -->
+        <aside class="right-column">
+            <!-- Jammer Panel -->
+            <section class="panel jammer-panel" id="jammer-panel">
+                <div class="panel-header">
+                    <h2>Jammer Control</h2>
+                </div>
+                <div class="jammer-controls">
+                    <div class="control-group">
+                        <label>Mode</label>
+                        <select id="jammer-mode">
+                            <option value="sweep">Sweep (All Channels)</option>
+                            <option value="continuous">Continuous (Single Ch)</option>
+                            <option value="reactive">Reactive</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>Channel</label>
+                        <select id="jammer-channel">
+                            <option value="37">Ch 37</option>
+                            <option value="38">Ch 38</option>
+                            <option value="39" selected>Ch 39</option>
+                        </select>
+                    </div>
+                    <button id="btn-jam-toggle" class="btn btn-jam">Start Jammer</button>
+                    <div class="jammer-stats" id="jammer-stats" style="display:none;">
+                        <div class="stat-row">
+                            <span>Packets Sent:</span>
+                            <span id="jam-packets" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Mode:</span>
+                            <span id="jam-mode-display" class="stat-value">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Channel:</span>
+                            <span id="jam-channel-display" class="stat-value">--</span>
+                        </div>
+                    </div>
+                    <div class="jammer-warning">
+                        Research use only. FCC regulated.
+                    </div>
+                </div>
+            </section>
+
+            <!-- RSSI Chart -->
+            <section class="panel rssi-panel">
+                <div class="panel-header">
+                    <h2>Signal Strength</h2>
+                </div>
+                <div id="rssi-chart" class="rssi-chart">
+                    <div class="empty-state">No devices detected</div>
+                </div>
+            </section>
+        </aside>
+    </main>
+
+    <!-- Bottom: Alerts + Actions -->
+    <section class="bottom-section">
+        <div class="panel alert-panel">
+            <div class="panel-header">
+                <h2>Alert Feed</h2>
+                <span id="alert-count" class="badge">0</span>
+            </div>
+            <div id="alert-feed" class="alert-feed">
+                <div class="empty-state">No alerts. System clean.</div>
+            </div>
+        </div>
+        <div class="bottom-actions">
+            <button id="btn-export" class="btn btn-outline">Export Report</button>
+            <button id="btn-reset" class="btn btn-danger-outline">Reset All</button>
+        </div>
+    </section>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
