@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs (generated at runtime)
+blueshield/logs/*.json
+!blueshield/logs/__init__.py
+!blueshield/logs/logger.py
+
+# Config (user-specific runtime config)
+blueshield/config/blueshield_config.json
+
+# Extracted PPTX assets (build artifacts)
+pptx_extract/
+
+# Claude
+.claude/

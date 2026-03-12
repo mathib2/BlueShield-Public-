@@ -1,0 +1,15 @@
+# BlueShield - Bluetooth Security Monitor
+# Core (cross-platform)
+bleak>=0.21.0          # BLE scanning (Windows/Linux/macOS)
+
+# Web Dashboard
+flask>=3.0.0
+flask-socketio>=5.3.0
+eventlet>=0.35.0
+
+# Linux/Raspberry Pi only (uncomment on RPi)
+# pybluez2>=0.46        # Classic Bluetooth scanning
+# PyBluez>=0.23         # Alternate classic BT library
+
+# Terminal dashboard fallback (--terminal flag)
+windows-curses>=2.3.1; sys_platform == "win32"
