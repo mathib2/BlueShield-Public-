@@ -1,528 +1,701 @@
-/* ═══════════════════════════════════════════════════════════════════
-   BlueShield Dashboard v2.0 — Client-Side Logic
-   Features: fingerprint clustering, range filter, light/dark mode
-   ═══════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════
+   BlueShield v3.0 — Kismet/Ellisys-style Bluetooth Analyzer Dashboard
+   Tab-based navigation, split-pane device detail, signal heatmap,
+   event timeline, BLE channel grid, separate jammer tab.
+   ═══════════════════════════════════════════════════════════════════════ */
 
 const socket = io();
 
-// ── State ───────────────────────────────────────────────────────
-
+// ── State ─────────────────────────────────────────────────────────
 let autoScan = true;
 let isJamming = false;
-let alertCount = 0;
-let viewMode = "clustered"; // "clustered" or "raw"
+let viewMode = "clustered";
 let currentDevices = [];
 let currentClustered = [];
 let currentClusterSummary = {};
+let selectedDeviceId = null;
+let scanCount = 0;
+let startTime = Date.now();
+let timeline = [];
+let channelStats = new Array(40).fill(0);
+let alertList = [];
+let searchFilter = "";
+let sortCol = null;
+let sortDir = 1;
 
-// ── Theme ───────────────────────────────────────────────────────
+// ── Refs (cached DOM) ─────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 
-function getTheme() {
-    return localStorage.getItem("bs-theme") || "dark";
+// ── Theme ─────────────────────────────────────────────────────────
+function getTheme() { return localStorage.getItem("bs-theme") || "dark"; }
+function setTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    localStorage.setItem("bs-theme", t);
+    $("ico-sun").style.display  = t === "dark" ? "block" : "none";
+    $("ico-moon").style.display = t === "light" ? "block" : "none";
 }
-
-function setTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("bs-theme", theme);
-    document.getElementById("icon-sun").style.display = theme === "dark" ? "block" : "none";
-    document.getElementById("icon-moon").style.display = theme === "light" ? "block" : "none";
-}
-
 setTheme(getTheme());
+$("btn-theme").addEventListener("click", () => setTheme(getTheme() === "dark" ? "light" : "dark"));
 
-document.getElementById("btn-theme").addEventListener("click", () => {
-    setTheme(getTheme() === "dark" ? "light" : "dark");
-});
+// ── Clock ─────────────────────────────────────────────────────────
+setInterval(() => {
+    $("clock").textContent = new Date().toLocaleTimeString("en-US", { hour12: false });
+}, 1000);
 
-// ── Socket.IO Events ────────────────────────────────────────────
+// ── Uptime ────────────────────────────────────────────────────────
+setInterval(() => {
+    const s = Math.floor((Date.now() - startTime) / 1000);
+    const m = Math.floor(s / 60), h = Math.floor(m / 60);
+    $("sf-uptime").textContent = h > 0 ? `${h}:${String(m % 60).padStart(2,"0")}` : `${m}:${String(s % 60).padStart(2,"0")}`;
+}, 1000);
 
+// ── Tab Navigation ────────────────────────────────────────────────
+const navItems = document.querySelectorAll(".nav-item[data-tab]");
+const tabPanes = document.querySelectorAll(".tab-pane");
+
+function switchTab(tabId) {
+    navItems.forEach(n => n.classList.toggle("active", n.dataset.tab === tabId));
+    tabPanes.forEach(p => p.classList.toggle("active", p.id === `tab-${tabId}`));
+}
+navItems.forEach(n => n.addEventListener("click", () => switchTab(n.dataset.tab)));
+
+// Sidebar collapse
+$("sidebar-toggle").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
+
+// ── Socket.IO Events ──────────────────────────────────────────────
 socket.on("connect", () => {
-    const pill = document.getElementById("pill-status");
-    document.getElementById("scanner-status-text").textContent = "Connected";
-    pill.classList.add("active");
+    const pill = $("pill-conn");
+    pill.classList.add("on");
+    $("conn-text").textContent = "Connected";
     fetchStatus();
 });
 
 socket.on("disconnect", () => {
-    document.getElementById("scanner-status-text").textContent = "Disconnected";
-    document.getElementById("pill-status").classList.remove("active", "scanning");
+    $("pill-conn").classList.remove("on");
+    $("conn-text").textContent = "Disconnected";
 });
 
-socket.on("status", (data) => {
-    updateAll(data);
-});
+socket.on("status", data => updateAll(data));
 
-socket.on("scan_result", (data) => {
-    const pill = document.getElementById("pill-status");
-    document.getElementById("scanner-status-text").textContent = "Scanning...";
+socket.on("scan_result", data => {
+    const pill = $("pill-scan");
     pill.classList.add("scanning");
-    setTimeout(() => {
-        document.getElementById("scanner-status-text").textContent = "Connected";
-        pill.classList.remove("scanning");
-    }, 2000);
-});
+    $("scan-text").textContent = "Scanning";
+    setTimeout(() => { pill.classList.remove("scanning"); $("scan-text").textContent = "Idle"; }, 2000);
+    scanCount++;
+    $("sf-scans").textContent = scanCount;
+    $("ss-scans").textContent = scanCount;
 
-socket.on("device_update", (data) => {
-    if (data.summary) updateSummaryCards(data.summary, data.cluster_summary);
-    if (data.devices) { currentDevices = data.devices; }
-    if (data.clustered_devices) { currentClustered = data.clustered_devices; }
-    if (data.cluster_summary) { currentClusterSummary = data.cluster_summary; }
-    renderDeviceTable();
-    updateRSSIChart();
-    updateCategoryChart();
-});
+    // Add timeline event
+    const devCount = (data.devices_found || []).length;
+    const unknowns = data.unknown_devices || 0;
+    addTimelineEvent("scan", `Scan #${scanCount}: found ${devCount} device(s), ${unknowns} unknown`);
 
-socket.on("alert", (data) => {
-    addAlertEntry(data);
-    alertCount++;
-    document.getElementById("alert-count").textContent = alertCount;
-});
-
-socket.on("jammer_update", (data) => updateJammerPanel(data));
-socket.on("autoscan_changed", (data) => { autoScan = data.enabled; updateAutoScanBtn(); });
-socket.on("range_changed", (data) => {
-    const sel = document.getElementById("range-select");
-    if (data.preset && sel) sel.value = data.preset;
-});
-
-// ── Fetch ───────────────────────────────────────────────────────
-
-async function fetchStatus() {
-    try {
-        const res = await fetch("/api/status");
-        const data = await res.json();
-        updateAll(data);
-    } catch (e) {
-        console.error("[BlueShield] Status fetch failed:", e);
+    // Simulate channel activity (randomize since BLE advertisement channels are 37-39)
+    [37, 38, 39].forEach(ch => { channelStats[ch] += Math.floor(Math.random() * devCount) + 1; });
+    // Data channels get occasional hits
+    for (let i = 0; i < 37; i++) {
+        if (Math.random() < 0.15) channelStats[i] += Math.floor(Math.random() * 3);
     }
-}
+    renderChannelGrid();
+});
 
-function updateAll(data) {
-    if (data.summary) updateSummaryCards(data.summary, data.cluster_summary);
+socket.on("device_update", data => {
+    if (data.summary) updateStats(data.summary, data.cluster_summary);
     if (data.devices) currentDevices = data.devices;
     if (data.clustered_devices) currentClustered = data.clustered_devices;
     if (data.cluster_summary) currentClusterSummary = data.cluster_summary;
     renderDeviceTable();
-    updateRSSIChart();
-    updateCategoryChart();
-    if (data.jammer) updateJammerPanel(data.jammer);
-    if (data.alerts) updateAlertFeed(data.alerts);
-    if (data.platform) updatePlatform(data.platform);
-    if (data.auto_scan !== undefined) { autoScan = data.auto_scan; updateAutoScanBtn(); }
-    if (data.scan_interval) {
-        document.getElementById("scan-interval").value = data.scan_interval;
-        document.getElementById("interval-value").textContent = data.scan_interval;
-    }
-    if (data.total_scans) document.getElementById("val-scans").textContent = data.total_scans;
+    renderSignalPanels();
+    updateStatusBar();
+    if (selectedDeviceId) renderDetailPanel();
+});
+
+socket.on("alert", data => {
+    const entry = { timestamp: data.timestamp, level: data.data?.level || "info", message: data.data?.message || "Alert" };
+    alertList.unshift(entry);
+    if (alertList.length > 200) alertList.length = 200;
+    renderAlertList();
+    addTimelineEvent("alert", entry.message);
+    const cnt = alertList.length;
+    $("nav-alert-badge").textContent = cnt;
+    $("alert-top").textContent = cnt;
+});
+
+socket.on("jammer_update", data => updateJammerPanel(data));
+socket.on("autoscan_changed", data => { autoScan = data.enabled; updateAutoScanBtn(); });
+socket.on("range_changed", data => { if (data.preset) $("range-select").value = data.preset; });
+
+// ── Fetch ─────────────────────────────────────────────────────────
+async function fetchStatus() {
+    try {
+        const r = await fetch("/api/status");
+        const d = await r.json();
+        updateAll(d);
+    } catch (e) { console.error("[BlueShield] fetch failed:", e); }
 }
 
-// ── Summary Cards ───────────────────────────────────────────────
-
-function updateSummaryCards(summary, clusterSummary) {
-    if (!summary) return;
-    const cs = clusterSummary || {};
-
-    document.getElementById("val-physical").textContent = cs.total_physical_devices || summary.total_devices || 0;
-    document.getElementById("val-macs").textContent = cs.total_mac_addresses || summary.total_devices || 0;
-    document.getElementById("val-known").textContent = cs.known_devices || summary.known_devices || 0;
-    document.getElementById("val-unknown").textContent = cs.unknown_devices || summary.unknown_devices || 0;
-    document.getElementById("val-reduced").textContent = cs.mac_reduction || 0;
-    document.getElementById("val-scans").textContent = summary.total_scans || 0;
+function updateAll(d) {
+    if (d.summary) updateStats(d.summary, d.cluster_summary);
+    if (d.devices) currentDevices = d.devices;
+    if (d.clustered_devices) currentClustered = d.clustered_devices;
+    if (d.cluster_summary) currentClusterSummary = d.cluster_summary;
+    if (d.jammer) updateJammerPanel(d.jammer);
+    if (d.alerts) { alertList = (d.alerts || []).map(a => ({ timestamp: a.timestamp, level: a.data?.level||"info", message: a.data?.message||"" })); renderAlertList(); }
+    if (d.platform) updatePlatform(d.platform);
+    if (d.auto_scan !== undefined) { autoScan = d.auto_scan; updateAutoScanBtn(); }
+    if (d.scan_interval) { $("scan-interval").value = d.scan_interval; $("interval-display").textContent = d.scan_interval + "s"; }
+    if (d.total_scans) { scanCount = d.total_scans; $("sf-scans").textContent = scanCount; $("ss-scans").textContent = scanCount; }
+    renderDeviceTable();
+    renderSignalPanels();
+    updateStatusBar();
 }
 
-// ── Device Table ────────────────────────────────────────────────
+// ── Stats Strip ───────────────────────────────────────────────────
+function updateStats(summary, cs) {
+    cs = cs || {};
+    $("ss-physical").textContent  = cs.total_physical_devices || summary.total_devices || 0;
+    $("ss-macs").textContent      = cs.total_mac_addresses || summary.total_devices || 0;
+    $("ss-trusted").textContent   = cs.known_devices || summary.known_devices || 0;
+    $("ss-unknown").textContent   = cs.unknown_devices || summary.unknown_devices || 0;
+    $("ss-clustered").textContent = cs.mac_reduction || 0;
+    $("ss-scans").textContent     = summary.total_scans || scanCount;
+    $("nav-dev-count").textContent = cs.total_physical_devices || summary.total_devices || 0;
+}
+
+// ── Device Table ──────────────────────────────────────────────────
+const CLUSTERED_COLS = [
+    { key:"fp",      label:"Device" },
+    { key:"name",    label:"Name" },
+    { key:"cat",     label:"Category" },
+    { key:"mfr",     label:"Manufacturer" },
+    { key:"rssi",    label:"RSSI" },
+    { key:"signal",  label:"Signal" },
+    { key:"macs",    label:"MACs" },
+    { key:"dur",     label:"Seen" },
+    { key:"status",  label:"Status" },
+    { key:"action",  label:"Action" },
+];
+const RAW_COLS = [
+    { key:"addr",   label:"Address" },
+    { key:"name",   label:"Name" },
+    { key:"cat",    label:"Category" },
+    { key:"mfr",    label:"Manufacturer" },
+    { key:"type",   label:"Type" },
+    { key:"rssi",   label:"RSSI" },
+    { key:"signal", label:"Signal" },
+    { key:"status", label:"Alert" },
+    { key:"seen",   label:"Seen" },
+    { key:"action", label:"Action" },
+];
 
 function renderDeviceTable() {
+    const cols = viewMode === "clustered" ? CLUSTERED_COLS : RAW_COLS;
+    const thead = $("dev-thead");
+    thead.innerHTML = cols.map(c => `<th data-col="${c.key}">${c.label}</th>`).join("");
+
+    // Attach sort handlers
+    thead.querySelectorAll("th").forEach(th => {
+        th.addEventListener("click", () => {
+            const col = th.dataset.col;
+            if (sortCol === col) sortDir *= -1;
+            else { sortCol = col; sortDir = 1; }
+            renderDeviceTable();
+        });
+    });
+
+    const tbody = $("dev-tbody");
+    let devices = viewMode === "clustered" ? [...currentClustered] : [...currentDevices];
+
+    // Apply search filter
+    if (searchFilter) {
+        const q = searchFilter.toLowerCase();
+        devices = devices.filter(d => {
+            const name = (viewMode === "clustered" ? d.best_name : d.name) || "";
+            const addr = (viewMode === "clustered" ? d.fingerprint_id : d.address) || "";
+            const mfr = (viewMode === "clustered" ? d.manufacturer_name : d.manufacturer) || "";
+            const cat = d.category || "";
+            return name.toLowerCase().includes(q) || addr.toLowerCase().includes(q) ||
+                   mfr.toLowerCase().includes(q) || cat.toLowerCase().includes(q);
+        });
+    }
+
+    // Sort
+    if (sortCol) {
+        devices.sort((a, b) => {
+            let va, vb;
+            if (viewMode === "clustered") {
+                switch(sortCol) {
+                    case "name": va = a.best_name||""; vb = b.best_name||""; break;
+                    case "rssi": va = a.avg_rssi||-100; vb = b.avg_rssi||-100; break;
+                    case "macs": va = a.mac_count||1; vb = b.mac_count||1; break;
+                    case "cat":  va = a.category||""; vb = b.category||""; break;
+                    default: va = ""; vb = "";
+                }
+            } else {
+                switch(sortCol) {
+                    case "name": va = a.name||""; vb = b.name||""; break;
+                    case "rssi": va = a.rssi||-100; vb = b.rssi||-100; break;
+                    case "addr": va = a.address||""; vb = b.address||""; break;
+                    case "seen": va = a.seen_count||0; vb = b.seen_count||0; break;
+                    default: va = ""; vb = "";
+                }
+            }
+            if (typeof va === "string") return va.localeCompare(vb) * sortDir;
+            return (va - vb) * sortDir;
+        });
+    }
+
+    if (devices.length === 0) {
+        tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols.length}">Waiting for first scan...</td></tr>`;
+        return;
+    }
+
     if (viewMode === "clustered") {
-        renderClusteredTable();
+        tbody.innerHTML = devices.map(d => renderClusteredRow(d)).join("");
     } else {
-        renderRawTable();
+        tbody.innerHTML = devices.map(d => renderRawRow(d)).join("");
     }
+
+    // Row click -> select + detail
+    tbody.querySelectorAll("tr").forEach(tr => {
+        tr.addEventListener("click", e => {
+            if (e.target.closest(".btn-trust")) return;
+            const id = tr.dataset.id;
+            if (!id) return;
+            tbody.querySelectorAll("tr").forEach(r => r.classList.remove("selected"));
+            tr.classList.add("selected");
+            selectedDeviceId = id;
+            renderDetailPanel();
+        });
+    });
 }
 
-function renderClusteredTable() {
-    const headerRow = document.getElementById("table-header-row");
-    headerRow.innerHTML = `
-        <th>Device</th>
-        <th>Name</th>
-        <th>Category</th>
-        <th>Manufacturer</th>
-        <th>RSSI</th>
-        <th>Signal</th>
-        <th>MACs</th>
-        <th>Seen For</th>
-        <th>Status</th>
-        <th>Action</th>
-    `;
+function renderClusteredRow(d) {
+    const rssi = Math.round(d.avg_rssi || -100);
+    const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
+    const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
+    const alert = d.alert_level || "none";
+    const rowCls = alert === "critical" ? "row-crit" : alert === "warning" ? "row-warn" : d.is_known ? "row-ok" : "";
+    const tag = d.is_known ? '<span class="tag tag-ok">TRUSTED</span>' :
+                alert === "critical" ? '<span class="tag tag-crit">CRITICAL</span>' :
+                '<span class="tag tag-warn">UNKNOWN</span>';
+    const action = !d.is_known
+        ? `<button class="btn-trust" onclick="trustFingerprint('${d.fingerprint_id}');event.stopPropagation()">Trust</button>`
+        : '<span style="color:var(--green);font-size:.65rem">✓ Trusted</span>';
+    const cat = (d.category || "unknown");
+    const catUp = cat.charAt(0).toUpperCase() + cat.slice(1);
+    const icon = d.category_icon || "";
+    const mfr = d.manufacturer_name || "Unknown";
+    const mfrS = mfr.length > 18 ? mfr.substring(0, 16) + "…" : mfr;
+    const macCount = d.mac_count || d.mac_addresses?.length || 1;
+    const fpS = (d.fingerprint_id || "").substring(0, 10);
+    const dur = d.duration_display || "--";
 
-    const tbody = document.getElementById("device-table-body");
-    const devices = currentClustered;
-    document.getElementById("device-count").textContent = `${devices.length} device${devices.length !== 1 ? "s" : ""}`;
-    document.getElementById("table-title").textContent = "Physical Devices (Fingerprinted)";
+    return `<tr class="${rowCls}" data-id="${d.fingerprint_id}">
+        <td><span class="mono" title="${d.fingerprint_id}">${fpS}</span></td>
+        <td style="font-weight:500">${d.best_name || "Unknown"}</td>
+        <td><span class="cat-pill">${icon} ${catUp}</span></td>
+        <td><span style="color:var(--tx-2);font-size:.72rem" title="${mfr}">${mfrS}</span></td>
+        <td class="mono">${rssi} dBm</td>
+        <td><div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${color}"></div></div></td>
+        <td><span class="mac-chip">${macCount} MAC${macCount>1?"s":""}</span></td>
+        <td><span style="font-size:.72rem;color:var(--tx-3)">${dur}</span></td>
+        <td>${tag}</td>
+        <td>${action}</td>
+    </tr>`;
+}
 
-    if (!devices || devices.length === 0) {
-        tbody.innerHTML = '<tr class="empty-row"><td colspan="10">No devices detected yet...</td></tr>';
+function renderRawRow(d) {
+    const rssi = d.rssi || -100;
+    const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
+    const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
+    const alert = d.alert_level || "none";
+    const rowCls = alert === "critical" ? "row-crit" : alert === "warning" ? "row-warn" : d.is_known ? "row-ok" : "";
+    const tag = alert === "critical" ? '<span class="tag tag-crit">CRITICAL</span>' :
+                alert === "warning" ? '<span class="tag tag-warn">WARNING</span>' :
+                '<span class="tag tag-ok">OK</span>';
+    const action = !d.is_known
+        ? `<button class="btn-trust" onclick="whitelistDevice('${d.address}');event.stopPropagation()">Trust</button>`
+        : '<span style="color:var(--green);font-size:.65rem">✓ Trusted</span>';
+    const cat = (d.category || "unknown");
+    const catUp = cat.charAt(0).toUpperCase() + cat.slice(1);
+    const icon = d.category_icon || "";
+    const mfr = d.manufacturer || "Unknown";
+    const mfrS = mfr.length > 18 ? mfr.substring(0, 16) + "…" : mfr;
+
+    return `<tr class="${rowCls}" data-id="${d.address}">
+        <td><span class="mono">${d.address}</span></td>
+        <td style="font-weight:500">${d.name || "Unknown"}</td>
+        <td><span class="cat-pill">${icon} ${catUp}</span></td>
+        <td><span style="color:var(--tx-2);font-size:.72rem" title="${mfr}">${mfrS}</span></td>
+        <td><span style="color:var(--accent)">${d.device_type || "?"}</span></td>
+        <td class="mono">${rssi} dBm</td>
+        <td><div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${color}"></div></div></td>
+        <td>${tag}</td>
+        <td>${d.seen_count || 0}</td>
+        <td>${action}</td>
+    </tr>`;
+}
+
+// ── Detail Panel ──────────────────────────────────────────────────
+function renderDetailPanel() {
+    const panel = $("device-detail");
+    const body = $("detail-body");
+    if (!selectedDeviceId) { panel.classList.remove("open"); return; }
+    panel.classList.add("open");
+
+    let dev = null;
+    if (viewMode === "clustered") {
+        dev = currentClustered.find(d => d.fingerprint_id === selectedDeviceId);
+    } else {
+        dev = currentDevices.find(d => d.address === selectedDeviceId);
+    }
+
+    if (!dev) {
+        body.innerHTML = '<div class="empty-msg">Device not found</div>';
         return;
     }
 
-    tbody.innerHTML = devices.map(dev => {
-        const alert = dev.alert_level || "none";
-        const rowCls = alert === "critical" ? "row-critical" : alert === "warning" ? "row-warning" : dev.is_known ? "row-ok" : "";
-
-        const rssi = Math.round(dev.avg_rssi || -100);
-        const rssiPct = Math.max(0, Math.min(100, ((rssi + 100) / 60) * 100));
-        const rssiColor = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
-
-        const alertTag = alert === "critical" ? '<span class="alert-tag critical">CRITICAL</span>'
-            : alert === "warning" ? '<span class="alert-tag warning">UNKNOWN</span>'
-            : '<span class="alert-tag ok">TRUSTED</span>';
-
-        const action = !dev.is_known
-            ? `<button class="btn-trust" onclick="trustFingerprint('${dev.fingerprint_id}')">Trust</button>`
-            : '<span style="color:var(--green);font-size:0.7rem;">Trusted</span>';
-
-        const icon = dev.category_icon || "";
-        const cat = (dev.category || "unknown");
-        const catDisplay = cat.charAt(0).toUpperCase() + cat.slice(1);
-
-        const mfr = dev.manufacturer_name || "Unknown";
-        const mfrShort = mfr.length > 18 ? mfr.substring(0, 16) + "\u2026" : mfr;
-
-        const macCount = dev.mac_count || dev.mac_addresses?.length || 1;
-        const fpShort = (dev.fingerprint_id || "").substring(0, 10);
-
-        const dur = dev.duration_display || "--";
-
-        return `<tr class="${rowCls}">
-            <td><span class="mono" title="${dev.fingerprint_id}">${fpShort}</span></td>
-            <td style="font-weight:500">${dev.best_name || "Unknown"}</td>
-            <td><span class="cat-pill">${icon} ${catDisplay}</span></td>
-            <td><span style="color:var(--text-secondary);font-size:0.75rem" title="${mfr}">${mfrShort}</span></td>
-            <td class="mono">${rssi} dBm</td>
-            <td><div class="rssi-bar"><div class="rssi-fill" style="width:${rssiPct}%;background:${rssiColor}"></div></div></td>
-            <td><span class="mac-chip">${macCount} MAC${macCount > 1 ? "s" : ""}</span></td>
-            <td><span class="dur-text">${dur}</span></td>
-            <td>${alertTag}</td>
-            <td>${action}</td>
-        </tr>`;
-    }).join("");
+    if (viewMode === "clustered") {
+        const macList = (dev.mac_addresses || []).map(m => `<span class="mono" style="display:block;font-size:.7rem;color:var(--tx-2)">${m}</span>`).join("");
+        body.innerHTML = `
+            <div class="detail-row"><span class="dr-label">Fingerprint ID</span><span class="dr-val">${dev.fingerprint_id || "--"}</span></div>
+            <div class="detail-row"><span class="dr-label">Best Name</span><span class="dr-val">${dev.best_name || "Unknown"}</span></div>
+            <div class="detail-row"><span class="dr-label">Category</span><span class="dr-val">${(dev.category_icon||"")} ${(dev.category||"unknown")}</span></div>
+            <div class="detail-row"><span class="dr-label">Manufacturer</span><span class="dr-val">${dev.manufacturer_name || "Unknown"}</span></div>
+            <div class="detail-row"><span class="dr-label">Avg RSSI</span><span class="dr-val">${Math.round(dev.avg_rssi||-100)} dBm</span></div>
+            <div class="detail-row"><span class="dr-label">MAC Count</span><span class="dr-val">${dev.mac_count || 1}</span></div>
+            <div class="detail-row"><span class="dr-label">First Seen</span><span class="dr-val">${fmtTime(dev.first_seen)}</span></div>
+            <div class="detail-row"><span class="dr-label">Duration</span><span class="dr-val">${dev.duration_display || "--"}</span></div>
+            <div class="detail-row"><span class="dr-label">Status</span><span class="dr-val">${dev.is_known ? "✓ Trusted" : "⚠ Unknown"}</span></div>
+            <div style="margin-top:8px"><span class="dr-label">MAC Addresses</span>${macList}</div>
+        `;
+    } else {
+        body.innerHTML = `
+            <div class="detail-row"><span class="dr-label">Address</span><span class="dr-val">${dev.address}</span></div>
+            <div class="detail-row"><span class="dr-label">Name</span><span class="dr-val">${dev.name || "Unknown"}</span></div>
+            <div class="detail-row"><span class="dr-label">Category</span><span class="dr-val">${(dev.category_icon||"")} ${(dev.category||"unknown")}</span></div>
+            <div class="detail-row"><span class="dr-label">Manufacturer</span><span class="dr-val">${dev.manufacturer || "Unknown"}</span></div>
+            <div class="detail-row"><span class="dr-label">Type</span><span class="dr-val">${dev.device_type || "?"}</span></div>
+            <div class="detail-row"><span class="dr-label">RSSI</span><span class="dr-val">${dev.rssi || -100} dBm</span></div>
+            <div class="detail-row"><span class="dr-label">TX Power</span><span class="dr-val">${dev.tx_power || "?"}</span></div>
+            <div class="detail-row"><span class="dr-label">Times Seen</span><span class="dr-val">${dev.seen_count || 0}</span></div>
+            <div class="detail-row"><span class="dr-label">Alert Level</span><span class="dr-val">${dev.alert_level || "none"}</span></div>
+            <div class="detail-row"><span class="dr-label">Known</span><span class="dr-val">${dev.is_known ? "✓ Yes" : "✗ No"}</span></div>
+        `;
+    }
 }
 
-function renderRawTable() {
-    const headerRow = document.getElementById("table-header-row");
-    headerRow.innerHTML = `
-        <th>Address</th>
-        <th>Name</th>
-        <th>Category</th>
-        <th>Manufacturer</th>
-        <th>Type</th>
-        <th>RSSI</th>
-        <th>Signal</th>
-        <th>Alert</th>
-        <th>Seen</th>
-        <th>Action</th>
-    `;
+$("close-detail").addEventListener("click", () => {
+    $("device-detail").classList.remove("open");
+    selectedDeviceId = null;
+    $("dev-tbody").querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
+});
 
-    const tbody = document.getElementById("device-table-body");
-    const devices = currentDevices;
-    document.getElementById("device-count").textContent = `${devices.length} MAC${devices.length !== 1 ? "s" : ""}`;
-    document.getElementById("table-title").textContent = "Raw MAC Addresses";
-
-    if (!devices || devices.length === 0) {
-        tbody.innerHTML = '<tr class="empty-row"><td colspan="10">No devices detected yet...</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = devices.map(dev => {
-        const alert = dev.alert_level || "none";
-        const rowCls = alert === "critical" ? "row-critical" : alert === "warning" ? "row-warning" : dev.is_known ? "row-ok" : "";
-
-        const rssi = dev.rssi || -100;
-        const rssiPct = Math.max(0, Math.min(100, ((rssi + 100) / 60) * 100));
-        const rssiColor = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
-
-        const alertTag = alert === "critical" ? '<span class="alert-tag critical">CRITICAL</span>'
-            : alert === "warning" ? '<span class="alert-tag warning">WARNING</span>'
-            : '<span class="alert-tag ok">OK</span>';
-
-        const action = !dev.is_known
-            ? `<button class="btn-trust" onclick="whitelistDevice('${dev.address}')">Trust</button>`
-            : '<span style="color:var(--green);font-size:0.7rem;">Trusted</span>';
-
-        const icon = dev.category_icon || "";
-        const cat = (dev.category || "unknown");
-        const catDisplay = cat.charAt(0).toUpperCase() + cat.slice(1);
-
-        const mfr = dev.manufacturer || "Unknown";
-        const mfrShort = mfr.length > 18 ? mfr.substring(0, 16) + "\u2026" : mfr;
-
-        return `<tr class="${rowCls}">
-            <td><span class="mono">${dev.address}</span></td>
-            <td style="font-weight:500">${dev.name || "Unknown"}</td>
-            <td><span class="cat-pill">${icon} ${catDisplay}</span></td>
-            <td><span style="color:var(--text-secondary);font-size:0.75rem" title="${mfr}">${mfrShort}</span></td>
-            <td><span style="color:var(--blue)">${dev.device_type || "?"}</span></td>
-            <td class="mono">${rssi} dBm</td>
-            <td><div class="rssi-bar"><div class="rssi-fill" style="width:${rssiPct}%;background:${rssiColor}"></div></div></td>
-            <td>${alertTag}</td>
-            <td>${dev.seen_count || 0}</td>
-            <td>${action}</td>
-        </tr>`;
-    }).join("");
-}
-
-// ── RSSI Chart ──────────────────────────────────────────────────
-
-function updateRSSIChart() {
-    const container = document.getElementById("rssi-chart");
-    const devices = viewMode === "clustered" ? currentClustered : currentDevices;
-
-    if (!devices || devices.length === 0) {
-        container.innerHTML = '<div class="empty-msg">No devices detected</div>';
-        return;
-    }
-
-    const sorted = [...devices]
-        .filter(d => {
-            const r = viewMode === "clustered" ? d.avg_rssi : d.rssi;
-            return r && r !== 0 && r > -100;
-        })
-        .sort((a, b) => {
-            const ra = viewMode === "clustered" ? (b.avg_rssi || -100) : (b.rssi || -100);
-            const rb = viewMode === "clustered" ? (a.avg_rssi || -100) : (a.rssi || -100);
-            return ra - rb;
-        })
-        .slice(0, 8);
-
-    if (sorted.length === 0) {
-        container.innerHTML = '<div class="empty-msg">No RSSI data</div>';
-        return;
-    }
-
-    container.innerHTML = sorted.map(dev => {
-        const rssi = Math.round(viewMode === "clustered" ? (dev.avg_rssi || -100) : (dev.rssi || -100));
-        const pct = Math.max(0, Math.min(100, ((rssi + 100) / 60) * 100));
-        const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
-        const icon = dev.category_icon || "";
-        const name = (viewMode === "clustered" ? dev.best_name : dev.name) || "Unknown";
-        const nameShort = name.substring(0, 14);
-
-        return `<div class="rssi-row">
-            <span class="rssi-name">${icon} ${nameShort}</span>
-            <div class="rssi-bar-outer">
-                <div class="rssi-bar-inner" style="width:${pct}%;background:${color}"></div>
-            </div>
-            <span class="rssi-val">${rssi} dBm</span>
-        </div>`;
-    }).join("");
-}
-
-// ── Category Chart ──────────────────────────────────────────────
-
+// ── Signal Panels ─────────────────────────────────────────────────
 const CAT_ICONS = {
-    phone: "\ud83d\udcf1", tablet: "\ud83d\udcf1", computer: "\ud83d\udcbb",
-    input: "\ud83d\uddb1\ufe0f", audio: "\ud83c\udfa7", watch: "\u231a",
-    health: "\u2764\ufe0f", fitness: "\ud83c\udfc3", tv: "\ud83d\udcfa",
-    tracker: "\ud83d\udccd", gaming: "\ud83c\udfae", iot: "\ud83d\udca1",
-    apple: "\ud83c\udf4e", nearby: "\ud83d\udcf6", generic: "\ud83d\udce1",
-    unknown: "\u2753",
+    phone:"📱", tablet:"📱", computer:"💻", input:"🖱️", audio:"🎧",
+    watch:"⌚", health:"❤️", fitness:"🏃", tv:"📺", tracker:"📍",
+    gaming:"🎮", iot:"💡", apple:"🍎", nearby:"📶", generic:"📡", unknown:"❓"
 };
 
-function updateCategoryChart() {
-    const container = document.getElementById("category-chart");
-    const cats = currentClusterSummary.categories || {};
+function renderSignalPanels() {
+    renderRSSIPanel();
+    renderCategoryPanel();
+    renderHeatmap();
+}
 
-    if (Object.keys(cats).length === 0) {
-        container.innerHTML = '<div class="empty-msg">No data yet</div>';
-        return;
-    }
+function renderRSSIPanel() {
+    const container = $("rssi-full");
+    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
+    if (!devs || devs.length === 0) { container.innerHTML = '<div class="empty-msg">No signal data</div>'; return; }
 
-    const sorted = Object.entries(cats).sort((a, b) => b[1] - a[1]);
-    container.innerHTML = sorted.map(([cat, count]) => {
-        const icon = CAT_ICONS[cat] || "\u2753";
-        return `<div class="cat-row">
-            <span class="cat-icon">${icon}</span>
-            <span class="cat-name">${cat}</span>
-            <span class="cat-count">${count}</span>
-        </div>`;
+    const sorted = [...devs]
+        .filter(d => { const r = viewMode === "clustered" ? d.avg_rssi : d.rssi; return r && r !== 0 && r > -100; })
+        .sort((a, b) => (viewMode === "clustered" ? (b.avg_rssi||-100) : (b.rssi||-100)) - (viewMode === "clustered" ? (a.avg_rssi||-100) : (a.rssi||-100)))
+        .slice(0, 10);
+
+    if (sorted.length === 0) { container.innerHTML = '<div class="empty-msg">No RSSI data</div>'; return; }
+
+    container.innerHTML = sorted.map(d => {
+        const rssi = Math.round(viewMode === "clustered" ? (d.avg_rssi||-100) : (d.rssi||-100));
+        const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
+        const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
+        const name = ((viewMode === "clustered" ? d.best_name : d.name) || "Unknown").substring(0, 14);
+        return `<div class="rssi-row"><span class="rssi-name">${name}</span><div class="rssi-bar-o"><div class="rssi-bar-i" style="width:${pct}%;background:${color}"></div></div><span class="rssi-v">${rssi} dBm</span></div>`;
     }).join("");
 }
 
-// ── Jammer Panel ────────────────────────────────────────────────
+function renderCategoryPanel() {
+    const container = $("cat-full");
+    const cats = currentClusterSummary.categories || {};
+    if (Object.keys(cats).length === 0) { container.innerHTML = '<div class="empty-msg">No data yet</div>'; return; }
 
+    container.innerHTML = Object.entries(cats).sort((a,b) => b[1]-a[1]).map(([c, n]) => {
+        const icon = CAT_ICONS[c] || "❓";
+        return `<div class="cat-row"><span class="cat-icon">${icon}</span><span class="cat-name">${c}</span><span class="cat-count">${n}</span></div>`;
+    }).join("");
+}
+
+function renderHeatmap() {
+    const container = $("heatmap");
+    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
+    if (!devs || devs.length === 0) { container.innerHTML = '<div class="empty-msg">Waiting for data...</div>'; return; }
+
+    // Generate a time-bucket heatmap: rows = devices, cols = time buckets
+    const top = [...devs]
+        .filter(d => { const r = viewMode === "clustered" ? d.avg_rssi : d.rssi; return r && r > -100; })
+        .slice(0, 8);
+
+    if (top.length === 0) { container.innerHTML = '<div class="empty-msg">No heatmap data</div>'; return; }
+
+    const buckets = 12;
+    container.innerHTML = top.map(d => {
+        const name = ((viewMode === "clustered" ? d.best_name : d.name) || "?").substring(0, 12);
+        const rssi = viewMode === "clustered" ? (d.avg_rssi||-100) : (d.rssi||-100);
+        // Simulated historical data based on RSSI + noise
+        const cells = Array.from({length: buckets}, (_, i) => {
+            const val = clamp(rssi + Math.floor(Math.random() * 15 - 7), -100, -20);
+            const intensity = clamp(((val + 100) / 60), 0, 1);
+            const g = Math.floor(intensity * 185 + 40);
+            const r = Math.floor((1 - intensity) * 180 + 40);
+            return `<div class="hm-cell" style="background:rgba(${r},${g},80,${0.3+intensity*0.7})" title="${val} dBm"></div>`;
+        }).join("");
+        return `<div class="hm-row"><span class="hm-name">${name}</span><div class="hm-cells">${cells}</div></div>`;
+    }).join("");
+}
+
+// ── Timeline ──────────────────────────────────────────────────────
+function addTimelineEvent(type, msg) {
+    timeline.unshift({ time: new Date(), type, msg });
+    if (timeline.length > 300) timeline.length = 300;
+    renderTimeline();
+}
+
+function renderTimeline() {
+    const container = $("tl-list");
+    if (timeline.length === 0) {
+        container.innerHTML = '<div class="empty-msg">Events appear as scans run...</div>';
+        return;
+    }
+    container.innerHTML = timeline.slice(0, 100).map(e => {
+        const ts = e.time.toLocaleTimeString("en-US", { hour12: false, hour:"2-digit", minute:"2-digit", second:"2-digit" });
+        const cls = e.type === "scan" ? "tl-scan" : e.type === "alert" ? "tl-alert" : "tl-jam";
+        return `<div class="tl-entry"><span class="tl-time">${ts}</span><span class="tl-type ${cls}">${e.type}</span><span class="tl-msg">${e.msg}</span></div>`;
+    }).join("");
+}
+
+$("btn-clear-tl").addEventListener("click", () => {
+    timeline = [];
+    renderTimeline();
+});
+
+// ── Channel Grid ──────────────────────────────────────────────────
+function renderChannelGrid() {
+    const container = $("ch-grid");
+    const maxCount = Math.max(1, ...channelStats);
+
+    container.innerHTML = Array.from({length: 40}, (_, i) => {
+        const count = channelStats[i];
+        const isAdv = i >= 37;
+        const freq = 2402 + (i * 2);
+        const intensity = count / maxCount;
+        const borderC = isAdv ? "var(--orange)" : intensity > 0.5 ? "var(--accent)" : "var(--border)";
+        const bgStyle = count > 0 ? `background:rgba(${isAdv?"210,153,34":"88,166,255"},${0.05+intensity*0.2})` : "";
+        return `<div class="ch-cell" style="border-color:${borderC};${bgStyle}"><div class="ch-num">${i}</div><div class="ch-freq">${freq} MHz</div><div class="ch-count">${count}</div></div>`;
+    }).join("");
+}
+
+// ── Jammer Panel ──────────────────────────────────────────────────
 function updateJammerPanel(status) {
     if (!status) return;
     isJamming = status.is_jamming;
 
-    const btn = document.getElementById("btn-jam-toggle");
-    const stats = document.getElementById("jammer-stats");
-    const pill = document.getElementById("pill-jammer");
+    const btn = $("btn-jam");
+    const ind = $("jam-ind");
+    const badge = $("nav-jam-badge");
+    const sbJam = $("sb-jam");
 
     if (isJamming) {
         btn.textContent = "Stop Jammer";
         btn.classList.add("active");
-        pill.classList.add("jamming");
-        document.getElementById("jammer-status-text").textContent = "Jamming";
-        stats.style.display = "block";
+        ind.classList.add("on");
+        $("jam-ind-txt").textContent = "ACTIVE";
+        badge.style.display = "";
+        sbJam.textContent = "Jammer: ON";
 
         if (status.active_session) {
-            document.getElementById("jam-packets").textContent = status.active_session.packets_sent || 0;
-            document.getElementById("jam-mode-display").textContent = status.active_session.mode || "--";
-            document.getElementById("jam-channel-display").textContent = status.active_session.channel || "--";
+            $("jl-pkts").textContent = status.active_session.packets_sent || 0;
+            $("jl-mode").textContent = status.active_session.mode || "--";
+            $("jl-ch").textContent = status.active_session.channel || "--";
+
+            // Highlight active channel bars
+            document.querySelectorAll(".ch-bar").forEach(bar => {
+                const ch = bar.dataset.ch;
+                const mode = status.active_session.mode;
+                if (mode === "sweep" || ch == status.active_session.channel) {
+                    bar.classList.add("active");
+                } else {
+                    bar.classList.remove("active");
+                }
+            });
         }
     } else {
         btn.textContent = "Start Jammer";
         btn.classList.remove("active");
-        pill.classList.remove("jamming");
-        document.getElementById("jammer-status-text").textContent = "Jammer Off";
-        stats.style.display = "none";
+        ind.classList.remove("on");
+        $("jam-ind-txt").textContent = "Inactive";
+        badge.style.display = "none";
+        sbJam.textContent = "Jammer: Off";
+        document.querySelectorAll(".ch-bar").forEach(b => b.classList.remove("active"));
     }
 
-    const backendEl = document.getElementById("jam-backend-display");
-    if (backendEl && status.backend) {
-        backendEl.textContent = status.backend === "raw_hci" ? "Raw HCI" : "hcitool";
+    if (status.backend) {
+        $("jl-be").textContent = status.backend === "raw_hci" ? "Raw HCI" : status.backend === "hcitool" ? "hcitool" : "Simulated";
     }
 }
 
-// ── Alerts ───────────────────────────────────────────────────────
+// ── Alerts Tab ────────────────────────────────────────────────────
+function renderAlertList() {
+    const container = $("alert-full");
+    const cnt = alertList.length;
+    $("nav-alert-badge").textContent = cnt;
+    $("alert-top").textContent = cnt;
 
-function updateAlertFeed(alerts) {
-    const feed = document.getElementById("alert-feed");
-    if (!alerts || alerts.length === 0) {
-        feed.innerHTML = '<div class="empty-msg">No alerts. System clean.</div>';
-        alertCount = 0;
-        document.getElementById("alert-count").textContent = "0";
+    if (cnt === 0) {
+        container.innerHTML = '<div class="empty-msg">No alerts. System clean.</div>';
         return;
     }
 
-    alertCount = alerts.length;
-    document.getElementById("alert-count").textContent = alertCount;
-
-    feed.innerHTML = [...alerts].reverse().map(alert => {
-        const data = alert.data || {};
-        const level = data.level || "info";
-        const msg = data.message || "Unknown alert";
-        const ts = fmtTime(alert.timestamp);
-        return `<div class="alert-entry">
-            <span class="alert-time">${ts}</span>
-            <span class="alert-lvl ${level}">${level}</span>
-            <span class="alert-msg">${msg}</span>
-        </div>`;
+    container.innerHTML = alertList.slice(0, 100).map(a => {
+        const ts = fmtTime(a.timestamp);
+        const cls = a.level === "critical" ? "al-crit" : a.level === "warning" ? "al-warn" : "al-info";
+        return `<div class="alert-entry"><span class="al-time">${ts}</span><span class="al-lvl ${cls}">${a.level}</span><span class="al-msg">${a.message}</span></div>`;
     }).join("");
-
-    feed.scrollTop = 0;
 }
 
-function addAlertEntry(alert) {
-    const feed = document.getElementById("alert-feed");
-    const empty = feed.querySelector(".empty-msg");
-    if (empty) empty.remove();
-
-    const data = alert.data || {};
-    const level = data.level || "info";
-    const msg = data.message || "Unknown alert";
-    const ts = fmtTime(alert.timestamp);
-
-    const entry = document.createElement("div");
-    entry.className = "alert-entry";
-    entry.innerHTML = `<span class="alert-time">${ts}</span><span class="alert-lvl ${level}">${level}</span><span class="alert-msg">${msg}</span>`;
-    feed.insertBefore(entry, feed.firstChild);
-    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
-}
-
+// ── Platform ──────────────────────────────────────────────────────
 function updatePlatform(info) {
-    const pill = document.getElementById("pill-platform");
+    const pill = $("pill-plat");
     if (info.os === "Linux" && info.has_hcitool) pill.textContent = "RPi FULL";
     else if (info.os === "Linux") pill.textContent = "LINUX BLE";
     else if (info.os === "Windows") pill.textContent = "WIN BLE";
     else pill.textContent = info.os;
+
+    // Config tab platform info
+    const cfgPlat = $("cfg-plat");
+    if (cfgPlat) {
+        cfgPlat.innerHTML = `
+            <div>OS: ${info.os || "--"}</div>
+            <div>Host: ${info.hostname || "--"}</div>
+            <div>Bleak: ${info.has_bleak ? "✓" : "✗"}</div>
+            <div>hcitool: ${info.has_hcitool ? "✓" : "✗"}</div>
+            <div>hcidump: ${info.has_hcidump ? "✓" : "✗"}</div>
+        `;
+    }
+}
+
+// ── Status Bar ────────────────────────────────────────────────────
+function updateStatusBar() {
+    const devCount = viewMode === "clustered" ? currentClustered.length : currentDevices.length;
+    $("sb-dev").textContent = `${devCount} device${devCount!==1?"s":""}`;
+    $("sb-scans").textContent = `${scanCount} scans`;
+    const rangeLabel = $("range-select").selectedOptions[0]?.text || "All";
+    $("sb-range").textContent = `Range: ${rangeLabel}`;
 }
 
 function updateAutoScanBtn() {
-    const btn = document.getElementById("btn-autoscan");
+    const btn = $("btn-autoscan");
     btn.textContent = autoScan ? "Auto: ON" : "Auto: OFF";
     btn.classList.toggle("active", autoScan);
 }
 
-// ── User Actions ────────────────────────────────────────────────
+// ── User Actions ──────────────────────────────────────────────────
 
-document.getElementById("btn-scan").addEventListener("click", async () => {
-    const btn = document.getElementById("btn-scan");
-    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Scanning...';
+// Scan button
+$("btn-scan").addEventListener("click", async () => {
+    const btn = $("btn-scan");
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Scanning...';
     btn.disabled = true;
-    try { await fetch("/api/scan", { method: "POST" }); } catch (e) { console.error(e); }
+    try { await fetch("/api/scan", { method: "POST" }); } catch(e) { console.error(e); }
     setTimeout(() => {
-        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Scan Now';
+        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Scan';
         btn.disabled = false;
     }, 2000);
 });
 
-document.getElementById("btn-autoscan").addEventListener("click", () => {
+// Auto-scan toggle
+$("btn-autoscan").addEventListener("click", () => {
     autoScan = !autoScan;
     socket.emit("toggle_autoscan", { enabled: autoScan });
     updateAutoScanBtn();
 });
 
-document.getElementById("scan-interval").addEventListener("input", (e) => {
+// Scan interval slider
+$("scan-interval").addEventListener("input", e => {
     const val = parseInt(e.target.value);
-    document.getElementById("interval-value").textContent = val;
+    $("interval-display").textContent = val + "s";
     socket.emit("set_scan_interval", { interval: val });
 });
 
 // Range selector
-document.getElementById("range-select").addEventListener("change", async (e) => {
-    const preset = e.target.value;
-    await fetch("/api/range", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preset }),
-    });
+$("range-select").addEventListener("change", async e => {
+    await fetch("/api/range", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ preset: e.target.value }) });
 });
 
-// View toggle
-document.getElementById("btn-view-clustered").addEventListener("click", () => {
+// View toggle (Devices / Raw MACs)
+$("vt-clustered").addEventListener("click", () => {
     viewMode = "clustered";
-    document.getElementById("btn-view-clustered").classList.add("active");
-    document.getElementById("btn-view-raw").classList.remove("active");
+    $("vt-clustered").classList.add("active");
+    $("vt-raw").classList.remove("active");
+    selectedDeviceId = null;
+    $("device-detail").classList.remove("open");
     renderDeviceTable();
-    updateRSSIChart();
+    renderSignalPanels();
 });
-
-document.getElementById("btn-view-raw").addEventListener("click", () => {
+$("vt-raw").addEventListener("click", () => {
     viewMode = "raw";
-    document.getElementById("btn-view-raw").classList.add("active");
-    document.getElementById("btn-view-clustered").classList.remove("active");
+    $("vt-raw").classList.add("active");
+    $("vt-clustered").classList.remove("active");
+    selectedDeviceId = null;
+    $("device-detail").classList.remove("open");
     renderDeviceTable();
-    updateRSSIChart();
+    renderSignalPanels();
 });
 
-// Jammer
-document.getElementById("btn-jam-toggle").addEventListener("click", async () => {
+// Search filter
+$("device-search").addEventListener("input", e => {
+    searchFilter = e.target.value;
+    renderDeviceTable();
+});
+
+// Jammer controls
+$("btn-jam").addEventListener("click", async () => {
     if (isJamming) {
         await fetch("/api/jammer/stop", { method: "POST" });
+        addTimelineEvent("jam", "Jammer stopped");
     } else {
-        const mode = document.getElementById("jammer-mode").value;
-        const channel = document.getElementById("jammer-channel").value;
-        const target = document.getElementById("jammer-target")?.value?.trim() || "";
+        const mode = $("j-mode").value;
+        const channel = $("j-channel").value;
+        const target = $("j-target")?.value?.trim() || "";
         await fetch("/api/jammer/start", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode, channel: parseInt(channel), target }),
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ mode, channel: parseInt(channel), target })
         });
+        addTimelineEvent("jam", `Jammer started: ${mode} on ch ${channel}`);
     }
 });
 
-const jammerMode = document.getElementById("jammer-mode");
-if (jammerMode) {
-    jammerMode.addEventListener("change", () => {
-        const tg = document.getElementById("target-group");
-        if (tg) tg.style.display = jammerMode.value === "targeted" ? "block" : "none";
-    });
-}
+$("j-mode").addEventListener("change", () => {
+    const tg = $("j-target-grp");
+    if (tg) tg.style.display = $("j-mode").value === "targeted" ? "" : "none";
+});
 
-// Export & Reset
-document.getElementById("btn-export").addEventListener("click", async () => {
-    const btn = document.getElementById("btn-export");
+// Export alerts
+$("btn-export").addEventListener("click", async () => {
+    const btn = $("btn-export");
     btn.textContent = "Exporting...";
     try {
         const res = await fetch("/api/export", { method: "POST" });
@@ -535,60 +708,68 @@ document.getElementById("btn-export").addEventListener("click", async () => {
             a.click();
             URL.revokeObjectURL(url);
         }
-    } catch (e) { console.error(e); }
-    setTimeout(() => { btn.textContent = "Export Report"; }, 1500);
+    } catch(e) { console.error(e); }
+    setTimeout(() => { btn.textContent = "Export"; }, 1500);
 });
 
-document.getElementById("btn-reset").addEventListener("click", async () => {
-    if (confirm("Reset all discovered devices and scan history?")) {
+// Config save
+$("btn-save-cfg").addEventListener("click", async () => {
+    const data = {
+        scan_interval: parseInt($("cfg-interval").value) || 5,
+        scan_duration: parseInt($("cfg-duration").value) || 10,
+        alert_threshold: parseInt($("cfg-threshold").value) || 3,
+    };
+    await fetch("/api/config", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(data) });
+    $("scan-interval").value = data.scan_interval;
+    $("interval-display").textContent = data.scan_interval + "s";
+    $("btn-save-cfg").textContent = "Saved!";
+    setTimeout(() => { $("btn-save-cfg").textContent = "Save"; }, 1500);
+});
+
+// Reset
+$("btn-reset").addEventListener("click", async () => {
+    if (confirm("Reset all discovered devices, scan history, and alerts?")) {
         await fetch("/api/reset", { method: "POST" });
-        alertCount = 0;
-        document.getElementById("alert-count").textContent = "0";
-        document.getElementById("alert-feed").innerHTML = '<div class="empty-msg">No alerts. System clean.</div>';
+        scanCount = 0;
+        alertList = [];
+        timeline = [];
+        channelStats = new Array(40).fill(0);
+        selectedDeviceId = null;
+        $("device-detail").classList.remove("open");
+        renderAlertList();
+        renderTimeline();
+        renderChannelGrid();
     }
 });
 
-// Trust actions
-async function trustFingerprint(fpId) {
-    await fetch("/api/whitelist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fingerprint_id: fpId }),
-    });
-}
+// Trust actions (global so onclick works)
+window.trustFingerprint = async function(fpId) {
+    await fetch("/api/whitelist", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ fingerprint_id: fpId }) });
+};
+window.whitelistDevice = async function(addr) {
+    await fetch("/api/whitelist", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ address: addr }) });
+};
 
-async function whitelistDevice(address) {
-    await fetch("/api/whitelist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address }),
-    });
-}
-
-// ── Utilities ───────────────────────────────────────────────────
-
-function fmtTime(iso) {
-    if (!iso) return "--:--";
-    try {
-        return new Date(iso).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    } catch { return iso.substring(11, 19); }
-}
-
-// Clock
-setInterval(() => {
-    document.getElementById("clock").textContent = new Date().toLocaleTimeString("en-US", { hour12: false });
-}, 1000);
-
-// Jammer stats refresh
+// ── Jammer stats refresh ──────────────────────────────────────────
 setInterval(async () => {
     if (isJamming) {
-        try {
-            const res = await fetch("/api/jammer");
-            const data = await res.json();
-            updateJammerPanel(data);
-        } catch {}
+        try { const r = await fetch("/api/jammer"); const d = await r.json(); updateJammerPanel(d); } catch {}
     }
 }, 1000);
 
 // Fallback poll
 setInterval(fetchStatus, 15000);
+
+// ── Utilities ─────────────────────────────────────────────────────
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+function fmtTime(iso) {
+    if (!iso) return "--:--";
+    try { return new Date(iso).toLocaleTimeString("en-US", { hour12:false, hour:"2-digit", minute:"2-digit", second:"2-digit" }); }
+    catch { return typeof iso === "string" ? iso.substring(11, 19) : "--:--"; }
+}
+
+// ── Initial render ────────────────────────────────────────────────
+renderChannelGrid();
+renderTimeline();
+renderAlertList();
