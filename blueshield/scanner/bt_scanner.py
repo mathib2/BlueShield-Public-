@@ -215,6 +215,8 @@ class BluetoothScanner:
         self.known_devices: set[str] = set()
         self.is_scanning = False
         self.total_scans = 0
+        # Name cache: persists names across scans even when BLE addresses rotate
+        self._name_cache: dict[str, str] = {}  # address -> name
         self._load_known_devices()
 
     def _load_known_devices(self):
@@ -364,6 +366,51 @@ class BluetoothScanner:
             print(f"[BlueShield] BLE scan error: {e}")
         return devices
 
+    async def resolve_device_names(self, devices: list[BluetoothDevice], timeout: float = 3.0):
+        """Try to read real device names via GATT connection.
+
+        Connects to each device with an 'Unknown' or generic name and reads
+        the Device Name characteristic (UUID 0x2A00) from the Generic Access
+        service. This can reveal user-assigned names like 'Mathias's AirPods'.
+
+        Only attempts connection on devices we haven't cached a name for.
+        Failures are silent — many devices reject GATT connections.
+        """
+        try:
+            from bleak import BleakClient
+        except ImportError:
+            return
+
+        for dev in devices:
+            # Skip if we already have a good name or cached name
+            if dev.address in self._name_cache:
+                cached = self._name_cache[dev.address]
+                if cached != "Unknown" and cached != dev.name:
+                    dev.name = cached
+                continue
+
+            # Only try GATT if name is generic/model-only
+            if dev.name not in ("Unknown", "") and dev.name not in APPLE_DEVICE_TYPES.values():
+                self._name_cache[dev.address] = dev.name
+                continue
+
+            try:
+                async with BleakClient(dev.address, timeout=timeout) as client:
+                    if client.is_connected:
+                        # Read Device Name characteristic (0x2A00)
+                        try:
+                            name_bytes = await client.read_gatt_char("00002a00-0000-1000-8000-00805f9b34fb")
+                            if name_bytes:
+                                gatt_name = name_bytes.decode("utf-8", errors="ignore").strip()
+                                if gatt_name and gatt_name != "Unknown":
+                                    dev.name = gatt_name
+                                    self._name_cache[dev.address] = gatt_name
+                                    print(f"[BlueShield] GATT name resolved: {dev.address} -> {gatt_name}")
+                        except Exception:
+                            pass
+            except Exception:
+                pass  # Connection refused/timeout — normal for most BLE devices
+
     def scan_hcidump_passive(self, duration: int = 5) -> list[dict]:
         """Passive sniffing using hcidump — captures raw HCI packets."""
         packets = []
@@ -418,6 +465,21 @@ class BluetoothScanner:
         ble_devices = await self.scan_ble_bleak()
         classic_devices = self.scan_classic_hcitool()
         all_found = ble_devices + classic_devices
+
+        # Apply cached names first
+        for dev in all_found:
+            if dev.address in self._name_cache and dev.name in ("Unknown", ""):
+                dev.name = self._name_cache[dev.address]
+            elif dev.name not in ("Unknown", "") and dev.name not in APPLE_DEVICE_TYPES.values():
+                self._name_cache[dev.address] = dev.name
+
+        # Try GATT name resolution for devices still unnamed (best-effort)
+        unnamed = [d for d in all_found if d.name in ("Unknown", "") or d.name in APPLE_DEVICE_TYPES.values()]
+        if unnamed and self.config.get("resolve_names", True):
+            try:
+                await self.resolve_device_names(unnamed[:5], timeout=3.0)  # limit to 5 to keep scan fast
+            except Exception as e:
+                print(f"[BlueShield] GATT name resolution error: {e}")
 
         for dev in all_found:
             addr = dev.address.upper()

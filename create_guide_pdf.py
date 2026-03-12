@@ -96,10 +96,17 @@ def build_styles():
 class BlueShieldTemplate(BaseDocTemplate):
     def __init__(self, filename, **kwargs):
         BaseDocTemplate.__init__(self, filename, **kwargs)
+        page_w, page_h = letter
+        margin_left = 0.75 * inch
+        margin_bottom = 0.85 * inch
+        frame_w = page_w - 1.5 * inch   # 0.75" margins on each side
+        frame_h = page_h - 1.6 * inch   # room for header + footer
         frame = Frame(
-            0.75 * inch, 0.75 * inch,
-            self.width - 0.5 * inch, self.height - 1.0 * inch,
-            id='main'
+            margin_left, margin_bottom,
+            frame_w, frame_h,
+            id='main',
+            leftPadding=0, rightPadding=0,
+            topPadding=0, bottomPadding=0,
         )
         self.addPageTemplates([
             PageTemplate(id='main', frames=[frame], onPage=self._draw_page)
@@ -210,7 +217,7 @@ def build_pdf():
     story.append(HRFlowable(width="40%", thickness=2, color=BLUE, spaceBefore=0, spaceAfter=20, hAlign='CENTER'))
     story.append(Paragraph("Product & Technical Guide", ParagraphStyle(
         'CoverSub', fontName='Helvetica', fontSize=14, textColor=DARK_TEXT, alignment=TA_CENTER, spaceAfter=8)))
-    story.append(Paragraph("Version 0.1.0  |  2026", ParagraphStyle(
+    story.append(Paragraph("Version 0.2.0  |  March 2026", ParagraphStyle(
         'CoverVer', fontName='Helvetica', fontSize=10, textColor=MED_GRAY, alignment=TA_CENTER, spaceAfter=30)))
 
     story.append(Spacer(1, 1.0 * inch))
@@ -282,13 +289,16 @@ def build_pdf():
 
     story.append(Paragraph("Key Capabilities", styles['SubSection']))
     for item in [
-        "Real-time BLE and Classic Bluetooth device scanning",
+        "Real-time BLE and Classic Bluetooth device scanning with manufacturer identification",
+        "Automatic device classification: phones, AirPods, watches, speakers, IoT, mice, keyboards",
+        "Apple continuity protocol decoding (identifies AirPods, Apple Watch, iPhone, HomePod, etc.)",
+        "GATT-based device name resolution for user-assigned names",
         "Web-based dashboard with live device tracking and RSSI visualization",
         "Automatic unknown device detection with configurable alert thresholds",
-        "Research-grade BLE jamming capabilities (authorized use only)",
+        "Research-grade BLE jamming with raw HCI sockets (4 modes: sweep, continuous, reactive, targeted)",
         "Comprehensive JSON audit logging for compliance and incident response",
         "Device whitelisting and trust management",
-        "Cross-platform: Windows (BLE), Linux/Raspberry Pi (full BLE + Classic BT)",
+        "Cross-platform: Windows (BLE), Linux/Raspberry Pi (full BLE + Classic BT + jamming)",
     ]:
         story.append(bullet(item, styles))
 
@@ -383,8 +393,8 @@ def build_pdf():
 
     modules = [
         ["Module", "File", "Purpose"],
-        ["Scanner", "scanner/bt_scanner.py", "BLE scanning via Bleak + Classic BT via hcitool. Tracks devices, RSSI, manufacturer data."],
-        ["Jammer", "jammer/bt_jammer.py", "BLE channel jamming via HCI commands. Modes: sweep, continuous, reactive."],
+        ["Scanner", "scanner/bt_scanner.py", "BLE scanning via Bleak + Classic BT via hcitool. Device identification, Apple decoding, GATT name resolution, manufacturer + category classification."],
+        ["Jammer", "jammer/bt_jammer.py", "BLE jamming via raw HCI sockets (fast) or hcitool fallback. Modes: sweep, continuous, reactive, targeted."],
         ["Dashboard", "dashboard/app.py", "Flask + Socket.IO web server. REST API + real-time WebSocket updates."],
         ["Logger", "logs/logger.py", "Structured JSON logging. Scan results, alerts, jammer sessions, audit trail."],
         ["Config", "config/settings.py", "Centralized configuration. Known device whitelist. Scan parameters."],
@@ -400,7 +410,7 @@ def build_pdf():
     story.append(Paragraph("Windows (Development/Testing)", styles['SubSection']))
     story.append(code_block(
         "# Clone the repository\n"
-        "git clone https://github.com/YOUR_REPO/blueshield.git\n"
+        "git clone https://github.com/pineconegoat/BlueShield.git\n"
         "cd blueshield\n"
         "\n"
         "# Install dependencies\n"
@@ -424,7 +434,7 @@ def build_pdf():
         "sudo apt install bluez python3-pip\n"
         "\n"
         "# Clone and install\n"
-        "git clone https://github.com/YOUR_REPO/blueshield.git\n"
+        "git clone https://github.com/pineconegoat/BlueShield.git\n"
         "cd blueshield\n"
         "pip3 install -r requirements.txt\n"
         "\n"
@@ -452,10 +462,10 @@ def build_pdf():
     sections = [
         ["Section", "Description"],
         ["Summary Cards", "Total devices, known/trusted, unknown, alerts, scan count"],
-        ["Device Table", "Live-updating table with address, name, type, RSSI, alert level, seen count"],
-        ["Jammer Controls", "Mode selection (sweep/continuous/reactive), channel, start/stop"],
-        ["RSSI Chart", "Visual signal strength bars for top detected devices"],
-        ["Alert Feed", "Scrolling log of security alerts with timestamps"],
+        ["Device Table", "Live table: address, name, category, manufacturer, type, RSSI, signal bar, alert, seen count, trust action"],
+        ["Jammer Controls", "Mode selection (sweep/continuous/reactive/targeted), channel, target address, backend indicator"],
+        ["RSSI Chart", "Signal strength bars with device category icons for top detected devices"],
+        ["Alert Feed", "Scrolling log of security alerts with timestamps and severity"],
         ["Scan Controls", "Manual scan button, auto-scan toggle, interval slider"],
     ]
     story.append(make_table(sections[0], sections[1:], [1.5*inch, 4.8*inch]))
@@ -487,15 +497,28 @@ def build_pdf():
         ["Mode", "Description", "Use Case"],
         ["Sweep", "Cycles across all BLE advertising channels (37, 38, 39)", "General disruption testing"],
         ["Continuous", "Jams a single BLE advertising channel continuously", "Targeted channel testing"],
-        ["Reactive", "Activates when unknown device is detected", "Automated defense research"],
+        ["Reactive", "Alternates between scan and jam bursts when threats detected", "Automated defense research"],
+        ["Targeted", "Focuses jamming on a specific device MAC address", "Isolating a rogue device"],
     ]
     story.append(make_table(modes[0], modes[1:], [1.3*inch, 3.0*inch, 2.0*inch]))
     story.append(Spacer(1, 8))
 
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Jammer Backends", styles['SubSection']))
     story.append(Paragraph(
-        "The jammer requires Linux with BlueZ and root privileges. On Windows, "
-        "the jammer operates in simulated mode for dashboard testing purposes only.",
+        "The jammer supports two backends. On Linux with root access, it first attempts a "
+        "raw HCI socket connection for maximum speed (~1000+ packets/sec). If raw sockets are "
+        "unavailable, it falls back to hcitool subprocess calls. On Windows, the jammer operates "
+        "in simulated mode for dashboard testing only.",
         styles['Body']))
+
+    backends = [
+        ["Backend", "Speed", "Requirements"],
+        ["Raw HCI Socket", "~1000+ pkt/sec", "Linux, root, AF_BLUETOOTH support"],
+        ["hcitool (fallback)", "~100 pkt/sec", "Linux, BlueZ, hcitool installed"],
+        ["Simulated", "N/A (counter only)", "Any OS (dashboard testing)"],
+    ]
+    story.append(make_table(backends[0], backends[1:], [1.5*inch, 1.5*inch, 3.3*inch]))
 
     story.append(PageBreak())
 
