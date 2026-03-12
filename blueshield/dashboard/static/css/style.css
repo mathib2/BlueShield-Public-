@@ -671,6 +671,45 @@ body {
     }
 }
 
+/* ── New: Category badges ──────────────────────────── */
+.cat-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--cyan);
+    background: rgba(0, 229, 255, 0.08);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.mono {
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
+}
+
+/* ── New: Target input field ──────────────────────── */
+.input-field {
+    width: 100%;
+    padding: 0.4rem 0.6rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-family: 'Courier New', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.input-field:focus {
+    border-color: var(--cyan);
+}
+.input-field::placeholder {
+    color: var(--text-muted);
+}
+
 @media (max-width: 768px) {
     .summary-cards {
         flex-wrap: wrap;

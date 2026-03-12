@@ -108,7 +108,7 @@ function updateSummaryCards(summary) {
 function updateDeviceTable(devices) {
     const tbody = document.getElementById("device-table-body");
     if (!devices || devices.length === 0) {
-        tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No devices detected yet...</td></tr>';
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="10">No devices detected yet...</td></tr>';
         return;
     }
 
@@ -133,9 +133,20 @@ function updateDeviceTable(devices) {
             ? `<button class="btn-whitelist" onclick="whitelistDevice('${dev.address}')">Trust</button>`
             : '<span style="color:var(--green);font-size:0.7rem;">Trusted</span>';
 
+        // Category with icon
+        const catIcon = dev.category_icon || "&#10067;";
+        const catName = (dev.category || "unknown");
+        const catDisplay = catName.charAt(0).toUpperCase() + catName.slice(1);
+
+        // Manufacturer (truncate if long)
+        const mfr = dev.manufacturer || "Unknown";
+        const mfrShort = mfr.length > 18 ? mfr.substring(0, 16) + "\u2026" : mfr;
+
         return `<tr class="${rowClass}">
-            <td>${dev.address}</td>
+            <td><span class="mono">${dev.address}</span></td>
             <td style="color:var(--text-primary)">${dev.name || "Unknown"}</td>
+            <td><span class="cat-badge">${catIcon} ${catDisplay}</span></td>
+            <td><span style="color:var(--text-secondary);font-size:0.75rem;" title="${mfr}">${mfrShort}</span></td>
             <td><span style="color:var(--cyan)">${dev.device_type || "?"}</span></td>
             <td>${rssi} dBm</td>
             <td>
@@ -171,11 +182,12 @@ function updateRSSIChart(devices) {
     container.innerHTML = sorted.map(dev => {
         const rssi = dev.rssi || -100;
         const pct = Math.max(0, Math.min(100, ((rssi + 100) / 70) * 100));
+        const icon = dev.category_icon || "";
         const name = (dev.name || dev.address).substring(0, 14);
         const bgPos = `${100 - pct}%`;
 
         return `<div class="rssi-row">
-            <span class="rssi-name">${name}</span>
+            <span class="rssi-name">${icon} ${name}</span>
             <div class="rssi-bar-outer">
                 <div class="rssi-bar-inner" style="width:${pct}%;background-position:${bgPos} 0"></div>
             </div>
@@ -211,6 +223,12 @@ function updateJammerPanel(status) {
         badge.classList.remove("jamming");
         stats.style.display = "none";
     }
+
+    // Show backend type
+    const backendEl = document.getElementById("jam-backend-display");
+    if (backendEl && status.backend) {
+        backendEl.textContent = status.backend === "raw_hci" ? "Raw HCI (Fast)" : "hcitool";
+    }
 }
 
 function updateAlertFeed(alerts) {
@@ -243,7 +261,6 @@ function updateAlertFeed(alerts) {
 
 function addAlertEntry(alert) {
     const feed = document.getElementById("alert-feed");
-    // Remove empty state if present
     const empty = feed.querySelector(".empty-state");
     if (empty) empty.remove();
 
@@ -261,7 +278,6 @@ function addAlertEntry(alert) {
     `;
     feed.insertBefore(entry, feed.firstChild);
 
-    // Keep max 50
     while (feed.children.length > 50) {
         feed.removeChild(feed.lastChild);
     }
@@ -326,10 +342,12 @@ document.getElementById("btn-jam-toggle").addEventListener("click", async () => 
     } else {
         const mode = document.getElementById("jammer-mode").value;
         const channel = document.getElementById("jammer-channel").value;
+        const targetInput = document.getElementById("jammer-target");
+        const target = targetInput ? targetInput.value.trim() : "";
         await fetch("/api/jammer/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode, channel: parseInt(channel) }),
+            body: JSON.stringify({ mode, channel: parseInt(channel), target }),
         });
     }
 });
@@ -371,6 +389,18 @@ async function whitelistDevice(address) {
     });
 }
 
+// ── Jammer mode toggle for target input ─────────────────────────
+
+const jammerModeSelect = document.getElementById("jammer-mode");
+if (jammerModeSelect) {
+    jammerModeSelect.addEventListener("change", () => {
+        const targetGroup = document.getElementById("target-group");
+        if (targetGroup) {
+            targetGroup.style.display = jammerModeSelect.value === "targeted" ? "block" : "none";
+        }
+    });
+}
+
 // ── Utilities ───────────────────────────────────────────────────
 
 function formatTime(iso) {
@@ -388,7 +418,7 @@ setInterval(() => {
     document.getElementById("clock").textContent = new Date().toLocaleTimeString("en-US", { hour12: false });
 }, 1000);
 
-// Periodic jammer stats refresh (for packet counter)
+// Periodic jammer stats refresh
 setInterval(async () => {
     if (isJamming) {
         try {
@@ -399,5 +429,5 @@ setInterval(async () => {
     }
 }, 1000);
 
-// Fallback status poll in case WebSocket drops
+// Fallback status poll
 setInterval(fetchStatus, 15000);
