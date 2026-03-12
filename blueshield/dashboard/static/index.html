@@ -72,6 +72,8 @@
                         <tr>
                             <th>Address</th>
                             <th>Name</th>
+                            <th>Category</th>
+                            <th>Manufacturer</th>
                             <th>Type</th>
                             <th>RSSI</th>
                             <th>Signal</th>
@@ -82,7 +84,7 @@
                     </thead>
                     <tbody id="device-table-body">
                         <tr class="empty-row">
-                            <td colspan="8">Waiting for first scan...</td>
+                            <td colspan="10">Waiting for first scan...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -103,6 +105,7 @@
                             <option value="sweep">Sweep (All Channels)</option>
                             <option value="continuous">Continuous (Single Ch)</option>
                             <option value="reactive">Reactive</option>
+                            <option value="targeted">Targeted (Address)</option>
                         </select>
                     </div>
                     <div class="control-group">
@@ -112,6 +115,10 @@
                             <option value="38">Ch 38</option>
                             <option value="39" selected>Ch 39</option>
                         </select>
+                    </div>
+                    <div class="control-group" id="target-group" style="display:none;">
+                        <label>Target Address</label>
+                        <input type="text" id="jammer-target" placeholder="AA:BB:CC:DD:EE:FF" class="input-field">
                     </div>
                     <button id="btn-jam-toggle" class="btn btn-jam">Start Jammer</button>
                     <div class="jammer-stats" id="jammer-stats" style="display:none;">
@@ -126,6 +133,10 @@
                         <div class="stat-row">
                             <span>Channel:</span>
                             <span id="jam-channel-display" class="stat-value">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Backend:</span>
+                            <span id="jam-backend-display" class="stat-value">--</span>
                         </div>
                     </div>
                     <div class="jammer-warning">

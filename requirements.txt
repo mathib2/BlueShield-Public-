@@ -1,11 +1,11 @@
 # BlueShield - Bluetooth Security Monitor
 # Core (cross-platform)
 bleak>=0.21.0          # BLE scanning (Windows/Linux/macOS)
+bluetooth-numbers>=1.0.0  # Bluetooth SIG company/service ID resolution
 
 # Web Dashboard
 flask>=3.0.0
 flask-socketio>=5.3.0
-eventlet>=0.35.0
 
 # Linux/Raspberry Pi only (uncomment on RPi)
 # pybluez2>=0.46        # Classic Bluetooth scanning
