@@ -1,23 +1,46 @@
 """
-BlueShield BLE Fingerprinting Engine
+BlueShield BLE Fingerprinting Engine v4.0
 
 Clusters BLE devices by behavioral fingerprint to defeat MAC address randomization.
-Instead of tracking by MAC, we build a feature vector from:
-  - Manufacturer ID
-  - Payload length
-  - Service UUIDs
-  - RSSI trajectory
-  - Advertisement interval timing
-
-Then use similarity scoring to cluster rotating MACs into single "physical devices".
+Features:
+  - Enhanced similarity scoring with advertisement intervals, name similarity,
+    payload patterns, and improved temporal correlation
+  - Cluster confidence scoring (0.0 - 1.0)
+  - Rolling RSSI history per fingerprint (for charts and trend analysis)
+  - Ecosystem classification (Apple, Samsung, Google, etc.)
+  - Risk and tracker integration points
 """
 
 import time
 import hashlib
+import math
 from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from statistics import mean, stdev
 from typing import Optional
+
+
+# ── Ecosystem mapping ────────────────────────────────────────────────────────
+
+MANUFACTURER_ECOSYSTEM = {
+    76: "apple",       # Apple Inc.
+    6: "microsoft",    # Microsoft
+    117: "samsung",    # Samsung
+    224: "google",     # Google
+    87: "garmin",      # Garmin
+    89: "nordic",      # Nordic Semiconductor
+    301: "bose",       # Bose
+    269: "fitbit",     # Fitbit (Google)
+    343: "sony",       # Sony (via TI)
+    637: "jbl",        # JBL / Harman
+    171: "amazon",     # Amazon
+    283: "xiaomi",     # Xiaomi
+    741: "tile",       # Tile
+    1452: "logitech",  # Logitech
+    1177: "fitbit",    # Fitbit
+    1370: "jbl",       # JBL
+    2558: "meta",      # Meta Platforms
+}
 
 
 @dataclass
@@ -34,6 +57,8 @@ class AdvertisementRecord:
     category: str = "unknown"
     category_icon: str = ""
     manufacturer_name: str = "Unknown"
+    mfr_data_bytes: bytes = b""       # raw manufacturer data
+    raw_adv_data: dict = field(default_factory=dict)  # full raw advertisement
 
 
 @dataclass
@@ -46,7 +71,7 @@ class DeviceFingerprint:
     service_uuids: list = field(default_factory=list)
     avg_rssi: float = -100.0
     rssi_stdev: float = 0.0
-    adv_interval: float = 0.0  # seconds between advertisements
+    adv_interval: float = 0.0          # seconds between advertisements
     best_name: str = "Unknown"
     category: str = "unknown"
     category_icon: str = ""
@@ -56,6 +81,19 @@ class DeviceFingerprint:
     observation_count: int = 0
     is_known: bool = False
     alert_level: str = "warning"
+    # ── v4 new fields ──
+    confidence_score: float = 0.0       # cluster confidence 0.0 - 1.0
+    risk_score: int = 0                 # 0-100 from risk engine
+    risk_level: str = "low"             # low/medium/high/critical
+    risk_factors: list = field(default_factory=list)
+    rssi_trend: str = "stationary"      # approaching / leaving / stationary
+    tracker_suspect: bool = False
+    tracker_type: str = ""
+    tracker_confidence: float = 0.0
+    ecosystem: str = ""                 # apple, samsung, google, etc.
+    movement_indicator: str = "stationary"
+    rssi_history: list = field(default_factory=list)  # [(timestamp, rssi), ...]
+    raw_adv_data: dict = field(default_factory=dict)  # latest raw advertisement
 
     def to_dict(self):
         d = asdict(self)
@@ -69,6 +107,12 @@ class DeviceFingerprint:
             d["duration_display"] = f"{int(dur // 60)}m {int(dur % 60)}s"
         else:
             d["duration_display"] = f"{int(dur // 3600)}h {int((dur % 3600) // 60)}m"
+        # Trim rssi_history for frontend (last 30 points)
+        d["rssi_history"] = [(round(t, 1), r) for t, r in self.rssi_history[-30:]]
+        # Remove raw bytes (not JSON serializable)
+        d.pop("raw_adv_data", None)
+        # Add readable raw_adv for packet inspector
+        d["packet_data"] = self.raw_adv_data if self.raw_adv_data else {}
         return d
 
 
@@ -85,14 +129,13 @@ class BLEFingerprintEngine:
     PAYLOAD_LEN_WEIGHT = 2
     SERVICE_UUID_WEIGHT = 2
     RSSI_WEIGHT = 1
-    MIN_SIMILARITY_SCORE = 5  # minimum to consider same device
+    INTERVAL_WEIGHT = 2
+    NAME_WEIGHT = 2
+    TEMPORAL_WEIGHT = 2
+    CATEGORY_WEIGHT = 1
+    MIN_SIMILARITY_SCORE = 6  # raised from 5 for fewer false positives
 
     def __init__(self, max_observations: int = 5000, cluster_window: float = 300.0):
-        """
-        Args:
-            max_observations: Max advertisement records to keep in memory
-            cluster_window: Time window (seconds) for clustering analysis
-        """
         self.observations: deque[AdvertisementRecord] = deque(maxlen=max_observations)
         self.cluster_window = cluster_window
 
@@ -108,11 +151,19 @@ class BLEFingerprintEngine:
         # Known (trusted) fingerprint IDs
         self.known_fingerprints: set[str] = set()
 
+        # Rolling RSSI history per fingerprint_id
+        self._rssi_history: dict[str, deque] = defaultdict(lambda: deque(maxlen=60))
+
+        # Track MAC disappearance times for rotation detection
+        self._mac_last_seen: dict[str, float] = {}
+
     def record_advertisement(self, mac: str, rssi: int, payload_len: int,
                               manufacturer_id: int, service_uuids: list,
                               name: str = "", tx_power: int = 0,
                               category: str = "unknown", category_icon: str = "",
-                              manufacturer_name: str = "Unknown"):
+                              manufacturer_name: str = "Unknown",
+                              mfr_data_bytes: bytes = b"",
+                              raw_adv_data: dict = None):
         """Record a single BLE advertisement observation."""
         record = AdvertisementRecord(
             timestamp=time.time(),
@@ -126,9 +177,12 @@ class BLEFingerprintEngine:
             category=category,
             category_icon=category_icon,
             manufacturer_name=manufacturer_name,
+            mfr_data_bytes=mfr_data_bytes if isinstance(mfr_data_bytes, bytes) else b"",
+            raw_adv_data=raw_adv_data or {},
         )
         self.observations.append(record)
         self._mac_observations[mac.upper()].append(record)
+        self._mac_last_seen[mac.upper()] = time.time()
 
         # Trim old observations per MAC
         cutoff = time.time() - self.cluster_window
@@ -153,7 +207,6 @@ class BLEFingerprintEngine:
         adv_interval = 0.0
         if len(timestamps) > 1:
             diffs = [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
-            # Filter out gaps > 5 seconds (likely missed packets)
             short_diffs = [d for d in diffs if d < 5.0]
             if short_diffs:
                 adv_interval = mean(short_diffs)
@@ -161,6 +214,9 @@ class BLEFingerprintEngine:
         # Best name (prefer non-Unknown)
         names = [r.name for r in records if r.name and r.name != "Unknown"]
         best_name = names[-1] if names else "Unknown"
+
+        # All names for similarity comparison
+        all_names = list(set(n.lower() for n in names)) if names else []
 
         # Most common manufacturer
         mfr_ids = [r.manufacturer_id for r in records if r.manufacturer_id != 0]
@@ -182,78 +238,201 @@ class BLEFingerprintEngine:
         icons = [r.category_icon for r in records if r.category_icon]
         icon = icons[-1] if icons else ""
 
+        # Payload length distribution (pattern, not just average)
+        payload_mode = max(set(payload_lens), key=payload_lens.count) if payload_lens else 0
+
+        # Latest raw advertisement data
+        latest_raw = {}
+        latest_mfr_bytes = b""
+        for r in reversed(records):
+            if r.raw_adv_data:
+                latest_raw = r.raw_adv_data
+                break
+        for r in reversed(records):
+            if r.mfr_data_bytes:
+                latest_mfr_bytes = r.mfr_data_bytes
+                break
+
         return {
             "mac": mac,
             "manufacturer_id": mfr_id,
             "manufacturer_name": mfr_name,
             "avg_payload_len": mean(payload_lens) if payload_lens else 0,
+            "payload_mode": payload_mode,
             "service_uuids": sorted(all_uuids),
             "avg_rssi": mean(rssi_values) if rssi_values else -100,
             "rssi_stdev": stdev(rssi_values) if len(rssi_values) > 1 else 0,
             "adv_interval": adv_interval,
             "best_name": best_name,
+            "all_names": all_names,
             "category": category,
             "category_icon": icon,
             "first_seen": timestamps[0] if timestamps else 0,
             "last_seen": timestamps[-1] if timestamps else 0,
             "observation_count": len(records),
+            "rssi_history": [(r.timestamp, r.rssi) for r in records if r.rssi != 0],
+            "raw_adv_data": latest_raw,
+            "mfr_data_bytes": latest_mfr_bytes,
         }
 
     def _similarity_score(self, fp1: dict, fp2: dict) -> int:
         """Calculate similarity between two MAC fingerprints.
 
-        Higher score = more likely same physical device.
+        Enhanced scoring with interval matching, name similarity,
+        payload pattern matching, and improved temporal correlation.
         """
         score = 0
 
-        # Same manufacturer ID (strong signal)
+        # 1. Same manufacturer ID (strong signal)
         if fp1["manufacturer_id"] and fp2["manufacturer_id"]:
             if fp1["manufacturer_id"] == fp2["manufacturer_id"]:
                 score += self.MANUFACTURER_WEIGHT
             else:
                 score -= 3  # Different manufacturers = definitely different devices
 
-        # Similar payload length
-        if abs(fp1["avg_payload_len"] - fp2["avg_payload_len"]) < 2:
+        # 2. Similar payload length (mode-based for better pattern matching)
+        payload_diff = abs(fp1["avg_payload_len"] - fp2["avg_payload_len"])
+        if payload_diff < 2:
             score += self.PAYLOAD_LEN_WEIGHT
+        elif payload_diff < 4:
+            score += 1  # Partial credit
 
-        # Overlapping service UUIDs
+        # 3. Overlapping service UUIDs
         uuids1 = set(fp1["service_uuids"])
         uuids2 = set(fp2["service_uuids"])
         if uuids1 and uuids2:
             overlap = len(uuids1 & uuids2) / max(len(uuids1 | uuids2), 1)
             if overlap > 0.5:
                 score += self.SERVICE_UUID_WEIGHT
+            elif overlap > 0.25:
+                score += 1
 
-        # Similar RSSI (proximity)
-        if abs(fp1["avg_rssi"] - fp2["avg_rssi"]) < 8:
+        # 4. Similar RSSI (proximity)
+        rssi_diff = abs(fp1["avg_rssi"] - fp2["avg_rssi"])
+        if rssi_diff < 8:
             score += self.RSSI_WEIGHT
 
-        # Temporal: one disappears as other appears (MAC rotation)
-        if fp1["last_seen"] and fp2["first_seen"]:
-            gap = abs(fp2["first_seen"] - fp1["last_seen"])
-            if gap < 3.0:  # Within 3 seconds
-                score += 2
+        # 5. Advertisement interval matching (NEW)
+        if fp1["adv_interval"] > 0 and fp2["adv_interval"] > 0:
+            interval_diff = abs(fp1["adv_interval"] - fp2["adv_interval"])
+            if interval_diff < 0.05:
+                score += self.INTERVAL_WEIGHT
+            elif interval_diff < 0.15:
+                score += 1
 
-        # Same category boost
+        # 6. Name similarity (NEW)
+        names1 = fp1.get("all_names", [])
+        names2 = fp2.get("all_names", [])
+        if names1 and names2:
+            # Check for shared prefix or substring
+            for n1 in names1:
+                for n2 in names2:
+                    if n1 and n2:
+                        # Common prefix of at least 4 characters
+                        common_prefix = 0
+                        for a, b in zip(n1, n2):
+                            if a == b:
+                                common_prefix += 1
+                            else:
+                                break
+                        if common_prefix >= 4:
+                            score += self.NAME_WEIGHT
+                            break
+                        # One contains the other
+                        if len(n1) > 3 and len(n2) > 3 and (n1 in n2 or n2 in n1):
+                            score += self.NAME_WEIGHT
+                            break
+                else:
+                    continue
+                break
+
+        # 7. Temporal: MAC rotation detection (ENHANCED)
+        # Check if one disappears as other appears
+        gap1 = abs(fp2["first_seen"] - fp1["last_seen"]) if fp1["last_seen"] and fp2["first_seen"] else 999
+        gap2 = abs(fp1["first_seen"] - fp2["last_seen"]) if fp2["last_seen"] and fp1["first_seen"] else 999
+        min_gap = min(gap1, gap2)
+        if min_gap < 2.0:
+            score += self.TEMPORAL_WEIGHT + 1  # Strong rotation signal
+        elif min_gap < 5.0:
+            score += self.TEMPORAL_WEIGHT
+
+        # 8. Same category boost
         if fp1["category"] == fp2["category"] and fp1["category"] != "unknown":
-            score += 1
+            score += self.CATEGORY_WEIGHT
 
         return score
 
+    def _calculate_cluster_confidence(self, cluster_fps: list) -> float:
+        """Calculate confidence score for a cluster (0.0 - 1.0).
+
+        Based on consistency of features across cluster members.
+        """
+        if len(cluster_fps) <= 1:
+            return 0.8  # Single MAC = moderate confidence
+
+        score = 0.0
+        checks = 0
+
+        # Manufacturer consistency
+        mfr_ids = [fp["manufacturer_id"] for fp in cluster_fps if fp["manufacturer_id"]]
+        if mfr_ids:
+            checks += 1
+            if len(set(mfr_ids)) == 1:
+                score += 1.0
+            else:
+                score += 0.3
+
+        # Payload length consistency
+        payloads = [fp["avg_payload_len"] for fp in cluster_fps]
+        if payloads and max(payloads) - min(payloads) < 3:
+            checks += 1
+            score += 1.0
+        elif payloads:
+            checks += 1
+            score += 0.4
+
+        # Service UUID overlap quality
+        all_uuid_sets = [set(fp["service_uuids"]) for fp in cluster_fps if fp["service_uuids"]]
+        if len(all_uuid_sets) >= 2:
+            checks += 1
+            intersection = all_uuid_sets[0]
+            for s in all_uuid_sets[1:]:
+                intersection &= s
+            union = set()
+            for s in all_uuid_sets:
+                union |= s
+            if union:
+                score += len(intersection) / len(union)
+            else:
+                score += 0.5
+
+        # Category consistency
+        cats = [fp["category"] for fp in cluster_fps if fp["category"] != "unknown"]
+        if cats:
+            checks += 1
+            if len(set(cats)) == 1:
+                score += 1.0
+            else:
+                score += 0.2
+
+        if checks == 0:
+            return 0.5
+        return min(score / checks, 1.0)
+
+    @staticmethod
+    def _assign_ecosystem(manufacturer_id: int) -> str:
+        """Map manufacturer ID to ecosystem string."""
+        return MANUFACTURER_ECOSYSTEM.get(manufacturer_id, "")
+
     def _generate_fingerprint_id(self, fp: dict) -> str:
         """Generate a stable ID for a fingerprint cluster."""
-        # Hash based on key behavioral features
         key = f"{fp['manufacturer_id']}:{fp['avg_payload_len']:.0f}:{','.join(fp['service_uuids'][:3])}"
         return "FP-" + hashlib.md5(key.encode()).hexdigest()[:8].upper()
 
     def run_clustering(self) -> dict[str, DeviceFingerprint]:
         """Re-cluster all observed MACs into physical device groups.
 
-        Uses greedy similarity-based clustering:
-        1. Build fingerprint for each active MAC
-        2. Compare all pairs
-        3. Merge similar fingerprints into clusters
+        Uses greedy similarity-based clustering with enhanced scoring.
         """
         active_macs = list(self._mac_observations.keys())
         if not active_macs:
@@ -310,11 +489,33 @@ class BLEFingerprintEngine:
 
             # Check if this cluster was previously known
             is_known = fp_id in self.known_fingerprints
-            # Also check if any MAC in the cluster was trusted
             for m in cluster_macs:
                 if m in self._mac_to_cluster and self._mac_to_cluster[m] in self.known_fingerprints:
                     is_known = True
                     self.known_fingerprints.add(fp_id)
+                    break
+
+            # Calculate confidence
+            confidence = self._calculate_cluster_confidence(cluster_fps)
+
+            # Determine ecosystem
+            ecosystem = self._assign_ecosystem(cluster_fps[0]["manufacturer_id"])
+
+            # Merge RSSI histories from all MACs in cluster
+            merged_rssi = []
+            for fp in cluster_fps:
+                merged_rssi.extend(fp.get("rssi_history", []))
+            merged_rssi.sort(key=lambda x: x[0])  # sort by timestamp
+
+            # Update persistent RSSI history for this fingerprint
+            for t, r in merged_rssi:
+                self._rssi_history[fp_id].append((t, r))
+
+            # Get latest raw advertisement data
+            latest_raw = {}
+            for fp in reversed(cluster_fps):
+                if fp.get("raw_adv_data"):
+                    latest_raw = fp["raw_adv_data"]
                     break
 
             device_fp = DeviceFingerprint(
@@ -335,6 +536,10 @@ class BLEFingerprintEngine:
                 observation_count=sum(fp["observation_count"] for fp in cluster_fps),
                 is_known=is_known,
                 alert_level="none" if is_known else "warning",
+                confidence_score=confidence,
+                ecosystem=ecosystem,
+                rssi_history=list(self._rssi_history[fp_id]),
+                raw_adv_data=latest_raw,
             )
 
             new_clusters[fp_id] = device_fp
@@ -379,6 +584,11 @@ class BLEFingerprintEngine:
             cat = d.category or "unknown"
             categories[cat] = categories.get(cat, 0) + 1
 
+        ecosystems = {}
+        for d in self.clusters.values():
+            eco = d.ecosystem or "other"
+            ecosystems[eco] = ecosystems.get(eco, 0) + 1
+
         return {
             "total_physical_devices": total,
             "known_devices": known,
@@ -386,7 +596,12 @@ class BLEFingerprintEngine:
             "total_mac_addresses": total_macs,
             "mac_reduction": total_macs - total if total_macs > total else 0,
             "categories": categories,
+            "ecosystems": ecosystems,
         }
+
+    def get_rssi_history(self, fingerprint_id: str) -> list:
+        """Get RSSI history for a specific fingerprint."""
+        return list(self._rssi_history.get(fingerprint_id, []))
 
     def get_fingerprint_for_mac(self, mac: str) -> Optional[str]:
         """Get the fingerprint ID for a given MAC address."""

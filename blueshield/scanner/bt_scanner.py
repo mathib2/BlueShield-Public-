@@ -315,12 +315,14 @@ class BluetoothScanner:
                 mfr_id_main = 0
                 mfr_ids = []
                 raw_mfr_data_len = 0
+                mfr_data_raw = b""
                 if advertisement_data and advertisement_data.manufacturer_data:
                     for mfr_id, mfr_bytes in advertisement_data.manufacturer_data.items():
                         mfr_ids.append(mfr_id)
                         mfr_id_main = mfr_id
                         manufacturer = resolve_company(mfr_id)
                         raw_mfr_data_len = len(mfr_bytes)
+                        mfr_data_raw = bytes(mfr_bytes)
                         # Decode Apple continuity data
                         if mfr_id == 76 and len(mfr_bytes) >= 2:
                             apple_type = decode_apple_device(mfr_bytes)
@@ -347,6 +349,21 @@ class BluetoothScanner:
                 category = classify_device(display_name, manufacturer, svc_uuids, rssi)
                 icon = CATEGORY_ICONS.get(category, "❓")
 
+                # ── Build raw advertisement data for packet inspector ──
+                raw_adv = {
+                    "manufacturer_id": mfr_id_main,
+                    "manufacturer_data_hex": mfr_data_raw.hex() if mfr_data_raw else "",
+                    "manufacturer_data_len": raw_mfr_data_len,
+                    "service_uuids": svc_uuids,
+                    "service_data": {},
+                    "tx_power": tx_power,
+                    "local_name": display_name,
+                    "flags": "",
+                }
+                if advertisement_data and hasattr(advertisement_data, "service_data"):
+                    for uuid, data in (advertisement_data.service_data or {}).items():
+                        raw_adv["service_data"][str(uuid)] = bytes(data).hex()
+
                 found_devices[device.address] = {
                     "address": device.address,
                     "name": display_name,
@@ -358,6 +375,8 @@ class BluetoothScanner:
                     "service_uuids": svc_uuids,
                     "tx_power": tx_power,
                     "payload_len": payload_len,
+                    "mfr_data_bytes": mfr_data_raw,
+                    "raw_adv_data": raw_adv,
                 }
 
             scanner = BleakScanner(detection_callback=detection_callback)
@@ -381,6 +400,8 @@ class BluetoothScanner:
                 dev._fingerprint_data = {
                     "manufacturer_id": info["manufacturer_id"],
                     "payload_len": info["payload_len"],
+                    "mfr_data_bytes": info.get("mfr_data_bytes", b""),
+                    "raw_adv_data": info.get("raw_adv_data", {}),
                 }
                 devices.append(dev)
         except ImportError:
@@ -597,43 +618,94 @@ class BluetoothScanner:
 # --- Simulated scanner for development/demo without hardware ---
 
 class SimulatedScanner(BluetoothScanner):
-    """Simulated scanner for testing the dashboard without Bluetooth hardware."""
+    """Simulated scanner for testing the dashboard without Bluetooth hardware.
+
+    Includes tracker simulation, MAC rotation, approaching devices, and
+    realistic advertisement data for all v4 features.
+    """
 
     import random
 
+    # (addr, name, type, base_rssi, manufacturer, mfr_id, category, icon, svc_uuids, tx_power)
     FAKE_DEVICES = [
-        ("AA:BB:CC:DD:EE:01", "iPhone 14 Pro", "ble", -45, "Apple, Inc.", "phone", "📱"),
-        ("AA:BB:CC:DD:EE:02", "AirPods Pro", "ble", -30, "Apple, Inc.", "audio", "🎧"),
-        ("AA:BB:CC:DD:EE:03", "Galaxy Buds2", "ble", -55, "Samsung Electronics", "audio", "🎧"),
-        ("AA:BB:CC:DD:EE:04", "JBL Flip 6", "classic", -60, "JBL", "audio", "🎧"),
-        ("AA:BB:CC:DD:EE:05", "Unknown Device", "ble", -70, "Unknown", "unknown", "❓"),
-        ("AA:BB:CC:DD:EE:06", "Logitech MX Keys", "ble", -35, "Logitech", "input", "🖱️"),
-        ("AA:BB:CC:DD:EE:07", "Fitbit Sense", "ble", -50, "Fitbit", "watch", "⌚"),
-        ("AA:BB:CC:DD:EE:08", "SUSPICIOUS_DEVICE", "ble", -80, "Unknown", "unknown", "❓"),
-        ("AA:BB:CC:DD:EE:09", "RPi-Attacker", "classic", -90, "Unknown", "unknown", "❓"),
-        ("AA:BB:CC:DD:EE:0A", "Apple Watch S9", "ble", -42, "Apple, Inc.", "watch", "⌚"),
-        ("AA:BB:CC:DD:EE:0B", "MacBook Pro", "ble", -40, "Apple, Inc.", "computer", "💻"),
-        ("AA:BB:CC:DD:EE:0C", "Bose QC45", "classic", -38, "Bose Corporation", "audio", "🎧"),
+        ("AA:BB:CC:DD:EE:01", "iPhone 14 Pro", "ble", -45, "Apple, Inc.", 76, "phone", "📱", ["fd6f"], -12),
+        ("AA:BB:CC:DD:EE:02", "AirPods Pro 2", "ble", -30, "Apple, Inc.", 76, "audio", "🎧", ["fe9f"], -8),
+        ("AA:BB:CC:DD:EE:03", "Galaxy Buds2 Pro", "ble", -55, "Samsung Electronics", 117, "audio", "🎧", ["fd5a"], -10),
+        ("AA:BB:CC:DD:EE:04", "JBL Flip 6", "classic", -60, "JBL", 1370, "audio", "🎧", [], 0),
+        ("AA:BB:CC:DD:EE:05", "Unknown Device", "ble", -70, "Unknown", 0, "unknown", "❓", [], 0),
+        ("AA:BB:CC:DD:EE:06", "Logitech MX Keys", "ble", -35, "Logitech", 1452, "input", "🖱️", ["1812"], -4),
+        ("AA:BB:CC:DD:EE:07", "Fitbit Sense 2", "ble", -50, "Fitbit", 1177, "watch", "⌚", ["180d"], -6),
+        ("AA:BB:CC:DD:EE:08", "SUSPICIOUS_DEVICE", "ble", -80, "Unknown", 0, "unknown", "❓", [], 0),
+        ("AA:BB:CC:DD:EE:09", "RPi-Attacker", "classic", -90, "Unknown", 0, "unknown", "❓", [], 0),
+        ("AA:BB:CC:DD:EE:0A", "Apple Watch Ultra", "ble", -42, "Apple, Inc.", 76, "watch", "⌚", [], -10),
+        ("AA:BB:CC:DD:EE:0B", "MacBook Pro", "ble", -40, "Apple, Inc.", 76, "computer", "💻", [], -12),
+        ("AA:BB:CC:DD:EE:0C", "Bose QC Ultra", "classic", -38, "Bose Corporation", 301, "audio", "🎧", ["febe"], -8),
+        # Trackers
+        ("AA:BB:CC:DD:EE:0D", "AirTag", "ble", -62, "Apple, Inc.", 76, "tracker", "📍", ["fd6f"], -12),
+        ("AA:BB:CC:DD:EE:0E", "SmartTag2", "ble", -68, "Samsung Electronics", 117, "tracker", "📍", ["fd5a"], -10),
+        # MAC rotation siblings (these cluster together)
+        ("AA:BB:CC:DD:EE:F1", "Unknown", "ble", -52, "Apple, Inc.", 76, "unknown", "❓", ["fe9f"], -8),
+        ("AA:BB:CC:DD:EE:F2", "Unknown", "ble", -53, "Apple, Inc.", 76, "unknown", "❓", ["fe9f"], -8),
     ]
 
-    async def run_scan(self) -> dict:
+    # Simulated approaching device (RSSI increases each scan)
+    _approach_counter = 0
+
+    async def run_scan(self, rssi_filter: int = -100) -> dict:
         import random
         self.is_scanning = True
         self.total_scans += 1
+        SimulatedScanner._approach_counter += 1
         scan_start = datetime.now(timezone.utc).isoformat()
         new_devices = []
         unknown_devices = []
 
-        num_found = random.randint(3, len(self.FAKE_DEVICES))
+        num_found = random.randint(5, len(self.FAKE_DEVICES))
         found = random.sample(self.FAKE_DEVICES, num_found)
 
         all_devs = []
-        for addr, name, dtype, base_rssi, mfr, cat, icon in found:
-            rssi = base_rssi + random.randint(-10, 10)
+        for dev_tuple in found:
+            addr, name, dtype, base_rssi, mfr, mfr_id, cat, icon, svc_uuids, tx_pwr = dev_tuple
+
+            # Simulate approaching device (SUSPICIOUS_DEVICE gets closer over time)
+            if name == "SUSPICIOUS_DEVICE":
+                rssi = min(-40, base_rssi + SimulatedScanner._approach_counter * 3)
+            elif name == "AirTag":
+                # AirTag stays at stable distance (following pattern)
+                rssi = base_rssi + random.randint(-2, 2)
+            else:
+                rssi = base_rssi + random.randint(-10, 10)
+
+            # Apply RSSI filter
+            if rssi < rssi_filter and rssi != 0:
+                continue
+
             dev = BluetoothDevice(
                 address=addr, name=name, device_type=dtype, rssi=rssi,
                 manufacturer=mfr, category=cat, category_icon=icon,
+                service_uuids=svc_uuids, tx_power=tx_pwr,
             )
+
+            # Build simulated raw advertisement data
+            mfr_data_bytes = bytes([random.randint(0, 255) for _ in range(8)])
+            if mfr_id == 76 and cat == "tracker":
+                mfr_data_bytes = bytes([0x14, 0x07] + [random.randint(0, 255) for _ in range(6)])
+
+            dev._fingerprint_data = {
+                "manufacturer_id": mfr_id,
+                "payload_len": 15 + len(name) + random.randint(0, 5),
+                "mfr_data_bytes": mfr_data_bytes,
+                "raw_adv_data": {
+                    "manufacturer_id": mfr_id,
+                    "manufacturer_data_hex": mfr_data_bytes.hex(),
+                    "manufacturer_data_len": len(mfr_data_bytes),
+                    "service_uuids": svc_uuids,
+                    "service_data": {},
+                    "tx_power": tx_pwr,
+                    "local_name": name,
+                    "flags": "LE General Discoverable",
+                },
+            }
             all_devs.append(dev)
 
             if addr in self.devices:

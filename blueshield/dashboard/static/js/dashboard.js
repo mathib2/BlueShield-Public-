@@ -1,775 +1,1115 @@
-/* ═══════════════════════════════════════════════════════════════════════
-   BlueShield v3.0 — Kismet/Ellisys-style Bluetooth Analyzer Dashboard
-   Tab-based navigation, split-pane device detail, signal heatmap,
-   event timeline, BLE channel grid, separate jammer tab.
-   ═══════════════════════════════════════════════════════════════════════ */
+/**
+ * BlueShield v4.0 — RF Intelligence Platform Dashboard
+ *
+ * Features: Tab navigation, device table (clustered/raw), split-pane detail,
+ * risk scoring, movement indicators, proximity radar, RSSI charts, tracker
+ * detection, ecosystem graph, analytics, packet inspector, ghost mode,
+ * trust/untrust toggle, configurable alerts, channel grid, timeline.
+ */
 
+/* ── Helpers ───────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/* ── State ─────────────────────────────────────────────────── */
+let currentDevices   = [];
+let currentClustered = [];
+let clusterSummary   = {};
+let trackerSuspects  = [];
+let analyticsData    = {};
+let alertRules       = [];
+let alertList        = [];
+let timeline         = [];
+let channelStats     = new Array(40).fill(0);
+let viewMode         = "clustered";       // "clustered" | "raw"
+let selectedDeviceId = null;
+let searchFilter     = "";
+let sortCol          = "";
+let sortDir          = "asc";
+let autoScan         = true;
+let jammerActive     = false;
+let startTime        = Date.now();
+let radarAnimFrame   = null;
+let radarAngle       = 0;
+let classifications  = {};
+let peopleData       = {};
+let safetyData       = {};
+let weatherData      = {};
+let scanSnapshots    = [];
+let timeTravelMode   = false;
+
+/* ── Socket.IO ─────────────────────────────────────────────── */
 const socket = io();
 
-// ── State ─────────────────────────────────────────────────────────
-let autoScan = true;
-let isJamming = false;
-let viewMode = "clustered";
-let currentDevices = [];
-let currentClustered = [];
-let currentClusterSummary = {};
-let selectedDeviceId = null;
-let scanCount = 0;
-let startTime = Date.now();
-let timeline = [];
-let channelStats = new Array(40).fill(0);
-let alertList = [];
-let searchFilter = "";
-let sortCol = null;
-let sortDir = 1;
-
-// ── Refs (cached DOM) ─────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-
-// ── Theme ─────────────────────────────────────────────────────────
-function getTheme() { return localStorage.getItem("bs-theme") || "dark"; }
-function setTheme(t) {
-    document.documentElement.setAttribute("data-theme", t);
-    localStorage.setItem("bs-theme", t);
-    $("ico-sun").style.display  = t === "dark" ? "block" : "none";
-    $("ico-moon").style.display = t === "light" ? "block" : "none";
-}
-setTheme(getTheme());
-$("btn-theme").addEventListener("click", () => setTheme(getTheme() === "dark" ? "light" : "dark"));
-
-// ── Clock ─────────────────────────────────────────────────────────
-setInterval(() => {
-    $("clock").textContent = new Date().toLocaleTimeString("en-US", { hour12: false });
-}, 1000);
-
-// ── Uptime ────────────────────────────────────────────────────────
-setInterval(() => {
-    const s = Math.floor((Date.now() - startTime) / 1000);
-    const m = Math.floor(s / 60), h = Math.floor(m / 60);
-    $("sf-uptime").textContent = h > 0 ? `${h}:${String(m % 60).padStart(2,"0")}` : `${m}:${String(s % 60).padStart(2,"0")}`;
-}, 1000);
-
-// ── Tab Navigation ────────────────────────────────────────────────
-const navItems = document.querySelectorAll(".nav-item[data-tab]");
-const tabPanes = document.querySelectorAll(".tab-pane");
-
-function switchTab(tabId) {
-    navItems.forEach(n => n.classList.toggle("active", n.dataset.tab === tabId));
-    tabPanes.forEach(p => p.classList.toggle("active", p.id === `tab-${tabId}`));
-}
-navItems.forEach(n => n.addEventListener("click", () => switchTab(n.dataset.tab)));
-
-// Sidebar collapse
-$("sidebar-toggle").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
-
-// ── Socket.IO Events ──────────────────────────────────────────────
 socket.on("connect", () => {
-    const pill = $("pill-conn");
-    pill.classList.add("on");
+    $("pill-conn").classList.add("on");
     $("conn-text").textContent = "Connected";
-    fetchStatus();
 });
-
 socket.on("disconnect", () => {
     $("pill-conn").classList.remove("on");
     $("conn-text").textContent = "Disconnected";
 });
 
-socket.on("status", data => updateAll(data));
+socket.on("status", data => {
+    currentDevices   = data.devices || [];
+    currentClustered = data.clustered_devices || [];
+    clusterSummary   = data.cluster_summary || {};
+    trackerSuspects  = data.tracker_suspects || [];
+    analyticsData    = data.analytics || {};
+    alertRules       = data.alert_rules || [];
+    if (data.people) peopleData = data.people;
+    if (data.safety) safetyData = data.safety;
+    if (data.weather) weatherData = data.weather;
+    if (data.classifications) classifications = data.classifications;
+    autoScan = data.auto_scan !== false;
+    updateAutoScanBtn();
+    updateAll();
+    updatePlatform(data.platform || {});
+    updateJammer(data.jammer || {});
+    renderAlertList(data.alerts || []);
+    renderAlertRules();
+    if (data.range_presets) $("range-select").value = Object.entries(data.range_presets).find(([k,v]) => v === data.rssi_filter)?.[0] || "all";
+    if (data.scan_interval) {
+        $("scan-interval").value = data.scan_interval;
+        $("interval-display").textContent = data.scan_interval + "s";
+    }
+});
 
 socket.on("scan_result", data => {
-    const pill = $("pill-scan");
-    pill.classList.add("scanning");
-    $("scan-text").textContent = "Scanning";
-    setTimeout(() => { pill.classList.remove("scanning"); $("scan-text").textContent = "Idle"; }, 2000);
-    scanCount++;
-    $("sf-scans").textContent = scanCount;
-    $("ss-scans").textContent = scanCount;
-
-    // Add timeline event
-    const devCount = (data.devices_found || []).length;
-    const unknowns = data.unknown_devices || 0;
-    addTimelineEvent("scan", `Scan #${scanCount}: found ${devCount} device(s), ${unknowns} unknown`);
-
-    // Simulate channel activity (randomize since BLE advertisement channels are 37-39)
-    [37, 38, 39].forEach(ch => { channelStats[ch] += Math.floor(Math.random() * devCount) + 1; });
-    // Data channels get occasional hits
-    for (let i = 0; i < 37; i++) {
-        if (Math.random() < 0.15) channelStats[i] += Math.floor(Math.random() * 3);
-    }
-    renderChannelGrid();
+    $("pill-scan").classList.remove("scanning");
+    $("scan-text").textContent = `${data.total_devices || 0} found`;
+    addTimelineEvent("scan", `Scan #${data.scan_id}: ${data.total_devices} devices, ${data.new_devices} new`);
+    simulateChannelActivity(data.total_devices || 0);
 });
 
 socket.on("device_update", data => {
-    if (data.summary) updateStats(data.summary, data.cluster_summary);
-    if (data.devices) currentDevices = data.devices;
-    if (data.clustered_devices) currentClustered = data.clustered_devices;
-    if (data.cluster_summary) currentClusterSummary = data.cluster_summary;
-    renderDeviceTable();
-    renderSignalPanels();
-    updateStatusBar();
-    if (selectedDeviceId) renderDetailPanel();
+    currentDevices   = data.devices || currentDevices;
+    currentClustered = data.clustered_devices || currentClustered;
+    clusterSummary   = data.cluster_summary || clusterSummary;
+    if (data.tracker_suspects) trackerSuspects = data.tracker_suspects;
+    if (data.analytics) analyticsData = data.analytics;
+    if (data.classifications) classifications = data.classifications;
+    if (data.people) peopleData = data.people;
+    if (data.safety) safetyData = data.safety;
+    if (data.weather) weatherData = data.weather;
+    updateAll();
 });
 
 socket.on("alert", data => {
-    const entry = { timestamp: data.timestamp, level: data.data?.level || "info", message: data.data?.message || "Alert" };
-    alertList.unshift(entry);
+    const d = data.data || data;
+    alertList.unshift(data);
     if (alertList.length > 200) alertList.length = 200;
     renderAlertList();
-    addTimelineEvent("alert", entry.message);
-    const cnt = alertList.length;
-    $("nav-alert-badge").textContent = cnt;
-    $("alert-top").textContent = cnt;
+    addTimelineEvent("alert", d.message || "Alert triggered");
+    if (d.rule_id === "tracker_detected") addTimelineEvent("tracker", d.message);
 });
 
-socket.on("jammer_update", data => updateJammerPanel(data));
+socket.on("jammer_update", data => updateJammer(data));
 socket.on("autoscan_changed", data => { autoScan = data.enabled; updateAutoScanBtn(); });
-socket.on("range_changed", data => { if (data.preset) $("range-select").value = data.preset; });
+socket.on("range_changed", data => { $("sb-range").textContent = `Range: ${data.preset || "custom"}`; });
+socket.on("ghost_mode", data => {
+    if (data.status === "shutting_down") addTimelineEvent("alert", "GHOST MODE ACTIVATED — System shutting down!");
+});
 
-// ── Fetch ─────────────────────────────────────────────────────────
-async function fetchStatus() {
-    try {
-        const r = await fetch("/api/status");
-        const d = await r.json();
-        updateAll(d);
-    } catch (e) { console.error("[BlueShield] fetch failed:", e); }
-}
-
-function updateAll(d) {
-    if (d.summary) updateStats(d.summary, d.cluster_summary);
-    if (d.devices) currentDevices = d.devices;
-    if (d.clustered_devices) currentClustered = d.clustered_devices;
-    if (d.cluster_summary) currentClusterSummary = d.cluster_summary;
-    if (d.jammer) updateJammerPanel(d.jammer);
-    if (d.alerts) { alertList = (d.alerts || []).map(a => ({ timestamp: a.timestamp, level: a.data?.level||"info", message: a.data?.message||"" })); renderAlertList(); }
-    if (d.platform) updatePlatform(d.platform);
-    if (d.auto_scan !== undefined) { autoScan = d.auto_scan; updateAutoScanBtn(); }
-    if (d.scan_interval) { $("scan-interval").value = d.scan_interval; $("interval-display").textContent = d.scan_interval + "s"; }
-    if (d.total_scans) { scanCount = d.total_scans; $("sf-scans").textContent = scanCount; $("ss-scans").textContent = scanCount; }
+/* ── Update Everything ─────────────────────────────────────── */
+function updateAll() {
     renderDeviceTable();
+    renderStatsStrip();
+    renderEnvStats();
     renderSignalPanels();
+    renderChannelGrid();
+    renderTrackerGrid();
+    renderAnalytics();
+    renderLiveDemo();
     updateStatusBar();
+    if (selectedDeviceId) renderDetailPanel();
+    $("sf-scans").textContent = clusterSummary.total_physical_devices || currentClustered.length || 0;
+    $("nav-dev-count").textContent = viewMode === "clustered" ? currentClustered.length : currentDevices.length;
 }
 
-// ── Stats Strip ───────────────────────────────────────────────────
-function updateStats(summary, cs) {
-    cs = cs || {};
-    $("ss-physical").textContent  = cs.total_physical_devices || summary.total_devices || 0;
-    $("ss-macs").textContent      = cs.total_mac_addresses || summary.total_devices || 0;
-    $("ss-trusted").textContent   = cs.known_devices || summary.known_devices || 0;
-    $("ss-unknown").textContent   = cs.unknown_devices || summary.unknown_devices || 0;
-    $("ss-clustered").textContent = cs.mac_reduction || 0;
-    $("ss-scans").textContent     = summary.total_scans || scanCount;
-    $("nav-dev-count").textContent = cs.total_physical_devices || summary.total_devices || 0;
-}
-
-// ── Device Table ──────────────────────────────────────────────────
-const CLUSTERED_COLS = [
-    { key:"fp",      label:"Device" },
-    { key:"name",    label:"Name" },
-    { key:"cat",     label:"Category" },
-    { key:"mfr",     label:"Manufacturer" },
-    { key:"rssi",    label:"RSSI" },
-    { key:"signal",  label:"Signal" },
-    { key:"macs",    label:"MACs" },
-    { key:"dur",     label:"Seen" },
-    { key:"status",  label:"Status" },
-    { key:"action",  label:"Action" },
-];
-const RAW_COLS = [
-    { key:"addr",   label:"Address" },
-    { key:"name",   label:"Name" },
-    { key:"cat",    label:"Category" },
-    { key:"mfr",    label:"Manufacturer" },
-    { key:"type",   label:"Type" },
-    { key:"rssi",   label:"RSSI" },
-    { key:"signal", label:"Signal" },
-    { key:"status", label:"Alert" },
-    { key:"seen",   label:"Seen" },
-    { key:"action", label:"Action" },
-];
-
-function renderDeviceTable() {
-    const cols = viewMode === "clustered" ? CLUSTERED_COLS : RAW_COLS;
-    const thead = $("dev-thead");
-    thead.innerHTML = cols.map(c => `<th data-col="${c.key}">${c.label}</th>`).join("");
-
-    // Attach sort handlers
-    thead.querySelectorAll("th").forEach(th => {
-        th.addEventListener("click", () => {
-            const col = th.dataset.col;
-            if (sortCol === col) sortDir *= -1;
-            else { sortCol = col; sortDir = 1; }
-            renderDeviceTable();
-        });
-    });
-
-    const tbody = $("dev-tbody");
-    let devices = viewMode === "clustered" ? [...currentClustered] : [...currentDevices];
-
-    // Apply search filter
-    if (searchFilter) {
-        const q = searchFilter.toLowerCase();
-        devices = devices.filter(d => {
-            const name = (viewMode === "clustered" ? d.best_name : d.name) || "";
-            const addr = (viewMode === "clustered" ? d.fingerprint_id : d.address) || "";
-            const mfr = (viewMode === "clustered" ? d.manufacturer_name : d.manufacturer) || "";
-            const cat = d.category || "";
-            return name.toLowerCase().includes(q) || addr.toLowerCase().includes(q) ||
-                   mfr.toLowerCase().includes(q) || cat.toLowerCase().includes(q);
-        });
-    }
-
-    // Sort
-    if (sortCol) {
-        devices.sort((a, b) => {
-            let va, vb;
-            if (viewMode === "clustered") {
-                switch(sortCol) {
-                    case "name": va = a.best_name||""; vb = b.best_name||""; break;
-                    case "rssi": va = a.avg_rssi||-100; vb = b.avg_rssi||-100; break;
-                    case "macs": va = a.mac_count||1; vb = b.mac_count||1; break;
-                    case "cat":  va = a.category||""; vb = b.category||""; break;
-                    default: va = ""; vb = "";
-                }
-            } else {
-                switch(sortCol) {
-                    case "name": va = a.name||""; vb = b.name||""; break;
-                    case "rssi": va = a.rssi||-100; vb = b.rssi||-100; break;
-                    case "addr": va = a.address||""; vb = b.address||""; break;
-                    case "seen": va = a.seen_count||0; vb = b.seen_count||0; break;
-                    default: va = ""; vb = "";
-                }
-            }
-            if (typeof va === "string") return va.localeCompare(vb) * sortDir;
-            return (va - vb) * sortDir;
-        });
-    }
-
-    if (devices.length === 0) {
-        tbody.innerHTML = `<tr class="empty-row"><td colspan="${cols.length}">Waiting for first scan...</td></tr>`;
-        return;
-    }
-
-    if (viewMode === "clustered") {
-        tbody.innerHTML = devices.map(d => renderClusteredRow(d)).join("");
-    } else {
-        tbody.innerHTML = devices.map(d => renderRawRow(d)).join("");
-    }
-
-    // Row click -> select + detail
-    tbody.querySelectorAll("tr").forEach(tr => {
-        tr.addEventListener("click", e => {
-            if (e.target.closest(".btn-trust")) return;
-            const id = tr.dataset.id;
-            if (!id) return;
-            tbody.querySelectorAll("tr").forEach(r => r.classList.remove("selected"));
-            tr.classList.add("selected");
-            selectedDeviceId = id;
-            renderDetailPanel();
-        });
-    });
-}
-
-function renderClusteredRow(d) {
-    const rssi = Math.round(d.avg_rssi || -100);
-    const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
-    const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
-    const alert = d.alert_level || "none";
-    const rowCls = alert === "critical" ? "row-crit" : alert === "warning" ? "row-warn" : d.is_known ? "row-ok" : "";
-    const tag = d.is_known ? '<span class="tag tag-ok">TRUSTED</span>' :
-                alert === "critical" ? '<span class="tag tag-crit">CRITICAL</span>' :
-                '<span class="tag tag-warn">UNKNOWN</span>';
-    const action = !d.is_known
-        ? `<button class="btn-trust" onclick="trustFingerprint('${d.fingerprint_id}');event.stopPropagation()">Trust</button>`
-        : '<span style="color:var(--green);font-size:.65rem">✓ Trusted</span>';
-    const cat = (d.category || "unknown");
-    const catUp = cat.charAt(0).toUpperCase() + cat.slice(1);
-    const icon = d.category_icon || "";
-    const mfr = d.manufacturer_name || "Unknown";
-    const mfrS = mfr.length > 18 ? mfr.substring(0, 16) + "…" : mfr;
-    const macCount = d.mac_count || d.mac_addresses?.length || 1;
-    const fpS = (d.fingerprint_id || "").substring(0, 10);
-    const dur = d.duration_display || "--";
-
-    return `<tr class="${rowCls}" data-id="${d.fingerprint_id}">
-        <td><span class="mono" title="${d.fingerprint_id}">${fpS}</span></td>
-        <td style="font-weight:500">${d.best_name || "Unknown"}</td>
-        <td><span class="cat-pill">${icon} ${catUp}</span></td>
-        <td><span style="color:var(--tx-2);font-size:.72rem" title="${mfr}">${mfrS}</span></td>
-        <td class="mono">${rssi} dBm</td>
-        <td><div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${color}"></div></div></td>
-        <td><span class="mac-chip">${macCount} MAC${macCount>1?"s":""}</span></td>
-        <td><span style="font-size:.72rem;color:var(--tx-3)">${dur}</span></td>
-        <td>${tag}</td>
-        <td>${action}</td>
-    </tr>`;
-}
-
-function renderRawRow(d) {
-    const rssi = d.rssi || -100;
-    const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
-    const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
-    const alert = d.alert_level || "none";
-    const rowCls = alert === "critical" ? "row-crit" : alert === "warning" ? "row-warn" : d.is_known ? "row-ok" : "";
-    const tag = alert === "critical" ? '<span class="tag tag-crit">CRITICAL</span>' :
-                alert === "warning" ? '<span class="tag tag-warn">WARNING</span>' :
-                '<span class="tag tag-ok">OK</span>';
-    const action = !d.is_known
-        ? `<button class="btn-trust" onclick="whitelistDevice('${d.address}');event.stopPropagation()">Trust</button>`
-        : '<span style="color:var(--green);font-size:.65rem">✓ Trusted</span>';
-    const cat = (d.category || "unknown");
-    const catUp = cat.charAt(0).toUpperCase() + cat.slice(1);
-    const icon = d.category_icon || "";
-    const mfr = d.manufacturer || "Unknown";
-    const mfrS = mfr.length > 18 ? mfr.substring(0, 16) + "…" : mfr;
-
-    return `<tr class="${rowCls}" data-id="${d.address}">
-        <td><span class="mono">${d.address}</span></td>
-        <td style="font-weight:500">${d.name || "Unknown"}</td>
-        <td><span class="cat-pill">${icon} ${catUp}</span></td>
-        <td><span style="color:var(--tx-2);font-size:.72rem" title="${mfr}">${mfrS}</span></td>
-        <td><span style="color:var(--accent)">${d.device_type || "?"}</span></td>
-        <td class="mono">${rssi} dBm</td>
-        <td><div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${color}"></div></div></td>
-        <td>${tag}</td>
-        <td>${d.seen_count || 0}</td>
-        <td>${action}</td>
-    </tr>`;
-}
-
-// ── Detail Panel ──────────────────────────────────────────────────
-function renderDetailPanel() {
-    const panel = $("device-detail");
-    const body = $("detail-body");
-    if (!selectedDeviceId) { panel.classList.remove("open"); return; }
-    panel.classList.add("open");
-
-    let dev = null;
-    if (viewMode === "clustered") {
-        dev = currentClustered.find(d => d.fingerprint_id === selectedDeviceId);
-    } else {
-        dev = currentDevices.find(d => d.address === selectedDeviceId);
-    }
-
-    if (!dev) {
-        body.innerHTML = '<div class="empty-msg">Device not found</div>';
-        return;
-    }
-
-    if (viewMode === "clustered") {
-        const macList = (dev.mac_addresses || []).map(m => `<span class="mono" style="display:block;font-size:.7rem;color:var(--tx-2)">${m}</span>`).join("");
-        body.innerHTML = `
-            <div class="detail-row"><span class="dr-label">Fingerprint ID</span><span class="dr-val">${dev.fingerprint_id || "--"}</span></div>
-            <div class="detail-row"><span class="dr-label">Best Name</span><span class="dr-val">${dev.best_name || "Unknown"}</span></div>
-            <div class="detail-row"><span class="dr-label">Category</span><span class="dr-val">${(dev.category_icon||"")} ${(dev.category||"unknown")}</span></div>
-            <div class="detail-row"><span class="dr-label">Manufacturer</span><span class="dr-val">${dev.manufacturer_name || "Unknown"}</span></div>
-            <div class="detail-row"><span class="dr-label">Avg RSSI</span><span class="dr-val">${Math.round(dev.avg_rssi||-100)} dBm</span></div>
-            <div class="detail-row"><span class="dr-label">MAC Count</span><span class="dr-val">${dev.mac_count || 1}</span></div>
-            <div class="detail-row"><span class="dr-label">First Seen</span><span class="dr-val">${fmtTime(dev.first_seen)}</span></div>
-            <div class="detail-row"><span class="dr-label">Duration</span><span class="dr-val">${dev.duration_display || "--"}</span></div>
-            <div class="detail-row"><span class="dr-label">Status</span><span class="dr-val">${dev.is_known ? "✓ Trusted" : "⚠ Unknown"}</span></div>
-            <div style="margin-top:8px"><span class="dr-label">MAC Addresses</span>${macList}</div>
-        `;
-    } else {
-        body.innerHTML = `
-            <div class="detail-row"><span class="dr-label">Address</span><span class="dr-val">${dev.address}</span></div>
-            <div class="detail-row"><span class="dr-label">Name</span><span class="dr-val">${dev.name || "Unknown"}</span></div>
-            <div class="detail-row"><span class="dr-label">Category</span><span class="dr-val">${(dev.category_icon||"")} ${(dev.category||"unknown")}</span></div>
-            <div class="detail-row"><span class="dr-label">Manufacturer</span><span class="dr-val">${dev.manufacturer || "Unknown"}</span></div>
-            <div class="detail-row"><span class="dr-label">Type</span><span class="dr-val">${dev.device_type || "?"}</span></div>
-            <div class="detail-row"><span class="dr-label">RSSI</span><span class="dr-val">${dev.rssi || -100} dBm</span></div>
-            <div class="detail-row"><span class="dr-label">TX Power</span><span class="dr-val">${dev.tx_power || "?"}</span></div>
-            <div class="detail-row"><span class="dr-label">Times Seen</span><span class="dr-val">${dev.seen_count || 0}</span></div>
-            <div class="detail-row"><span class="dr-label">Alert Level</span><span class="dr-val">${dev.alert_level || "none"}</span></div>
-            <div class="detail-row"><span class="dr-label">Known</span><span class="dr-val">${dev.is_known ? "✓ Yes" : "✗ No"}</span></div>
-        `;
-    }
-}
-
-$("close-detail").addEventListener("click", () => {
-    $("device-detail").classList.remove("open");
-    selectedDeviceId = null;
-    $("dev-tbody").querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
+/* ── Tab Navigation ────────────────────────────────────────── */
+document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
-
-// ── Signal Panels ─────────────────────────────────────────────────
-const CAT_ICONS = {
-    phone:"📱", tablet:"📱", computer:"💻", input:"🖱️", audio:"🎧",
-    watch:"⌚", health:"❤️", fitness:"🏃", tv:"📺", tracker:"📍",
-    gaming:"🎮", iot:"💡", apple:"🍎", nearby:"📶", generic:"📡", unknown:"❓"
-};
-
-function renderSignalPanels() {
-    renderRSSIPanel();
-    renderCategoryPanel();
-    renderHeatmap();
+function switchTab(tab) {
+    document.querySelectorAll(".nav-item[data-tab]").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    document.querySelectorAll(".tab-pane").forEach(p => p.classList.toggle("active", p.id === "tab-" + tab));
+    if (tab === "radar") startRadar(); else stopRadar();
+    if (tab === "analytics") renderAnalytics();
+    if (tab === "live") { renderLiveDemo(); fetchTimeTravel(); }
 }
 
-function renderRSSIPanel() {
-    const container = $("rssi-full");
-    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
-    if (!devs || devs.length === 0) { container.innerHTML = '<div class="empty-msg">No signal data</div>'; return; }
+/* ── Sidebar Toggle ────────────────────────────────────────── */
+$("sidebar-toggle").addEventListener("click", () => $("sidebar").classList.toggle("collapsed"));
 
-    const sorted = [...devs]
-        .filter(d => { const r = viewMode === "clustered" ? d.avg_rssi : d.rssi; return r && r !== 0 && r > -100; })
-        .sort((a, b) => (viewMode === "clustered" ? (b.avg_rssi||-100) : (b.rssi||-100)) - (viewMode === "clustered" ? (a.avg_rssi||-100) : (a.rssi||-100)))
-        .slice(0, 10);
-
-    if (sorted.length === 0) { container.innerHTML = '<div class="empty-msg">No RSSI data</div>'; return; }
-
-    container.innerHTML = sorted.map(d => {
-        const rssi = Math.round(viewMode === "clustered" ? (d.avg_rssi||-100) : (d.rssi||-100));
-        const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
-        const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
-        const name = ((viewMode === "clustered" ? d.best_name : d.name) || "Unknown").substring(0, 14);
-        return `<div class="rssi-row"><span class="rssi-name">${name}</span><div class="rssi-bar-o"><div class="rssi-bar-i" style="width:${pct}%;background:${color}"></div></div><span class="rssi-v">${rssi} dBm</span></div>`;
-    }).join("");
-}
-
-function renderCategoryPanel() {
-    const container = $("cat-full");
-    const cats = currentClusterSummary.categories || {};
-    if (Object.keys(cats).length === 0) { container.innerHTML = '<div class="empty-msg">No data yet</div>'; return; }
-
-    container.innerHTML = Object.entries(cats).sort((a,b) => b[1]-a[1]).map(([c, n]) => {
-        const icon = CAT_ICONS[c] || "❓";
-        return `<div class="cat-row"><span class="cat-icon">${icon}</span><span class="cat-name">${c}</span><span class="cat-count">${n}</span></div>`;
-    }).join("");
-}
-
-function renderHeatmap() {
-    const container = $("heatmap");
-    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
-    if (!devs || devs.length === 0) { container.innerHTML = '<div class="empty-msg">Waiting for data...</div>'; return; }
-
-    // Generate a time-bucket heatmap: rows = devices, cols = time buckets
-    const top = [...devs]
-        .filter(d => { const r = viewMode === "clustered" ? d.avg_rssi : d.rssi; return r && r > -100; })
-        .slice(0, 8);
-
-    if (top.length === 0) { container.innerHTML = '<div class="empty-msg">No heatmap data</div>'; return; }
-
-    const buckets = 12;
-    container.innerHTML = top.map(d => {
-        const name = ((viewMode === "clustered" ? d.best_name : d.name) || "?").substring(0, 12);
-        const rssi = viewMode === "clustered" ? (d.avg_rssi||-100) : (d.rssi||-100);
-        // Simulated historical data based on RSSI + noise
-        const cells = Array.from({length: buckets}, (_, i) => {
-            const val = clamp(rssi + Math.floor(Math.random() * 15 - 7), -100, -20);
-            const intensity = clamp(((val + 100) / 60), 0, 1);
-            const g = Math.floor(intensity * 185 + 40);
-            const r = Math.floor((1 - intensity) * 180 + 40);
-            return `<div class="hm-cell" style="background:rgba(${r},${g},80,${0.3+intensity*0.7})" title="${val} dBm"></div>`;
-        }).join("");
-        return `<div class="hm-row"><span class="hm-name">${name}</span><div class="hm-cells">${cells}</div></div>`;
-    }).join("");
-}
-
-// ── Timeline ──────────────────────────────────────────────────────
-function addTimelineEvent(type, msg) {
-    timeline.unshift({ time: new Date(), type, msg });
-    if (timeline.length > 300) timeline.length = 300;
-    renderTimeline();
-}
-
-function renderTimeline() {
-    const container = $("tl-list");
-    if (timeline.length === 0) {
-        container.innerHTML = '<div class="empty-msg">Events appear as scans run...</div>';
-        return;
-    }
-    container.innerHTML = timeline.slice(0, 100).map(e => {
-        const ts = e.time.toLocaleTimeString("en-US", { hour12: false, hour:"2-digit", minute:"2-digit", second:"2-digit" });
-        const cls = e.type === "scan" ? "tl-scan" : e.type === "alert" ? "tl-alert" : "tl-jam";
-        return `<div class="tl-entry"><span class="tl-time">${ts}</span><span class="tl-type ${cls}">${e.type}</span><span class="tl-msg">${e.msg}</span></div>`;
-    }).join("");
-}
-
-$("btn-clear-tl").addEventListener("click", () => {
-    timeline = [];
-    renderTimeline();
+/* ── Theme Toggle ──────────────────────────────────────────── */
+$("btn-theme").addEventListener("click", () => {
+    const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+    document.documentElement.setAttribute("data-theme", isDark ? "light" : "dark");
+    $("ico-sun").style.display  = isDark ? "none" : "";
+    $("ico-moon").style.display = isDark ? "" : "none";
+    localStorage.setItem("theme", isDark ? "light" : "dark");
 });
+{ const t = localStorage.getItem("theme"); if (t === "light") { document.documentElement.setAttribute("data-theme","light"); $("ico-sun").style.display="none"; $("ico-moon").style.display=""; } }
 
-// ── Channel Grid ──────────────────────────────────────────────────
-function renderChannelGrid() {
-    const container = $("ch-grid");
-    const maxCount = Math.max(1, ...channelStats);
+/* ── Clock ─────────────────────────────────────────────────── */
+setInterval(() => {
+    const d = new Date();
+    $("clock").textContent = d.toTimeString().slice(0, 8);
+    const up = Math.floor((Date.now() - startTime) / 1000);
+    const m = Math.floor(up / 60), s = up % 60;
+    $("sf-uptime").textContent = `${m}:${String(s).padStart(2, "0")}`;
+}, 1000);
 
-    container.innerHTML = Array.from({length: 40}, (_, i) => {
-        const count = channelStats[i];
-        const isAdv = i >= 37;
-        const freq = 2402 + (i * 2);
-        const intensity = count / maxCount;
-        const borderC = isAdv ? "var(--orange)" : intensity > 0.5 ? "var(--accent)" : "var(--border)";
-        const bgStyle = count > 0 ? `background:rgba(${isAdv?"210,153,34":"88,166,255"},${0.05+intensity*0.2})` : "";
-        return `<div class="ch-cell" style="border-color:${borderC};${bgStyle}"><div class="ch-num">${i}</div><div class="ch-freq">${freq} MHz</div><div class="ch-count">${count}</div></div>`;
-    }).join("");
-}
-
-// ── Jammer Panel ──────────────────────────────────────────────────
-function updateJammerPanel(status) {
-    if (!status) return;
-    isJamming = status.is_jamming;
-
-    const btn = $("btn-jam");
-    const ind = $("jam-ind");
-    const badge = $("nav-jam-badge");
-    const sbJam = $("sb-jam");
-
-    if (isJamming) {
-        btn.textContent = "Stop Jammer";
-        btn.classList.add("active");
-        ind.classList.add("on");
-        $("jam-ind-txt").textContent = "ACTIVE";
-        badge.style.display = "";
-        sbJam.textContent = "Jammer: ON";
-
-        if (status.active_session) {
-            $("jl-pkts").textContent = status.active_session.packets_sent || 0;
-            $("jl-mode").textContent = status.active_session.mode || "--";
-            $("jl-ch").textContent = status.active_session.channel || "--";
-
-            // Highlight active channel bars
-            document.querySelectorAll(".ch-bar").forEach(bar => {
-                const ch = bar.dataset.ch;
-                const mode = status.active_session.mode;
-                if (mode === "sweep" || ch == status.active_session.channel) {
-                    bar.classList.add("active");
-                } else {
-                    bar.classList.remove("active");
-                }
-            });
-        }
-    } else {
-        btn.textContent = "Start Jammer";
-        btn.classList.remove("active");
-        ind.classList.remove("on");
-        $("jam-ind-txt").textContent = "Inactive";
-        badge.style.display = "none";
-        sbJam.textContent = "Jammer: Off";
-        document.querySelectorAll(".ch-bar").forEach(b => b.classList.remove("active"));
-    }
-
-    if (status.backend) {
-        $("jl-be").textContent = status.backend === "raw_hci" ? "Raw HCI" : status.backend === "hcitool" ? "hcitool" : "Simulated";
-    }
-}
-
-// ── Alerts Tab ────────────────────────────────────────────────────
-function renderAlertList() {
-    const container = $("alert-full");
-    const cnt = alertList.length;
-    $("nav-alert-badge").textContent = cnt;
-    $("alert-top").textContent = cnt;
-
-    if (cnt === 0) {
-        container.innerHTML = '<div class="empty-msg">No alerts. System clean.</div>';
-        return;
-    }
-
-    container.innerHTML = alertList.slice(0, 100).map(a => {
-        const ts = fmtTime(a.timestamp);
-        const cls = a.level === "critical" ? "al-crit" : a.level === "warning" ? "al-warn" : "al-info";
-        return `<div class="alert-entry"><span class="al-time">${ts}</span><span class="al-lvl ${cls}">${a.level}</span><span class="al-msg">${a.message}</span></div>`;
-    }).join("");
-}
-
-// ── Platform ──────────────────────────────────────────────────────
-function updatePlatform(info) {
-    const pill = $("pill-plat");
-    if (info.os === "Linux" && info.has_hcitool) pill.textContent = "RPi FULL";
-    else if (info.os === "Linux") pill.textContent = "LINUX BLE";
-    else if (info.os === "Windows") pill.textContent = "WIN BLE";
-    else pill.textContent = info.os;
-
-    // Config tab platform info
-    const cfgPlat = $("cfg-plat");
-    if (cfgPlat) {
-        cfgPlat.innerHTML = `
-            <div>OS: ${info.os || "--"}</div>
-            <div>Host: ${info.hostname || "--"}</div>
-            <div>Bleak: ${info.has_bleak ? "✓" : "✗"}</div>
-            <div>hcitool: ${info.has_hcitool ? "✓" : "✗"}</div>
-            <div>hcidump: ${info.has_hcidump ? "✓" : "✗"}</div>
-        `;
-    }
-}
-
-// ── Status Bar ────────────────────────────────────────────────────
-function updateStatusBar() {
-    const devCount = viewMode === "clustered" ? currentClustered.length : currentDevices.length;
-    $("sb-dev").textContent = `${devCount} device${devCount!==1?"s":""}`;
-    $("sb-scans").textContent = `${scanCount} scans`;
-    const rangeLabel = $("range-select").selectedOptions[0]?.text || "All";
-    $("sb-range").textContent = `Range: ${rangeLabel}`;
-}
-
-function updateAutoScanBtn() {
-    const btn = $("btn-autoscan");
-    btn.textContent = autoScan ? "Auto: ON" : "Auto: OFF";
-    btn.classList.toggle("active", autoScan);
-}
-
-// ── User Actions ──────────────────────────────────────────────────
-
-// Scan button
+/* ── Scan Controls ─────────────────────────────────────────── */
 $("btn-scan").addEventListener("click", async () => {
-    const btn = $("btn-scan");
-    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Scanning...';
-    btn.disabled = true;
-    try { await fetch("/api/scan", { method: "POST" }); } catch(e) { console.error(e); }
-    setTimeout(() => {
-        btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> Scan';
-        btn.disabled = false;
-    }, 2000);
+    $("pill-scan").classList.add("scanning"); $("scan-text").textContent = "Scanning...";
+    try { await fetch("/api/scan", { method: "POST" }); } catch {}
 });
-
-// Auto-scan toggle
 $("btn-autoscan").addEventListener("click", () => {
     autoScan = !autoScan;
     socket.emit("toggle_autoscan", { enabled: autoScan });
     updateAutoScanBtn();
 });
-
-// Scan interval slider
+function updateAutoScanBtn() {
+    $("btn-autoscan").textContent = autoScan ? "Auto: ON" : "Auto: OFF";
+    $("btn-autoscan").classList.toggle("active", autoScan);
+}
 $("scan-interval").addEventListener("input", e => {
-    const val = parseInt(e.target.value);
-    $("interval-display").textContent = val + "s";
-    socket.emit("set_scan_interval", { interval: val });
+    $("interval-display").textContent = e.target.value + "s";
+    socket.emit("set_scan_interval", { interval: parseInt(e.target.value) });
+});
+$("range-select").addEventListener("change", e => {
+    socket.emit("set_range", { preset: e.target.value });
 });
 
-// Range selector
-$("range-select").addEventListener("change", async e => {
-    await fetch("/api/range", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ preset: e.target.value }) });
-});
+/* ── View Mode ─────────────────────────────────────────────── */
+$("vt-clustered").addEventListener("click", () => { viewMode = "clustered"; $("vt-clustered").classList.add("active"); $("vt-raw").classList.remove("active"); renderDeviceTable(); });
+$("vt-raw").addEventListener("click", () => { viewMode = "raw"; $("vt-raw").classList.add("active"); $("vt-clustered").classList.remove("active"); renderDeviceTable(); });
+$("device-search").addEventListener("input", e => { searchFilter = e.target.value.toLowerCase(); renderDeviceTable(); });
 
-// View toggle (Devices / Raw MACs)
-$("vt-clustered").addEventListener("click", () => {
-    viewMode = "clustered";
-    $("vt-clustered").classList.add("active");
-    $("vt-raw").classList.remove("active");
+/* ── Ghost Mode ────────────────────────────────────────────── */
+function ghostMode() {
+    if (confirm("⚠ GHOST MODE: This will immediately shut down the system.\nAre you sure?")) {
+        if (confirm("FINAL WARNING: The Raspberry Pi will power off NOW.\nContinue?")) {
+            fetch("/api/ghost", { method: "POST" });
+        }
+    }
+}
+$("btn-ghost").addEventListener("click", ghostMode);
+if ($("btn-ghost-cfg")) $("btn-ghost-cfg").addEventListener("click", ghostMode);
+
+/* ── Device Table ──────────────────────────────────────────── */
+const CLUSTERED_COLS = ["", "Name", "Category", "Risk", "Motion", "RSSI", "MACs", "Duration", "Status", "Actions"];
+const RAW_COLS = ["", "Address", "Name", "Category", "RSSI", "Type", "Manufacturer", "Status"];
+
+function renderDeviceTable() {
+    const thead = $("dev-thead");
+    const tbody = $("dev-tbody");
+    const cols = viewMode === "clustered" ? CLUSTERED_COLS : RAW_COLS;
+
+    thead.innerHTML = cols.map(c => `<th>${c}${sortCol === c ? (sortDir === "asc" ? " ↑" : " ↓") : ""}</th>`).join("");
+    thead.querySelectorAll("th").forEach((th, i) => {
+        th.addEventListener("click", () => {
+            const col = cols[i];
+            if (sortCol === col) sortDir = sortDir === "asc" ? "desc" : "asc";
+            else { sortCol = col; sortDir = "asc"; }
+            renderDeviceTable();
+        });
+    });
+
+    let devs = viewMode === "clustered" ? [...currentClustered] : [...currentDevices];
+
+    if (searchFilter) {
+        devs = devs.filter(d => {
+            const haystack = JSON.stringify(d).toLowerCase();
+            return haystack.includes(searchFilter);
+        });
+    }
+
+    if (!devs.length) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="10">Waiting for first scan...</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = devs.map(d => viewMode === "clustered" ? renderClusteredRow(d) : renderRawRow(d)).join("");
+}
+
+function renderClusteredRow(d) {
+    const id = d.fingerprint_id || "";
+    const rssi = Math.round(d.avg_rssi || -100);
+    const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
+    const rssiColor = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
+    const rowCls = d.is_known ? "row-ok" : (d.risk_level === "critical" ? "row-crit" : d.alert_level === "warning" ? "row-warn" : "");
+    const sel = selectedDeviceId === id ? "selected" : "";
+    const followCls = !d.is_known && d.rssi_trend === "stationary" && (d.duration_seconds || 0) > 1800 ? "follow-suspect" : "";
+
+    const riskBadge = `<span class="risk-badge risk-${d.risk_level || 'low'}">${d.risk_score || 0} ${(d.risk_level || 'low').toUpperCase()}</span>`;
+
+    const motionArrows = { approaching: "↑ Nearing", leaving: "↓ Leaving", stationary: "— Idle" };
+    const motionCls = `movement-${d.rssi_trend || "stationary"}`;
+    const motion = `<span class="movement-ind ${motionCls}">${motionArrows[d.rssi_trend] || "— Idle"}</span>`;
+
+    const action = d.is_known
+        ? `<button class="btn-untrust" onclick="untrustDevice('${id}');event.stopPropagation()">Untrust</button>`
+        : `<button class="btn-trust" onclick="trustFingerprint('${id}');event.stopPropagation()">Trust</button>`;
+
+    const eco = d.ecosystem ? `<span class="eco-badge eco-${d.ecosystem || 'other'}">${d.ecosystem}</span>` : "";
+
+    return `<tr class="${rowCls} ${sel} ${followCls}" onclick="selectDevice('${id}')">
+        <td>${d.category_icon || "❓"}</td>
+        <td><strong>${escHtml(d.best_name || "Unknown")}</strong> ${eco}<br><span class="mono" style="font-size:.62rem;color:var(--tx-3)">${id}</span></td>
+        <td><span class="cat-pill">${d.category_icon || "?"} ${d.category || "?"}</span></td>
+        <td>${riskBadge}</td>
+        <td>${motion}</td>
+        <td><span class="mono">${rssi}</span> <div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${rssiColor}"></div></div></td>
+        <td><span class="mac-chip">${d.mac_count || 0}</span></td>
+        <td><span class="mono">${d.duration_display || "0s"}</span></td>
+        <td>${d.is_known ? '<span class="tag tag-ok">Trusted</span>' : '<span class="tag tag-warn">Unknown</span>'}</td>
+        <td>${action}</td>
+    </tr>`;
+}
+
+function renderRawRow(d) {
+    const addr = d.address || "";
+    const rssi = d.rssi || 0;
+    const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
+    const rssiColor = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
+    const rowCls = d.is_known ? "row-ok" : d.alert_level === "critical" ? "row-crit" : d.alert_level === "warning" ? "row-warn" : "";
+    const sel = selectedDeviceId === addr ? "selected" : "";
+
+    return `<tr class="${rowCls} ${sel}" onclick="selectDevice('${addr}')">
+        <td>${d.category_icon || "❓"}</td>
+        <td><span class="mono">${addr}</span></td>
+        <td>${escHtml(d.name || "Unknown")}</td>
+        <td><span class="cat-pill">${d.category_icon || "?"} ${d.category || "?"}</span></td>
+        <td><span class="mono">${rssi}</span> <div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${rssiColor}"></div></div></td>
+        <td>${d.device_type || "?"}</td>
+        <td>${escHtml(d.manufacturer || "Unknown")}</td>
+        <td>${d.is_known ? '<span class="tag tag-ok">Trusted</span>' : `<button class="btn-trust" onclick="trustDevice('${addr}');event.stopPropagation()">Trust</button>`}</td>
+    </tr>`;
+}
+
+function escHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+/* ── Device Selection & Detail Panel ───────────────────────── */
+window.selectDevice = function(id) {
+    selectedDeviceId = id;
+    $("device-detail").classList.add("open");
+    renderDetailPanel();
+    renderDeviceTable();
+};
+$("close-detail").addEventListener("click", () => {
     selectedDeviceId = null;
     $("device-detail").classList.remove("open");
     renderDeviceTable();
-    renderSignalPanels();
-});
-$("vt-raw").addEventListener("click", () => {
-    viewMode = "raw";
-    $("vt-raw").classList.add("active");
-    $("vt-clustered").classList.remove("active");
-    selectedDeviceId = null;
-    $("device-detail").classList.remove("open");
-    renderDeviceTable();
-    renderSignalPanels();
 });
 
-// Search filter
-$("device-search").addEventListener("input", e => {
-    searchFilter = e.target.value;
-    renderDeviceTable();
-});
+function renderDetailPanel() {
+    const body = $("detail-body");
+    let d = null;
+    if (viewMode === "clustered") d = currentClustered.find(x => x.fingerprint_id === selectedDeviceId);
+    else d = currentDevices.find(x => x.address === selectedDeviceId);
+    if (!d) { body.innerHTML = '<div class="empty-msg">Device not found</div>'; return; }
 
-// Jammer controls
+    let html = "";
+
+    // Basic Info
+    html += `<div class="detail-section"><div class="detail-section-title">Device Info</div>`;
+    html += detailRow("Name", d.best_name || d.name || "Unknown");
+    html += detailRow("Category", `${d.category_icon || ""} ${d.category || "unknown"}`);
+    if (d.fingerprint_id) html += detailRow("Fingerprint", d.fingerprint_id);
+    html += detailRow("Manufacturer", d.manufacturer_name || d.manufacturer || "Unknown");
+    if (d.ecosystem) html += detailRow("Ecosystem", `<span class="eco-badge eco-${d.ecosystem}">${d.ecosystem}</span>`);
+    html += detailRow("RSSI", `${Math.round(d.avg_rssi || d.rssi || -100)} dBm`);
+    if (d.confidence_score !== undefined) html += detailRow("Confidence", `${Math.round(d.confidence_score * 100)}%`);
+    html += detailRow("Duration", d.duration_display || "0s");
+    html += detailRow("Observations", d.observation_count || d.seen_count || 0);
+    html += `</div>`;
+
+    // AI Classification
+    const cls = classifications[d.fingerprint_id || ""];
+    if (cls && cls.top) {
+        const confPct = Math.round(cls.top.confidence * 100);
+        const confCls = confPct >= 60 ? "aif-conf-high" : confPct >= 30 ? "aif-conf-med" : "aif-conf-low";
+        html += `<div class="detail-section"><div class="detail-section-title">🧠 AI Classification</div>`;
+        html += `<div class="ai-class-card">`;
+        html += `<div class="ai-class-top"><span class="ai-class-icon">${cls.top.icon}</span><span class="ai-class-label">${escHtml(cls.top.label)}</span><span class="ai-class-conf ${confCls}">${confPct}%</span></div>`;
+        html += `<div class="ai-class-desc">${escHtml(cls.top.description)}</div>`;
+        if (cls.alternatives && cls.alternatives.length) {
+            html += `<div class="ai-class-alts"><div style="margin-bottom:2px;font-weight:600">Other possibilities:</div>`;
+            cls.alternatives.forEach(a => {
+                html += `<div class="ai-class-alt"><span>${a.icon}</span><span>${escHtml(a.label)}</span><span style="margin-left:auto">${Math.round(a.confidence*100)}%</span></div>`;
+            });
+            html += `</div>`;
+        }
+        html += `</div></div>`;
+    }
+
+    // Risk Assessment
+    if (d.risk_score !== undefined) {
+        const rLevel = d.risk_level || "low";
+        const rColor = rLevel === "critical" ? "var(--risk-crit)" : rLevel === "high" ? "var(--risk-high)" : rLevel === "medium" ? "var(--risk-med)" : "var(--risk-low)";
+        html += `<div class="detail-section"><div class="detail-section-title">Risk Assessment</div>`;
+        html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="risk-badge risk-${rLevel}">${d.risk_score} ${rLevel.toUpperCase()}</span></div>`;
+        html += `<div class="risk-meter"><div class="risk-meter-fill" style="width:${d.risk_score}%;background:${rColor}"></div></div>`;
+        html += `<div class="risk-meter-label"><span>0</span><span>100</span></div>`;
+        if (d.risk_factors && d.risk_factors.length) {
+            html += `<div style="margin-top:6px;font-size:.68rem;color:var(--tx-3)">`;
+            d.risk_factors.forEach(f => { html += `<div style="padding:1px 0">${escHtml(f)}</div>`; });
+            html += `</div>`;
+        }
+        html += `</div>`;
+    }
+
+    // Movement
+    if (d.rssi_trend) {
+        const arrows = { approaching: "↑ Approaching", leaving: "↓ Leaving", stationary: "— Stationary" };
+        html += `<div class="detail-section"><div class="detail-section-title">Movement</div>`;
+        html += `<span class="movement-ind movement-${d.rssi_trend}">${arrows[d.rssi_trend] || "—"}</span>`;
+        html += `</div>`;
+    }
+
+    // RSSI History Chart
+    if (d.rssi_history && d.rssi_history.length > 1) {
+        html += `<div class="detail-section"><div class="detail-section-title">RSSI History</div>`;
+        html += `<div class="rssi-chart-mini">${renderRSSIChart(d.rssi_history)}</div>`;
+        html += `</div>`;
+    }
+
+    // Tracker Status
+    if (d.tracker_suspect) {
+        html += `<div class="detail-section"><div class="detail-section-title" style="color:var(--red)">⚠ Tracker Suspect</div>`;
+        html += detailRow("Type", d.tracker_type || "Unknown");
+        html += detailRow("Confidence", `${Math.round((d.tracker_confidence || 0) * 100)}%`);
+        html += `</div>`;
+    }
+
+    // Packet Inspector
+    if (d.packet_data && Object.keys(d.packet_data).length) {
+        const pkt = d.packet_data;
+        html += `<div class="detail-section"><div class="detail-section-title">Packet Inspector</div>`;
+        html += `<div class="packet-inspector">`;
+        if (pkt.manufacturer_data_hex) html += `<div class="pi-section"><span class="pi-label">Mfr Data</span><span class="pi-val">${pkt.manufacturer_data_hex}</span></div>`;
+        if (pkt.service_uuids && pkt.service_uuids.length) html += `<div class="pi-section"><span class="pi-label">UUIDs</span><span class="pi-val">${pkt.service_uuids.join(", ")}</span></div>`;
+        if (pkt.tx_power) html += `<div class="pi-section"><span class="pi-label">TX Power</span><span class="pi-val">${pkt.tx_power} dBm</span></div>`;
+        if (pkt.flags) html += `<div class="pi-section"><span class="pi-label">Flags</span><span class="pi-val">${pkt.flags}</span></div>`;
+        if (pkt.service_data && Object.keys(pkt.service_data).length) {
+            for (const [uuid, hex] of Object.entries(pkt.service_data)) {
+                html += `<div class="pi-section"><span class="pi-label">Svc ${uuid.slice(0,8)}</span><span class="pi-val">${hex}</span></div>`;
+            }
+        }
+        html += `</div></div>`;
+    }
+
+    // MAC Addresses
+    if (d.mac_addresses && d.mac_addresses.length) {
+        html += `<div class="detail-section"><div class="detail-section-title">MAC Addresses (${d.mac_addresses.length})</div>`;
+        d.mac_addresses.forEach(m => { html += `<span class="mac-chip" style="margin:2px">${m}</span> `; });
+        html += `</div>`;
+    }
+
+    // Service UUIDs
+    if (d.service_uuids && d.service_uuids.length) {
+        html += `<div class="detail-section"><div class="detail-section-title">Service UUIDs</div>`;
+        html += `<div style="font-size:.68rem;font-family:'JetBrains Mono',monospace;color:var(--tx-2)">`;
+        d.service_uuids.forEach(u => { html += `<div>${u}</div>`; });
+        html += `</div></div>`;
+    }
+
+    // Quick Actions
+    const fpId = d.fingerprint_id || "";
+    html += `<div class="detail-section"><div class="detail-section-title">Quick Actions</div>`;
+    html += `<div class="quick-actions">`;
+    html += `<button class="qa-btn qa-track" onclick="switchTab('radar')">📡 Radar</button>`;
+    html += `<button class="qa-btn qa-alert" onclick="watchDevice('${fpId}')">🔔 Watch</button>`;
+    html += `<button class="qa-btn qa-export" onclick="exportPackets('${fpId}')">📦 Packets</button>`;
+    html += `</div>`;
+    if (d.is_known) {
+        html += `<button class="btn-untrust" onclick="untrustDevice('${fpId}')">Remove Trust</button>`;
+    } else {
+        html += `<button class="btn-trust" style="width:100%;margin-top:6px" onclick="trustFingerprint('${fpId}')">Trust This Device</button>`;
+    }
+    html += `</div>`;
+
+    body.innerHTML = html;
+}
+
+function detailRow(label, val) {
+    return `<div class="detail-row"><span class="dr-label">${label}</span><span class="dr-val">${val}</span></div>`;
+}
+
+/* ── RSSI History SVG Chart ────────────────────────────────── */
+function renderRSSIChart(rssiData) {
+    const w = 300, h = 60, pad = 5;
+    const pts = rssiData.slice(-25);
+    if (pts.length < 2) return '<div class="empty-msg" style="padding:4px">Collecting...</div>';
+
+    const vals = pts.map(p => Array.isArray(p) ? p[1] : p.rssi || -100);
+    const minR = Math.min(...vals);
+    const maxR = Math.max(...vals);
+    const range = Math.max(maxR - minR, 5);
+
+    const points = vals.map((v, i) => {
+        const x = pad + (i / (vals.length - 1)) * (w - 2 * pad);
+        const y = pad + (1 - (v - minR) / range) * (h - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+
+    const firstX = pad, lastX = pad + ((vals.length-1)/(vals.length-1))*(w-2*pad);
+    const fillPoints = `${firstX},${h-pad} ${points.join(" ")} ${lastX},${h-pad}`;
+
+    return `<svg viewBox="0 0 ${w} ${h}" class="rssi-chart-svg">
+        <polygon points="${fillPoints}" fill="var(--accent-bg)" stroke="none"/>
+        <polyline points="${points.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="4" y="10" class="chart-label">${maxR} dBm</text>
+        <text x="4" y="${h-2}" class="chart-label">${minR} dBm</text>
+    </svg>`;
+}
+
+/* ── Trust / Untrust ───────────────────────────────────────── */
+window.trustFingerprint = async function(fpId) {
+    await fetch("/api/whitelist", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ fingerprint_id: fpId }) });
+};
+window.trustDevice = async function(addr) {
+    await fetch("/api/whitelist", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ address: addr }) });
+};
+window.untrustDevice = async function(fpId) {
+    await fetch("/api/whitelist", { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ fingerprint_id: fpId }) });
+};
+window.watchDevice = async function(fpId) {
+    await fetch("/api/alerts/watch", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ fingerprint_id: fpId }) });
+    addTimelineEvent("alert", `Watching device ${fpId}`);
+};
+window.exportPackets = async function(fpId) {
+    try {
+        const res = await fetch(`/api/device/${fpId}/packets`);
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${fpId}_packets.json`;
+        a.click();
+    } catch {}
+};
+
+/* ── Stats Strip ───────────────────────────────────────────── */
+function renderStatsStrip() {
+    const cs = clusterSummary;
+    $("ss-physical").textContent = cs.total_physical_devices || 0;
+    $("ss-macs").textContent = cs.total_mac_addresses || 0;
+    $("ss-trusted").textContent = cs.known_devices || 0;
+    $("ss-unknown").textContent = cs.unknown_devices || 0;
+    $("ss-clustered").textContent = cs.mac_reduction || 0;
+    $("ss-scans").textContent = currentDevices.length;
+}
+
+/* ── Environment Stats ─────────────────────────────────────── */
+function renderEnvStats() {
+    $("env-nearby").textContent = currentClustered.length;
+    $("env-peak").textContent = analyticsData.today_peak || 0;
+    $("env-new").textContent = analyticsData.today_new || 0;
+    $("env-trusted").textContent = clusterSummary.known_devices || 0;
+    $("env-clusters").textContent = clusterSummary.mac_reduction || 0;
+}
+
+/* ── Signal Panels ─────────────────────────────────────────── */
+function renderSignalPanels() {
+    renderRSSIPanel();
+    renderCategoryPanel();
+    renderEcosystemPanel();
+    renderHeatmap();
+}
+
+function renderRSSIPanel() {
+    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
+    const el = $("rssi-full");
+    if (!devs.length) { el.innerHTML = '<div class="empty-msg">No devices</div>'; return; }
+    el.innerHTML = devs.slice(0, 15).map(d => {
+        const name = (d.best_name || d.name || "?").slice(0, 12);
+        const rssi = Math.round(d.avg_rssi || d.rssi || -100);
+        const pct = clamp(((rssi + 100) / 60) * 100, 0, 100);
+        const color = rssi > -50 ? "var(--green)" : rssi > -70 ? "var(--orange)" : "var(--red)";
+        return `<div class="rssi-row"><span class="rssi-name">${escHtml(name)}</span><div class="rssi-bar-o"><div class="rssi-bar-i" style="width:${pct}%;background:${color}"></div></div><span class="rssi-v">${rssi} dBm</span></div>`;
+    }).join("");
+}
+
+function renderCategoryPanel() {
+    const cats = clusterSummary.categories || {};
+    const el = $("cat-full");
+    if (!Object.keys(cats).length) { el.innerHTML = '<div class="empty-msg">No data</div>'; return; }
+    const icons = { phone:"📱", audio:"🎧", input:"🖱️", watch:"⌚", computer:"💻", tv:"📺", tracker:"📍", health:"❤️", gaming:"🎮", iot:"💡", apple:"🍎", nearby:"📶", unknown:"❓" };
+    el.innerHTML = Object.entries(cats).sort((a,b) => b[1]-a[1]).map(([cat, cnt]) =>
+        `<div class="cat-row"><span class="cat-icon">${icons[cat] || "❓"}</span><span class="cat-name">${cat}</span><span class="cat-count">${cnt}</span></div>`
+    ).join("");
+}
+
+function renderEcosystemPanel() {
+    const ecos = clusterSummary.ecosystems || {};
+    const el = $("eco-full");
+    if (!Object.keys(ecos).length) { el.innerHTML = '<div class="empty-msg">No data</div>'; return; }
+    const total = Object.values(ecos).reduce((a, b) => a + b, 0) || 1;
+    const ecoColors = { apple:"var(--purple)", samsung:"var(--accent)", google:"var(--green)", microsoft:"var(--cyan)", amazon:"var(--orange)" };
+    el.innerHTML = Object.entries(ecos).sort((a,b) => b[1]-a[1]).map(([eco, cnt]) => {
+        const pct = (cnt / total * 100).toFixed(0);
+        const color = ecoColors[eco] || "var(--tx-3)";
+        return `<div class="eco-row"><span class="eco-name">${eco}</span><div class="eco-bar"><div class="eco-bar-fill" style="width:${pct}%;background:${color}"></div></div><span class="eco-count">${cnt}</span></div>`;
+    }).join("");
+}
+
+function renderHeatmap() {
+    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
+    const el = $("heatmap");
+    if (!devs.length) { el.innerHTML = '<div class="empty-msg">No data</div>'; return; }
+    const buckets = 12;
+    el.innerHTML = devs.slice(0, 10).map(d => {
+        const name = (d.best_name || d.name || "?").slice(0, 10);
+        const rssiHist = d.rssi_history || [];
+        let cells = "";
+        for (let b = 0; b < buckets; b++) {
+            const idx = Math.floor(b * rssiHist.length / buckets);
+            const val = rssiHist[idx] ? (Array.isArray(rssiHist[idx]) ? rssiHist[idx][1] : rssiHist[idx]) : (d.avg_rssi || d.rssi || -100);
+            const intensity = clamp(((val + 100) / 60), 0, 1);
+            const r = Math.round(255 * (1 - intensity)), g = Math.round(255 * intensity);
+            cells += `<div class="hm-cell" style="background:rgba(${r},${g},80,.5)" title="${Math.round(val)} dBm"></div>`;
+        }
+        return `<div class="hm-row"><span class="hm-name">${escHtml(name)}</span><div class="hm-cells">${cells}</div></div>`;
+    }).join("");
+}
+
+/* ── Timeline ──────────────────────────────────────────────── */
+function addTimelineEvent(type, msg) {
+    timeline.unshift({ type, msg, time: new Date().toLocaleTimeString() });
+    if (timeline.length > 200) timeline.length = 200;
+    renderTimeline();
+}
+function renderTimeline() {
+    const el = $("tl-list");
+    if (!timeline.length) { el.innerHTML = '<div class="empty-msg">Events appear as scans run...</div>'; return; }
+    el.innerHTML = timeline.slice(0, 100).map(e => {
+        const cls = e.type === "scan" ? "tl-scan" : e.type === "alert" ? "tl-alert" : e.type === "jam" ? "tl-jam" : e.type === "tracker" ? "tl-tracker" : "tl-risk";
+        return `<div class="tl-entry"><span class="tl-time">${e.time}</span><span class="tl-type ${cls}">${e.type}</span><span class="tl-msg">${escHtml(e.msg)}</span></div>`;
+    }).join("");
+}
+$("btn-clear-tl").addEventListener("click", () => { timeline = []; renderTimeline(); });
+
+/* ── Channel Grid ──────────────────────────────────────────── */
+function simulateChannelActivity(devCount) {
+    for (let i = 0; i < 40; i++) {
+        if ([37, 38, 39].includes(i)) channelStats[i] += Math.floor(Math.random() * devCount * 3) + devCount;
+        else channelStats[i] += Math.floor(Math.random() * devCount);
+    }
+}
+function renderChannelGrid() {
+    const el = $("ch-grid");
+    const maxCount = Math.max(...channelStats, 1);
+    el.innerHTML = channelStats.map((cnt, i) => {
+        const isAdv = [37, 38, 39].includes(i);
+        const freq = 2402 + (i < 11 ? i * 2 : i < 37 ? (i + 1) * 2 : i === 37 ? 0 : i === 38 ? 24 : 78);
+        const intensity = cnt / maxCount;
+        const bg = isAdv ? `rgba(210,153,34,${.1 + intensity * .5})` : `rgba(88,166,255,${.05 + intensity * .3})`;
+        return `<div class="ch-cell" style="background:${bg};border-color:${isAdv ? 'var(--orange)' : 'var(--border)'}"><div class="ch-num">${i}</div><div class="ch-freq">${freq} MHz</div><div class="ch-count">${cnt}</div></div>`;
+    }).join("");
+}
+
+/* ── Proximity Radar ───────────────────────────────────────── */
+function startRadar() {
+    if (radarAnimFrame) return;
+    const canvas = $("radar-canvas");
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const size = Math.min(canvas.parentElement.clientWidth - 200, canvas.parentElement.clientHeight - 20, 600);
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    canvas.style.width = size + "px";
+    canvas.style.height = size + "px";
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    renderRadarFrame(ctx, size, size);
+}
+function stopRadar() { if (radarAnimFrame) { cancelAnimationFrame(radarAnimFrame); radarAnimFrame = null; } }
+
+function renderRadarFrame(ctx, w, h) {
+    const cx = w / 2, cy = h / 2, maxR = Math.min(cx, cy) - 30;
+    const styles = getComputedStyle(document.documentElement);
+    const bg = styles.getPropertyValue("--bg-1").trim() || "#0d1117";
+    const txFaint = styles.getPropertyValue("--tx-3").trim() || "#484f58";
+
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // Range rings
+    const rings = [{ r: 0.33, label: "-40 dBm" }, { r: 0.66, label: "-60 dBm" }, { r: 1.0, label: "-80 dBm" }];
+    rings.forEach(ring => {
+        ctx.beginPath();
+        ctx.arc(cx, cy, maxR * ring.r, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(88,166,255,0.12)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = txFaint;
+        ctx.font = "9px 'JetBrains Mono'";
+        ctx.fillText(ring.label, cx + 4, cy - maxR * ring.r + 12);
+    });
+
+    // Crosshairs
+    ctx.strokeStyle = "rgba(88,166,255,0.06)";
+    ctx.beginPath(); ctx.moveTo(cx, 10); ctx.lineTo(cx, h - 10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(10, cy); ctx.lineTo(w - 10, cy); ctx.stroke();
+
+    // Sweep line
+    radarAngle = (radarAngle + 0.015) % (Math.PI * 2);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(radarAngle) * maxR, cy + Math.sin(radarAngle) * maxR);
+    ctx.strokeStyle = "rgba(63,185,80,0.5)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    // Sweep trail
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, maxR, radarAngle - 0.4, radarAngle);
+    ctx.closePath();
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR);
+    grad.addColorStop(0, "rgba(63,185,80,0.08)");
+    grad.addColorStop(1, "rgba(63,185,80,0.02)");
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Plot devices
+    const devs = viewMode === "clustered" ? currentClustered : currentDevices;
+    $("radar-count").textContent = devs.length + " devices";
+
+    devs.forEach(d => {
+        const rssi = Math.round(d.avg_rssi || d.rssi || -100);
+        if (rssi <= -100) return;
+        const dist = clamp(((rssi + 30) / -60) * maxR, 15, maxR - 5);
+        const angle = hashToAngle(d.fingerprint_id || d.address || "");
+        const x = cx + Math.cos(angle) * dist;
+        const y = cy + Math.sin(angle) * dist;
+
+        const riskColors = { low: "#3fb950", medium: "#d29922", high: "#e67e22", critical: "#f85149" };
+        const color = riskColors[d.risk_level || "low"] || "#3fb950";
+
+        // Glow for high risk
+        if (d.risk_level === "critical" || d.risk_level === "high") {
+            ctx.beginPath();
+            ctx.arc(x, y, 12, 0, Math.PI * 2);
+            ctx.fillStyle = color + "22";
+            ctx.fill();
+        }
+
+        // Device dot
+        ctx.beginPath();
+        ctx.arc(x, y, d.tracker_suspect ? 7 : 5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        // Label
+        const name = ((d.best_name || d.name || "?")).slice(0, 12);
+        ctx.fillStyle = txFaint;
+        ctx.font = "9px Inter";
+        ctx.fillText(name, x + 10, y + 3);
+
+        // Category icon
+        ctx.font = "11px serif";
+        ctx.fillText(d.category_icon || "?", x - 16, y + 4);
+    });
+
+    // Center dot (scanner)
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#58a6ff";
+    ctx.fill();
+    ctx.fillStyle = txFaint;
+    ctx.font = "8px 'JetBrains Mono'";
+    ctx.fillText("YOU", cx + 8, cy + 3);
+
+    radarAnimFrame = requestAnimationFrame(() => renderRadarFrame(ctx, w, h));
+}
+
+function hashToAngle(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+    return (Math.abs(hash) % 628) / 100;
+}
+
+/* ── Tracker Detection Panel ───────────────────────────────── */
+function renderTrackerGrid() {
+    const grid = $("tracker-grid");
+    const badge = $("nav-tracker-badge");
+    const topBadge = $("tracker-top");
+    const statusCard = $("tracker-overview");
+
+    if (!trackerSuspects.length) {
+        grid.innerHTML = "";
+        badge.style.display = "none";
+        topBadge.textContent = "0";
+        statusCard.innerHTML = `<div class="tracker-status-card"><div class="tsc-icon">🛡️</div><div class="tsc-info"><div class="tsc-title">Environment Clear</div><div class="tsc-desc">No suspected trackers detected nearby.</div></div></div>`;
+        return;
+    }
+
+    badge.style.display = "";
+    badge.textContent = trackerSuspects.length;
+    topBadge.textContent = trackerSuspects.length;
+
+    statusCard.innerHTML = `<div class="tracker-status-card alert"><div class="tsc-icon">⚠️</div><div class="tsc-info"><div class="tsc-title">${trackerSuspects.length} Suspected Tracker(s)</div><div class="tsc-desc">Potential tracking devices detected in your vicinity.</div></div></div>`;
+
+    grid.innerHTML = trackerSuspects.map(t => {
+        const cls = t.confidence > 0.7 ? "tracker-high" : "tracker-med";
+        const icon = t.tracker_type.includes("airtag") ? "🍎📍" : t.tracker_type.includes("smarttag") ? "📱📍" : "📍";
+        return `<div class="tracker-card ${cls}">
+            <div class="tc-icon">${icon}</div>
+            <div class="tc-info">
+                <div class="tc-type">${escHtml(t.tracker_type || "Unknown Tracker")}</div>
+                <div class="tc-conf">Confidence: ${Math.round(t.confidence * 100)}%</div>
+                <div class="tc-conf-bar"><div class="tc-conf-fill" style="width:${Math.round(t.confidence * 100)}%"></div></div>
+                <div class="tc-reasons">${(t.detection_reasons || []).map(r => `<div class="tc-reason">• ${escHtml(r)}</div>`).join("")}</div>
+                <div class="tc-duration">${t.duration_minutes ? t.duration_minutes.toFixed(0) + " min nearby" : ""} ${t.is_following ? "· FOLLOWING" : ""}</div>
+            </div>
+        </div>`;
+    }).join("");
+}
+
+/* ── Analytics Dashboard ───────────────────────────────────── */
+function renderAnalytics() {
+    const a = analyticsData;
+    if (!a) return;
+    if ($("an-today")) $("an-today").textContent = a.today_devices || 0;
+    if ($("an-week")) $("an-week").textContent = a.week_total || 0;
+    if ($("an-peak")) $("an-peak").textContent = a.today_peak || 0;
+    if ($("an-returning")) $("an-returning").textContent = a.today_returning || 0;
+    if ($("an-new")) $("an-new").textContent = a.today_new || 0;
+    if ($("an-alltime")) $("an-alltime").textContent = a.all_time_total || 0;
+
+    // Weekly chart
+    const canvas = $("an-weekly-chart");
+    if (!canvas || !a.daily_chart) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const cw = canvas.clientWidth || 700;
+    canvas.width = cw * dpr;
+    canvas.height = 150 * dpr;
+    canvas.style.height = "150px";
+    ctx.scale(dpr, dpr);
+
+    const ch = 150;
+    const bars = a.daily_chart || [];
+    const maxVal = Math.max(...bars.map(b => b.count || 0), 1);
+    const barW = (cw - 40) / Math.max(bars.length, 1);
+    const styles = getComputedStyle(document.documentElement);
+    const accent = styles.getPropertyValue("--accent").trim() || "#58a6ff";
+    const txFaint = styles.getPropertyValue("--tx-3").trim() || "#484f58";
+
+    ctx.clearRect(0, 0, cw, ch);
+    bars.forEach((bar, i) => {
+        const h = ((bar.count || 0) / maxVal) * (ch - 30);
+        const x = 30 + i * barW;
+        const y = ch - 20 - h;
+
+        ctx.fillStyle = accent + "88";
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x + 4, y, barW - 8, h, 3);
+        else ctx.rect(x + 4, y, barW - 8, h);
+        ctx.fill();
+
+        if (bar.peak) {
+            const peakH = (bar.peak / maxVal) * (ch - 30);
+            ctx.fillStyle = "#f85149";
+            ctx.beginPath();
+            ctx.arc(x + barW / 2, ch - 20 - peakH, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.fillStyle = txFaint;
+        ctx.font = "9px 'JetBrains Mono'";
+        ctx.textAlign = "center";
+        ctx.fillText(bar.date ? bar.date.slice(5) : "", x + barW / 2, ch - 4);
+        ctx.fillText(bar.count || 0, x + barW / 2, y - 4);
+    });
+}
+
+/* ── Alert List & Rules ────────────────────────────────────── */
+function renderAlertList(alerts) {
+    if (alerts) alertList = alerts;
+    const el = $("alert-full");
+    const badge = $("nav-alert-badge");
+    const topBadge = $("alert-top");
+
+    badge.textContent = alertList.length;
+    topBadge.textContent = alertList.length;
+
+    if (!alertList.length) { el.innerHTML = '<div class="empty-msg">No alerts. System clean.</div>'; return; }
+    el.innerHTML = alertList.slice(0, 100).map(a => {
+        const d = a.data || a;
+        const lvl = d.level || "warning";
+        const cls = lvl === "critical" ? "al-crit" : lvl === "warning" ? "al-warn" : "al-info";
+        const ts = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : "";
+        return `<div class="alert-entry"><span class="al-time">${ts}</span><span class="al-lvl ${cls}">${lvl}</span><span class="al-msg">${escHtml(d.message || "Alert")}</span></div>`;
+    }).join("");
+}
+
+function renderAlertRules() {
+    const el = $("alert-rules");
+    if (!el || !alertRules.length) return;
+    el.innerHTML = alertRules.map(r =>
+        `<div class="ar-item ${r.enabled ? 'enabled' : 'disabled'}" onclick="toggleAlertRule('${r.id}', ${!r.enabled})"><span class="ar-dot"></span>${escHtml(r.name)}</div>`
+    ).join("");
+}
+window.toggleAlertRule = async function(id, enabled) {
+    await fetch("/api/alerts/rules", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ id, enabled }) });
+    const rule = alertRules.find(r => r.id === id);
+    if (rule) rule.enabled = enabled;
+    renderAlertRules();
+};
+
+/* ── Jammer Controls ───────────────────────────────────────── */
+$("j-mode").addEventListener("change", e => {
+    $("j-target-grp").style.display = e.target.value === "targeted" ? "" : "none";
+});
 $("btn-jam").addEventListener("click", async () => {
-    if (isJamming) {
+    if (jammerActive) {
         await fetch("/api/jammer/stop", { method: "POST" });
         addTimelineEvent("jam", "Jammer stopped");
     } else {
-        const mode = $("j-mode").value;
-        const channel = $("j-channel").value;
-        const target = $("j-target")?.value?.trim() || "";
-        await fetch("/api/jammer/start", {
-            method: "POST",
-            headers: {"Content-Type":"application/json"},
-            body: JSON.stringify({ mode, channel: parseInt(channel), target })
+        await fetch("/api/jammer/start", { method: "POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({ mode: $("j-mode").value, channel: parseInt($("j-channel").value), target: $("j-target")?.value || "" })
         });
-        addTimelineEvent("jam", `Jammer started: ${mode} on ch ${channel}`);
+        addTimelineEvent("jam", `Jammer started: ${$("j-mode").value} mode`);
     }
 });
 
-$("j-mode").addEventListener("change", () => {
-    const tg = $("j-target-grp");
-    if (tg) tg.style.display = $("j-mode").value === "targeted" ? "" : "none";
-});
+function updateJammer(status) {
+    jammerActive = status.is_active || false;
+    const btn = $("btn-jam");
+    btn.textContent = jammerActive ? "Stop Jammer" : "Start Jammer";
+    btn.classList.toggle("active", jammerActive);
+    $("jam-ind").classList.toggle("on", jammerActive);
+    $("jam-ind-txt").textContent = jammerActive ? "ACTIVE" : "Inactive";
+    $("jl-pkts").textContent = status.packets_sent || 0;
+    $("jl-mode").textContent = status.mode || "--";
+    $("jl-ch").textContent = status.channel || "--";
+    $("jl-be").textContent = status.backend || "--";
+    $("nav-jam-badge").style.display = jammerActive ? "" : "none";
+    $("pill-scan").classList.toggle("jamming", jammerActive);
 
-// Export alerts
-$("btn-export").addEventListener("click", async () => {
-    const btn = $("btn-export");
-    btn.textContent = "Exporting...";
-    try {
-        const res = await fetch("/api/export", { method: "POST" });
-        if (res.ok) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `blueshield_report_${new Date().toISOString().slice(0,10)}.json`;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-    } catch(e) { console.error(e); }
-    setTimeout(() => { btn.textContent = "Export"; }, 1500);
-});
-
-// Config save
-$("btn-save-cfg").addEventListener("click", async () => {
-    const data = {
-        scan_interval: parseInt($("cfg-interval").value) || 5,
-        scan_duration: parseInt($("cfg-duration").value) || 10,
-        alert_threshold: parseInt($("cfg-threshold").value) || 3,
-    };
-    await fetch("/api/config", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(data) });
-    $("scan-interval").value = data.scan_interval;
-    $("interval-display").textContent = data.scan_interval + "s";
-    $("btn-save-cfg").textContent = "Saved!";
-    setTimeout(() => { $("btn-save-cfg").textContent = "Save"; }, 1500);
-});
-
-// Reset
-$("btn-reset").addEventListener("click", async () => {
-    if (confirm("Reset all discovered devices, scan history, and alerts?")) {
-        await fetch("/api/reset", { method: "POST" });
-        scanCount = 0;
-        alertList = [];
-        timeline = [];
-        channelStats = new Array(40).fill(0);
-        selectedDeviceId = null;
-        $("device-detail").classList.remove("open");
-        renderAlertList();
-        renderTimeline();
-        renderChannelGrid();
-    }
-});
-
-// Trust actions (global so onclick works)
-window.trustFingerprint = async function(fpId) {
-    await fetch("/api/whitelist", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ fingerprint_id: fpId }) });
-};
-window.whitelistDevice = async function(addr) {
-    await fetch("/api/whitelist", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ address: addr }) });
-};
-
-// ── Jammer stats refresh ──────────────────────────────────────────
-setInterval(async () => {
-    if (isJamming) {
-        try { const r = await fetch("/api/jammer"); const d = await r.json(); updateJammerPanel(d); } catch {}
-    }
-}, 1000);
-
-// Fallback poll
-setInterval(fetchStatus, 15000);
-
-// ── Utilities ─────────────────────────────────────────────────────
-function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-
-function fmtTime(iso) {
-    if (!iso) return "--:--";
-    try { return new Date(iso).toLocaleTimeString("en-US", { hour12:false, hour:"2-digit", minute:"2-digit", second:"2-digit" }); }
-    catch { return typeof iso === "string" ? iso.substring(11, 19) : "--:--"; }
+    document.querySelectorAll(".ch-bar").forEach(bar => {
+        bar.classList.toggle("active", jammerActive && bar.dataset.ch == status.channel);
+    });
+    $("sb-jam").textContent = jammerActive ? `Jammer: ${status.mode}` : "Jammer: Off";
 }
 
-// ── Initial render ────────────────────────────────────────────────
-renderChannelGrid();
-renderTimeline();
-renderAlertList();
+/* ── Platform ──────────────────────────────────────────────── */
+function updatePlatform(p) {
+    $("pill-plat").textContent = p.os || "--";
+    $("cfg-plat").innerHTML = `
+        <div>OS: <strong>${p.os || "?"}</strong></div>
+        <div>Host: ${p.hostname || "?"}</div>
+        <div>Bleak: ${p.has_bleak ? "✓" : "✗"}</div>
+        <div>hcitool: ${p.has_hcitool ? "✓" : "✗"}</div>
+        <div>hcidump: ${p.has_hcidump ? "✓" : "✗"}</div>
+    `;
+}
+
+/* ── Status Bar ────────────────────────────────────────────── */
+function updateStatusBar() {
+    const devCount = viewMode === "clustered" ? currentClustered.length : currentDevices.length;
+    $("sb-dev").textContent = `${devCount} devices`;
+    $("sb-scans").textContent = `${clusterSummary.total_physical_devices || 0} physical`;
+
+    let maxRisk = "low";
+    currentClustered.forEach(d => {
+        if (d.risk_level === "critical") maxRisk = "critical";
+        else if (d.risk_level === "high" && maxRisk !== "critical") maxRisk = "high";
+        else if (d.risk_level === "medium" && maxRisk === "low") maxRisk = "medium";
+    });
+    $("sb-risk").textContent = `Risk: ${maxRisk.toUpperCase()}`;
+}
+
+/* ── Config Controls ───────────────────────────────────────── */
+$("btn-save-cfg").addEventListener("click", async () => {
+    const data = {
+        scan_interval: parseInt($("cfg-interval").value),
+        scan_duration: parseInt($("cfg-duration").value),
+        alert_threshold: parseInt($("cfg-threshold").value),
+    };
+    await fetch("/api/config", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data) });
+});
+$("btn-reset").addEventListener("click", async () => {
+    if (confirm("Reset all device data?")) await fetch("/api/reset", { method:"POST" });
+});
+$("btn-export").addEventListener("click", async () => {
+    try {
+        const res = await fetch("/api/export", { method:"POST" });
+        const blob = await res.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "blueshield_report.json";
+        a.click();
+    } catch {}
+});
+
+/* ── Live Demo Dashboard ───────────────────────────────────── */
+function renderLiveDemo() {
+    renderSafetyGauge();
+    renderPeoplePanel();
+    renderWeatherPanel();
+    renderLiveStats();
+    renderAIFeed();
+}
+
+function renderSafetyGauge() {
+    const s = safetyData;
+    if (!s || s.score === undefined) return;
+    const score = s.score || 0;
+    const circumference = 2 * Math.PI * 85; // r=85
+    const offset = circumference * (1 - score / 100);
+    const arc = $("sg-arc");
+    if (arc) {
+        arc.style.strokeDasharray = circumference;
+        arc.style.strokeDashoffset = offset;
+        arc.style.stroke = s.color || "var(--green)";
+        arc.style.transition = "stroke-dashoffset 1s ease, stroke .5s";
+    }
+    if ($("sg-score")) { $("sg-score").textContent = score; $("sg-score").style.color = s.color || "var(--green)"; }
+    if ($("sg-grade")) { $("sg-grade").textContent = s.grade || "?"; $("sg-grade").style.color = s.color || "var(--green)"; }
+
+    const factorsEl = $("sg-factors");
+    if (factorsEl && s.factors) {
+        factorsEl.innerHTML = s.factors.map(f => {
+            const cls = f.impact < 0 ? "sg-factor-neg" : "sg-factor-pos";
+            return `<div class="sg-factor ${cls}">${f.icon || ""} ${escHtml(f.name)}: ${f.impact > 0 ? "+" : ""}${f.impact}</div>`;
+        }).join("");
+    }
+}
+
+function renderPeoplePanel() {
+    const p = peopleData;
+    if (!p) return;
+    if ($("lp-count")) $("lp-count").textContent = p.estimated_people || 0;
+    if ($("lp-movement")) $("lp-movement").textContent = `Movement: ${p.movement_pattern || "—"}`;
+    const detail = $("lp-detail");
+    if (detail && p.clusters) {
+        detail.innerHTML = p.clusters.slice(0, 5).map(c =>
+            `<div>${c.ecosystem ? c.ecosystem.charAt(0).toUpperCase() + c.ecosystem.slice(1) : "?"}: ${c.devices.join(", ")}</div>`
+        ).join("") + (p.unassigned > 0 ? `<div style="color:var(--tx-3)">${p.unassigned} unassociated device(s)</div>` : "");
+    }
+}
+
+function renderWeatherPanel() {
+    const w = weatherData;
+    if (!w) return;
+    if ($("lw-density")) $("lw-density").textContent = w.density || "Clear";
+    if ($("lw-density-icon")) $("lw-density-icon").textContent = w.density_icon || "☀️";
+    if ($("lw-turb")) $("lw-turb").textContent = w.turbulence || "Calm";
+    if ($("lw-turb-icon")) $("lw-turb-icon").textContent = w.turbulence_icon || "🌊";
+    if ($("lw-wind")) $("lw-wind").textContent = w.wind || "Stable";
+    if ($("lw-wind-icon")) $("lw-wind-icon").textContent = w.wind_icon || "🧘";
+    if ($("lw-forecast")) $("lw-forecast").textContent = w.forecast || "Quiet";
+    if ($("lw-forecast-icon")) $("lw-forecast-icon").textContent = w.forecast_icon || "📉";
+}
+
+function renderLiveStats() {
+    if ($("ls-devices")) $("ls-devices").textContent = currentClustered.length;
+    if ($("ls-trackers")) $("ls-trackers").textContent = trackerSuspects.length;
+    if ($("ls-scans")) $("ls-scans").textContent = clusterSummary.total_physical_devices || 0;
+    if ($("ls-new")) $("ls-new").textContent = analyticsData.today_new || 0;
+}
+
+function renderAIFeed() {
+    const el = $("aif-scroll");
+    if (!el) return;
+    if (!Object.keys(classifications).length) {
+        el.innerHTML = '<div class="empty-msg" style="padding:8px">Scanning for devices...</div>';
+        return;
+    }
+    el.innerHTML = currentClustered.slice(0, 12).map(d => {
+        const cls = classifications[d.fingerprint_id || ""];
+        if (!cls || !cls.top) return "";
+        const confPct = Math.round(cls.top.confidence * 100);
+        const confCls = confPct >= 60 ? "aif-conf-high" : confPct >= 30 ? "aif-conf-med" : "aif-conf-low";
+        return `<div class="aif-item">
+            <span class="aif-icon">${cls.top.icon}</span>
+            <span class="aif-name">${escHtml(d.best_name || "Unknown")}</span>
+            <span class="aif-type">${escHtml(cls.top.label)}</span>
+            <span class="aif-conf ${confCls}">${confPct}%</span>
+        </div>`;
+    }).filter(Boolean).join("");
+}
+
+/* ── Time Travel ───────────────────────────────────────────── */
+async function fetchTimeTravel() {
+    try {
+        const res = await fetch("/api/time-travel");
+        const data = await res.json();
+        scanSnapshots = data.snapshots || [];
+        const slider = $("tt-slider");
+        if (slider && scanSnapshots.length > 0) {
+            slider.max = scanSnapshots.length - 1;
+            slider.value = scanSnapshots.length - 1;
+            const first = new Date(scanSnapshots[0].timestamp);
+            $("tt-start").textContent = first.toLocaleTimeString().slice(0, 5);
+            $("tt-end").textContent = "NOW";
+        }
+    } catch {}
+}
+
+if ($("tt-slider")) {
+    $("tt-slider").addEventListener("input", e => {
+        const idx = parseInt(e.target.value);
+        if (idx >= scanSnapshots.length - 1) {
+            timeTravelMode = false;
+            $("tt-live-btn").textContent = "🔴 LIVE";
+            $("tt-live-btn").style.color = "";
+            $("tt-info").textContent = "Live mode — showing real-time data";
+            return;
+        }
+        timeTravelMode = true;
+        $("tt-live-btn").textContent = "⏪ REPLAY";
+        $("tt-live-btn").style.color = "var(--orange)";
+        const snap = scanSnapshots[idx];
+        if (snap) {
+            const ts = new Date(snap.timestamp);
+            $("tt-info").textContent = `${ts.toLocaleTimeString()} — ${snap.device_count} devices, ${snap.people_count} people, safety: ${snap.safety_score}/100`;
+            // Update people count and safety for time travel view
+            if ($("lp-count")) $("lp-count").textContent = snap.people_count || 0;
+            if ($("sg-score")) $("sg-score").textContent = snap.safety_score || 0;
+            if ($("ls-devices")) $("ls-devices").textContent = snap.device_count || 0;
+        }
+    });
+}
+if ($("tt-live-btn")) {
+    $("tt-live-btn").addEventListener("click", () => {
+        timeTravelMode = false;
+        const slider = $("tt-slider");
+        if (slider && scanSnapshots.length) slider.value = scanSnapshots.length - 1;
+        $("tt-live-btn").textContent = "🔴 LIVE";
+        $("tt-live-btn").style.color = "";
+        $("tt-info").textContent = "Live mode — showing real-time data";
+        renderLiveDemo();
+    });
+}
+
+/* ── Initial fetch ─────────────────────────────────────────── */
+(async function init() {
+    try {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        currentDevices = data.devices || [];
+        currentClustered = data.clustered_devices || [];
+        clusterSummary = data.cluster_summary || {};
+        trackerSuspects = data.tracker_suspects || [];
+        analyticsData = data.analytics || {};
+        alertRules = data.alert_rules || [];
+        if (data.people) peopleData = data.people;
+        if (data.safety) safetyData = data.safety;
+        if (data.weather) weatherData = data.weather;
+        if (data.classifications) classifications = data.classifications;
+        updateAll();
+        updatePlatform(data.platform || {});
+        updateJammer(data.jammer || {});
+        renderAlertList(data.alerts || []);
+        renderAlertRules();
+    } catch {}
+})();
