@@ -1,9 +1,9 @@
 """
-BlueShield Web Dashboard
+BlueShield Web Dashboard v4.0
 
 Flask + Socket.IO backend for the BlueShield Bluetooth security monitor.
-Serves a real-time web dashboard with BLE fingerprinting, range filtering,
-and exposes REST/WebSocket APIs.
+Serves a real-time web dashboard with BLE fingerprinting, risk scoring,
+tracker detection, proximity radar, and exposes REST/WebSocket APIs.
 
 Run: python -m blueshield [--sim] [--port 8080]
 """
@@ -12,6 +12,7 @@ import asyncio
 import argparse
 import platform
 import shutil
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -26,6 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from blueshield.config.settings import load_config, save_config, LOG_DIR
 from blueshield.scanner.bt_scanner import BluetoothScanner, SimulatedScanner
 from blueshield.scanner.fingerprint import BLEFingerprintEngine
+from blueshield.scanner.risk_engine import calculate_risk, calculate_rssi_trend
+from blueshield.scanner.tracker_detector import TrackerDetector
+from blueshield.scanner.ai_classifier import AIDeviceClassifier, estimate_people, calculate_safety_score, get_bluetooth_weather
 from blueshield.jammer.bt_jammer import BluetoothJammer, SimulatedJammer
 from blueshield.logs.logger import BlueShieldLogger
 
@@ -43,11 +47,36 @@ jammer = None
 logger = None
 config = None
 fingerprint_engine = None
+tracker_detector = None
+ai_classifier = None
 auto_scan = True
 scan_interval = 5
 rssi_filter = -100  # default: all devices
 platform_info = {}
 _scan_lock = threading.Lock()
+
+# Configurable alert rules
+alert_rules = [
+    {"id": "unknown_close", "enabled": True, "name": "Unknown Close Proximity",
+     "condition": "rssi > -50 AND unknown", "message": "Unknown device in close proximity"},
+    {"id": "long_presence", "enabled": True, "name": "Long Presence",
+     "condition": "duration > 1800 AND unknown", "message": "Device present for >30 minutes"},
+    {"id": "mac_rotation", "enabled": True, "name": "MAC Rotation",
+     "condition": "mac_count > 3", "message": "Rapid MAC rotation detected"},
+    {"id": "tracker_detected", "enabled": True, "name": "Tracker Detected",
+     "condition": "tracker_suspect", "message": "Possible tracker detected"},
+    {"id": "approaching", "enabled": True, "name": "Approaching Device",
+     "condition": "approaching AND unknown", "message": "Unknown device approaching"},
+    {"id": "critical_risk", "enabled": True, "name": "Critical Risk",
+     "condition": "risk_level == critical", "message": "Critical risk device detected"},
+]
+
+# Device watch list (alert when device re-appears)
+watch_list = set()
+
+# Time-travel snapshot history (stores last N scan snapshots)
+scan_snapshots = []
+MAX_SNAPSHOTS = 120  # ~10 minutes at 5s interval
 
 # Range presets: name -> RSSI threshold
 RANGE_PRESETS = {
@@ -103,8 +132,60 @@ def run_async(coro):
     return result[0]
 
 
+def evaluate_alert_rules(device_fp):
+    """Check if a device triggers any alert rules."""
+    triggered = []
+    for rule in alert_rules:
+        if not rule["enabled"]:
+            continue
+
+        hit = False
+        rid = rule["id"]
+
+        if rid == "unknown_close":
+            if not device_fp.is_known and device_fp.avg_rssi > -50:
+                hit = True
+        elif rid == "long_presence":
+            duration = device_fp.last_seen - device_fp.first_seen
+            if not device_fp.is_known and duration > 1800:
+                hit = True
+        elif rid == "mac_rotation":
+            if len(device_fp.mac_addresses) > 3:
+                hit = True
+        elif rid == "tracker_detected":
+            if device_fp.tracker_suspect:
+                hit = True
+        elif rid == "approaching":
+            if device_fp.rssi_trend == "approaching" and not device_fp.is_known:
+                hit = True
+        elif rid == "critical_risk":
+            if device_fp.risk_level == "critical":
+                hit = True
+
+        if hit:
+            triggered.append({
+                "rule_id": rid,
+                "rule_name": rule["name"],
+                "message": rule["message"],
+                "device_id": device_fp.fingerprint_id,
+                "device_name": device_fp.best_name,
+            })
+
+    # Check watch list
+    if device_fp.fingerprint_id in watch_list:
+        triggered.append({
+            "rule_id": "watch_return",
+            "rule_name": "Watch List Return",
+            "message": f"Watched device returned: {device_fp.best_name}",
+            "device_id": device_fp.fingerprint_id,
+            "device_name": device_fp.best_name,
+        })
+
+    return triggered
+
+
 def do_scan_and_emit():
-    """Execute a scan, feed fingerprint engine, and emit results via Socket.IO."""
+    """Execute a scan, feed fingerprint engine, run risk/tracker analysis, emit results."""
     global fingerprint_engine
     with _scan_lock:
         try:
@@ -125,10 +206,15 @@ def do_scan_and_emit():
                 # Get fingerprint data from scanner if available
                 mfr_id = 0
                 payload_len = 0
+                mfr_data_bytes = b""
+                raw_adv_data = {}
                 dev_obj = scanner.devices.get(addr.upper())
                 if dev_obj and hasattr(dev_obj, '_fingerprint_data'):
-                    mfr_id = dev_obj._fingerprint_data.get("manufacturer_id", 0)
-                    payload_len = dev_obj._fingerprint_data.get("payload_len", 0)
+                    fp_data = dev_obj._fingerprint_data
+                    mfr_id = fp_data.get("manufacturer_id", 0)
+                    payload_len = fp_data.get("payload_len", 0)
+                    mfr_data_bytes = fp_data.get("mfr_data_bytes", b"")
+                    raw_adv_data = fp_data.get("raw_adv_data", {})
 
                 fingerprint_engine.record_advertisement(
                     mac=addr,
@@ -141,11 +227,94 @@ def do_scan_and_emit():
                     category=category,
                     category_icon=category_icon,
                     manufacturer_name=manufacturer,
+                    mfr_data_bytes=mfr_data_bytes,
+                    raw_adv_data=raw_adv_data,
                 )
 
             # Run clustering
             fingerprint_engine.run_clustering()
 
+            # ── Run risk scoring and tracker detection on each cluster ──
+            tracker_suspects = []
+            rule_alerts = []
+
+            for fp_id, fp in fingerprint_engine.clusters.items():
+                rssi_hist = fingerprint_engine.get_rssi_history(fp_id)
+
+                # Risk assessment
+                risk = calculate_risk(
+                    fingerprint_id=fp_id,
+                    name=fp.best_name,
+                    manufacturer_id=fp.manufacturer_id,
+                    manufacturer_name=fp.manufacturer_name,
+                    is_known=fp.is_known,
+                    mac_count=len(fp.mac_addresses),
+                    rssi_history=rssi_hist,
+                    first_seen=fp.first_seen,
+                    last_seen=fp.last_seen,
+                    observation_count=fp.observation_count,
+                    avg_rssi=fp.avg_rssi,
+                    service_uuids=fp.service_uuids,
+                    tracker_suspect=fp.tracker_suspect,
+                    category=fp.category,
+                )
+                fp.risk_score = risk.score
+                fp.risk_level = risk.level
+                fp.risk_factors = risk.factors
+                fp.rssi_trend = risk.rssi_trend
+                fp.movement_indicator = risk.rssi_trend
+
+                # Tracker detection
+                suspect = tracker_detector.evaluate_device(
+                    device_id=fp_id,
+                    name=fp.best_name,
+                    manufacturer_id=fp.manufacturer_id,
+                    service_uuids=fp.service_uuids,
+                    payload_len=int(fp.avg_payload_len),
+                    rssi_history=rssi_hist,
+                    first_seen=fp.first_seen,
+                    last_seen=fp.last_seen,
+                    mfr_data_bytes=b"",  # Already evaluated from raw
+                    category=fp.category,
+                )
+                if suspect:
+                    fp.tracker_suspect = True
+                    fp.tracker_type = suspect.tracker_type
+                    fp.tracker_confidence = suspect.confidence
+                    # Re-evaluate risk with tracker flag
+                    risk = calculate_risk(
+                        fingerprint_id=fp_id,
+                        name=fp.best_name,
+                        manufacturer_id=fp.manufacturer_id,
+                        manufacturer_name=fp.manufacturer_name,
+                        is_known=fp.is_known,
+                        mac_count=len(fp.mac_addresses),
+                        rssi_history=rssi_hist,
+                        first_seen=fp.first_seen,
+                        last_seen=fp.last_seen,
+                        observation_count=fp.observation_count,
+                        avg_rssi=fp.avg_rssi,
+                        service_uuids=fp.service_uuids,
+                        tracker_suspect=True,
+                        category=fp.category,
+                    )
+                    fp.risk_score = risk.score
+                    fp.risk_level = risk.level
+                    fp.risk_factors = risk.factors
+                    tracker_suspects.append(suspect.to_dict())
+                else:
+                    fp.tracker_suspect = False
+
+                # Evaluate alert rules
+                alerts = evaluate_alert_rules(fp)
+                rule_alerts.extend(alerts)
+
+            # Feed analytics tracker
+            fp_ids = list(fingerprint_engine.clusters.keys())
+            device_count = len(fp_ids)
+            logger.analytics.record_scan(fp_ids, device_count)
+
+            # Emit basic alerts
             if result.get("unknown_devices", 0) > 0:
                 alert_data = {
                     "level": result["alert_status"],
@@ -158,17 +327,79 @@ def do_scan_and_emit():
                     "data": alert_data,
                 })
 
+            # Emit rule-based alerts
+            for ra in rule_alerts:
+                socketio.emit("alert", {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "data": {
+                        "level": "warning" if "critical" not in ra["rule_id"] else "critical",
+                        "message": ra["message"],
+                        "rule_id": ra["rule_id"],
+                        "device_id": ra["device_id"],
+                        "device_name": ra["device_name"],
+                    },
+                })
+
             socketio.emit("scan_result", result)
 
-            # Emit both raw devices and clustered view
+            # Emit comprehensive device update
             clustered = fingerprint_engine.get_clustered_devices()
             cluster_summary = fingerprint_engine.get_cluster_summary()
+            analytics_summary = logger.analytics.get_summary()
+
+            # ── AI Classification, People Detection, Safety, Weather ──
+            classifications = {}
+            for fp_id, fp in fingerprint_engine.clusters.items():
+                cr = ai_classifier.classify(
+                    device_id=fp_id, name=fp.best_name, category=fp.category,
+                    ecosystem=fp.ecosystem or "", manufacturer_id=fp.manufacturer_id,
+                    manufacturer_name=fp.manufacturer_name,
+                    service_uuids=fp.service_uuids, payload_len=int(fp.avg_payload_len),
+                    avg_rssi=fp.avg_rssi, is_known=fp.is_known,
+                    tracker_suspect=fp.tracker_suspect,
+                    mac_count=len(fp.mac_addresses),
+                )
+                classifications[fp_id] = cr.to_dict()
+
+            people = estimate_people(clustered)
+            safety = calculate_safety_score(clustered, len(tracker_suspects))
+            weather = get_bluetooth_weather(clustered, analytics_summary)
+
+            # ── Time travel snapshot ──
+            snapshot = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "devices": [{
+                    "fingerprint_id": d.get("fingerprint_id"),
+                    "best_name": d.get("best_name"),
+                    "category": d.get("category"),
+                    "category_icon": d.get("category_icon"),
+                    "avg_rssi": d.get("avg_rssi"),
+                    "risk_level": d.get("risk_level"),
+                    "risk_score": d.get("risk_score"),
+                    "rssi_trend": d.get("rssi_trend"),
+                    "ecosystem": d.get("ecosystem"),
+                    "is_known": d.get("is_known"),
+                    "tracker_suspect": d.get("tracker_suspect"),
+                } for d in clustered],
+                "people_count": people["estimated_people"],
+                "safety_score": safety["score"],
+                "device_count": len(clustered),
+            }
+            scan_snapshots.append(snapshot)
+            if len(scan_snapshots) > MAX_SNAPSHOTS:
+                scan_snapshots.pop(0)
 
             socketio.emit("device_update", {
                 "summary": scanner.get_device_summary(),
                 "devices": scanner.get_all_devices(),
                 "clustered_devices": clustered,
                 "cluster_summary": cluster_summary,
+                "tracker_suspects": tracker_suspects,
+                "analytics": analytics_summary,
+                "classifications": classifications,
+                "people": people,
+                "safety": safety,
+                "weather": weather,
             })
             return result
         except Exception as e:
@@ -202,6 +433,11 @@ def api_status():
         "range_presets": RANGE_PRESETS,
         "platform": platform_info,
         "total_scans": scanner.total_scans,
+        "tracker_suspects": tracker_detector.get_all_suspects() if tracker_detector else [],
+        "analytics": logger.analytics.get_summary() if logger else {},
+        "people": estimate_people(clustered) if clustered else {},
+        "safety": calculate_safety_score(clustered, len(tracker_detector.get_all_suspects()) if tracker_detector else 0),
+        "weather": get_bluetooth_weather(clustered, logger.analytics.get_summary() if logger else {}),
     })
 
 
@@ -259,7 +495,6 @@ def api_set_range():
 @app.route("/api/range", methods=["GET"])
 def api_get_range():
     """Get current range settings."""
-    # Find which preset matches
     current_preset = "custom"
     for name, val in RANGE_PRESETS.items():
         if val == rssi_filter:
@@ -323,7 +558,6 @@ def api_whitelist_add():
         logger.log_event("whitelist_add", {"fingerprint_id": fp_id})
     elif address:
         scanner.add_known_device(address)
-        # Also trust the fingerprint cluster this MAC belongs to
         if fingerprint_engine:
             cluster_id = fingerprint_engine.get_fingerprint_for_mac(address)
             if cluster_id:
@@ -344,6 +578,7 @@ def api_whitelist_add():
 
 @app.route("/api/whitelist", methods=["DELETE"])
 def api_whitelist_remove():
+    """Untrust a device — works with both MAC and fingerprint ID."""
     data = request.get_json(force=True, silent=True) or {}
     address = data.get("address", "").upper()
     fp_id = data.get("fingerprint_id", "")
@@ -377,16 +612,20 @@ def api_export():
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
-    global fingerprint_engine
+    global fingerprint_engine, tracker_detector, scan_snapshots
     scanner.devices.clear()
     scanner.scan_history.clear()
     scanner.total_scans = 0
     fingerprint_engine = BLEFingerprintEngine()
+    tracker_detector = TrackerDetector()
+    scan_snapshots = []
     socketio.emit("device_update", {
         "summary": scanner.get_device_summary(),
         "devices": [],
         "clustered_devices": [],
         "cluster_summary": fingerprint_engine.get_cluster_summary(),
+        "tracker_suspects": [],
+        "analytics": logger.analytics.get_summary(),
     })
     return jsonify({"status": "reset"})
 
@@ -412,6 +651,152 @@ def api_platform():
     return jsonify(platform_info)
 
 
+# ── New v4 API endpoints ─────────────────────────────────────────────────────
+
+@app.route("/api/ghost", methods=["POST"])
+def api_ghost():
+    """Emergency shutdown (Ghost Mode) — only works on Linux/RPi."""
+    if platform_info.get("os") == "Linux":
+        socketio.emit("ghost_mode", {"status": "shutting_down"})
+        logger.log_event("ghost_mode", {"status": "activated"})
+        time.sleep(0.5)
+        try:
+            subprocess.Popen(["sudo", "shutdown", "now"])
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"status": "shutting_down"})
+    else:
+        # Simulated on non-Linux
+        socketio.emit("ghost_mode", {"status": "simulated"})
+        return jsonify({"status": "simulated", "message": "Ghost mode only available on Linux/RPi"})
+
+
+@app.route("/api/analytics")
+def api_analytics():
+    """Get historical device analytics."""
+    return jsonify(logger.analytics.get_summary() if logger else {})
+
+
+@app.route("/api/trackers")
+def api_trackers():
+    """Get all suspected trackers."""
+    return jsonify(tracker_detector.get_all_suspects() if tracker_detector else [])
+
+
+@app.route("/api/device/<device_id>/rssi-history")
+def api_device_rssi_history(device_id):
+    """Get RSSI history for a specific fingerprint."""
+    history = fingerprint_engine.get_rssi_history(device_id) if fingerprint_engine else []
+    return jsonify({"device_id": device_id, "rssi_history": history})
+
+
+@app.route("/api/device/<device_id>/packets")
+def api_device_packets(device_id):
+    """Get raw advertisement data for a specific fingerprint."""
+    if fingerprint_engine and device_id in fingerprint_engine.clusters:
+        fp = fingerprint_engine.clusters[device_id]
+        return jsonify({
+            "device_id": device_id,
+            "device_name": fp.best_name,
+            "manufacturer_id": fp.manufacturer_id,
+            "manufacturer_name": fp.manufacturer_name,
+            "service_uuids": fp.service_uuids,
+            "packet_data": fp.raw_adv_data,
+            "mac_addresses": fp.mac_addresses,
+            "category": fp.category,
+            "ecosystem": fp.ecosystem,
+        })
+    return jsonify({"error": "device not found"}), 404
+
+
+@app.route("/api/alerts/rules", methods=["GET"])
+def api_get_alert_rules():
+    """Get configurable alert rules."""
+    return jsonify(alert_rules)
+
+
+@app.route("/api/alerts/rules", methods=["POST"])
+def api_set_alert_rules():
+    """Update alert rules (toggle enabled/disabled)."""
+    global alert_rules
+    data = request.get_json(force=True, silent=True) or {}
+    rule_id = data.get("id")
+    enabled = data.get("enabled")
+    if rule_id is not None and enabled is not None:
+        for rule in alert_rules:
+            if rule["id"] == rule_id:
+                rule["enabled"] = bool(enabled)
+                break
+    return jsonify(alert_rules)
+
+
+@app.route("/api/alerts/watch", methods=["POST"])
+def api_watch_device():
+    """Add a device to the watch list (alert when it re-appears)."""
+    data = request.get_json(force=True, silent=True) or {}
+    fp_id = data.get("fingerprint_id", "")
+    if fp_id:
+        watch_list.add(fp_id)
+        return jsonify({"status": "watching", "fingerprint_id": fp_id})
+    return jsonify({"error": "fingerprint_id required"}), 400
+
+
+@app.route("/api/alerts/watch", methods=["DELETE"])
+def api_unwatch_device():
+    """Remove a device from the watch list."""
+    data = request.get_json(force=True, silent=True) or {}
+    fp_id = data.get("fingerprint_id", "")
+    watch_list.discard(fp_id)
+    return jsonify({"status": "unwatched", "fingerprint_id": fp_id})
+
+
+@app.route("/api/classify/<device_id>")
+def api_classify_device(device_id):
+    """AI classification for a single device."""
+    if fingerprint_engine and device_id in fingerprint_engine.clusters:
+        fp = fingerprint_engine.clusters[device_id]
+        cr = ai_classifier.classify(
+            device_id=device_id, name=fp.best_name, category=fp.category,
+            ecosystem=fp.ecosystem or "", manufacturer_id=fp.manufacturer_id,
+            manufacturer_name=fp.manufacturer_name,
+            service_uuids=fp.service_uuids, payload_len=int(fp.avg_payload_len),
+            avg_rssi=fp.avg_rssi, is_known=fp.is_known,
+            tracker_suspect=fp.tracker_suspect,
+            mac_count=len(fp.mac_addresses),
+        )
+        return jsonify(cr.to_dict())
+    return jsonify({"error": "device not found"}), 404
+
+
+@app.route("/api/people")
+def api_people():
+    """Human presence estimation."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    return jsonify(estimate_people(clustered))
+
+
+@app.route("/api/safety")
+def api_safety():
+    """Environment safety score."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    tc = len(tracker_detector.get_all_suspects()) if tracker_detector else 0
+    return jsonify(calculate_safety_score(clustered, tc))
+
+
+@app.route("/api/weather")
+def api_weather():
+    """Bluetooth weather report."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    analytics = logger.analytics.get_summary() if logger else {}
+    return jsonify(get_bluetooth_weather(clustered, analytics))
+
+
+@app.route("/api/time-travel")
+def api_time_travel():
+    """Return scan snapshots for time travel playback."""
+    return jsonify({"snapshots": scan_snapshots})
+
+
 # ── Socket.IO Events ────────────────────────────────────────────────────────
 
 @socketio.on("connect")
@@ -430,6 +815,12 @@ def on_connect():
         "rssi_filter": rssi_filter,
         "range_presets": RANGE_PRESETS,
         "platform": platform_info,
+        "tracker_suspects": tracker_detector.get_all_suspects() if tracker_detector else [],
+        "analytics": logger.analytics.get_summary() if logger else {},
+        "alert_rules": alert_rules,
+        "people": estimate_people(clustered) if clustered else {},
+        "safety": calculate_safety_score(clustered, len(tracker_detector.get_all_suspects()) if tracker_detector else 0),
+        "weather": get_bluetooth_weather(clustered, logger.analytics.get_summary() if logger else {}),
     })
 
 
@@ -471,7 +862,8 @@ def background_scan_loop():
 # ── Entry Point ──────────────────────────────────────────────────────────────
 
 def main():
-    global scanner, jammer, logger, config, scan_interval, platform_info, auto_scan, fingerprint_engine
+    global scanner, jammer, logger, config, scan_interval, platform_info
+    global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
 
     parser = argparse.ArgumentParser(description="BlueShield Web Dashboard")
     parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware)")
@@ -487,9 +879,15 @@ def main():
     print(f"[BlueShield] Bleak available: {platform_info['has_bleak']}")
     print(f"[BlueShield] hcitool available: {platform_info['has_hcitool']}")
 
-    # Initialize fingerprint engine
+    # Initialize engines
     fingerprint_engine = BLEFingerprintEngine()
-    print("[BlueShield] BLE Fingerprinting engine initialized")
+    tracker_detector = TrackerDetector()
+    ai_classifier = AIDeviceClassifier()
+    print("[BlueShield] BLE Fingerprinting engine v4.0 initialized")
+    print("[BlueShield] Tracker detection engine initialized")
+    print("[BlueShield] Risk scoring engine initialized")
+    print("[BlueShield] AI device classifier initialized")
+    print("[BlueShield] People detection & safety scoring active")
 
     if args.sim:
         print("[BlueShield] Using SIMULATED scanner and jammer")
@@ -510,7 +908,7 @@ def main():
     scan_thread = threading.Thread(target=background_scan_loop, daemon=True)
     scan_thread.start()
 
-    print(f"[BlueShield] Dashboard starting at http://localhost:{args.port}")
+    print(f"[BlueShield] Dashboard v4.0 starting at http://localhost:{args.port}")
     socketio.run(app, host=args.host, port=args.port, debug=False, allow_unsafe_werkzeug=True)
 
 
