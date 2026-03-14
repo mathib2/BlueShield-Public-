@@ -1,10 +1,13 @@
 /**
- * BlueShield v4.0 — RF Intelligence Platform Dashboard
+ * BlueShield v5.0 — Bluetooth Intelligence Platform Dashboard
  *
  * Features: Tab navigation, device table (clustered/raw), split-pane detail,
- * risk scoring, movement indicators, proximity radar, RSSI charts, tracker
- * detection, ecosystem graph, analytics, packet inspector, ghost mode,
- * trust/untrust toggle, configurable alerts, channel grid, timeline.
+ * risk scoring, movement indicators, proximity radar w/ trails, RSSI charts,
+ * tracker detection, ecosystem graph, analytics, packet inspector, ghost mode,
+ * trust/untrust toggle, configurable alerts, channel grid, timeline,
+ * AI classification, people detection, BT weather, time travel playback,
+ * following detection, shadow devices, environment fingerprint,
+ * conversation graph, device life story, advanced mode.
  */
 
 /* ── Helpers ───────────────────────────────────────────────── */
@@ -37,6 +40,12 @@ let safetyData       = {};
 let weatherData      = {};
 let scanSnapshots    = [];
 let timeTravelMode   = false;
+let followingAlerts  = [];
+let shadowDevices    = [];
+let envData          = {};
+let trailData        = {};
+let advancedMode     = false;
+let graphData        = null;
 
 /* ── Socket.IO ─────────────────────────────────────────────── */
 const socket = io();
@@ -61,8 +70,14 @@ socket.on("status", data => {
     if (data.safety) safetyData = data.safety;
     if (data.weather) weatherData = data.weather;
     if (data.classifications) classifications = data.classifications;
+    if (data.following) followingAlerts = data.following;
+    if (data.shadows) shadowDevices = data.shadows;
+    if (data.environment) envData = data.environment;
+    if (data.trails) trailData = data.trails;
+    if (data.advanced_mode !== undefined) advancedMode = data.advanced_mode;
     autoScan = data.auto_scan !== false;
     updateAutoScanBtn();
+    updateAdvancedModeBtn();
     updateAll();
     updatePlatform(data.platform || {});
     updateJammer(data.jammer || {});
@@ -92,7 +107,15 @@ socket.on("device_update", data => {
     if (data.people) peopleData = data.people;
     if (data.safety) safetyData = data.safety;
     if (data.weather) weatherData = data.weather;
+    if (data.following) followingAlerts = data.following;
+    if (data.shadows) shadowDevices = data.shadows;
+    if (data.environment) envData = data.environment;
+    if (data.trails) trailData = data.trails;
     updateAll();
+});
+socket.on("advanced_mode", data => {
+    advancedMode = data.enabled;
+    updateAdvancedModeBtn();
 });
 
 socket.on("alert", data => {
@@ -119,6 +142,9 @@ function updateAll() {
     renderSignalPanels();
     renderChannelGrid();
     renderTrackerGrid();
+    renderFollowingGrid();
+    renderShadowGrid();
+    renderConversationGraph();
     renderAnalytics();
     renderLiveDemo();
     updateStatusBar();
@@ -136,6 +162,9 @@ function switchTab(tab) {
     document.querySelectorAll(".tab-pane").forEach(p => p.classList.toggle("active", p.id === "tab-" + tab));
     if (tab === "radar") startRadar(); else stopRadar();
     if (tab === "analytics") renderAnalytics();
+    if (tab === "graph") renderConversationGraph();
+    if (tab === "following") renderFollowingGrid();
+    if (tab === "shadows") renderShadowGrid();
     if (tab === "live") { renderLiveDemo(); fetchTimeTravel(); }
 }
 
@@ -432,7 +461,18 @@ function renderDetailPanel() {
     }
     html += `</div>`;
 
+    // Life Story placeholder (loaded async)
+    html += `<div id="life-story-section"></div>`;
+
     body.innerHTML = html;
+
+    // Async load life story
+    if (fpId) {
+        fetchLifeStory(fpId).then(story => {
+            const el = document.getElementById("life-story-section");
+            if (el) el.innerHTML = renderLifeStorySection(story);
+        });
+    }
 }
 
 function detailRow(label, val) {
@@ -770,6 +810,254 @@ function renderTrackerGrid() {
             </div>
         </div>`;
     }).join("");
+}
+
+/* ── Following Detection Panel ─────────────────────────────── */
+function renderFollowingGrid() {
+    const grid = $("follow-grid");
+    const badge = $("nav-follow-badge");
+    const topBadge = $("follow-top");
+    const overview = $("follow-overview");
+    if (!grid || !badge) return;
+
+    if (!followingAlerts || !followingAlerts.length) {
+        grid.innerHTML = "";
+        badge.style.display = "none";
+        if (topBadge) topBadge.textContent = "0";
+        if (overview) overview.innerHTML = `<div class="follow-status-card"><div class="fsc-icon">🛡️</div><div class="fsc-info"><div class="fsc-title">All Clear</div><div class="fsc-desc">No devices appear to be following you.</div></div></div>`;
+        return;
+    }
+
+    badge.style.display = "";
+    badge.textContent = followingAlerts.length;
+    if (topBadge) topBadge.textContent = followingAlerts.length;
+
+    const threat = followingAlerts.some(f => f.threat_level === "following");
+    if (overview) overview.innerHTML = `<div class="follow-status-card${threat ? " alert" : ""}"><div class="fsc-icon">${threat ? "⚠️" : "👁️"}</div><div class="fsc-info"><div class="fsc-title">${followingAlerts.length} Device(s) of Interest</div><div class="fsc-desc">${threat ? "One or more devices may be following you!" : "Monitoring suspicious patterns."}</div></div></div>`;
+
+    grid.innerHTML = followingAlerts.map(f => {
+        const threatCls = f.threat_level === "following" ? "threat-following" : f.threat_level === "suspicious" ? "threat-suspicious" : "threat-monitoring";
+        const icon = f.threat_level === "following" ? "🚨" : f.threat_level === "suspicious" ? "👁️" : "📡";
+        const conf = Math.round((f.confidence || 0) * 100);
+        return `<div class="follow-card ${threatCls}">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+                <span style="font-size:1.4rem">${icon}</span>
+                <div>
+                    <div style="font-weight:700;color:var(--tx-1);font-size:.88rem">${escHtml(f.device_name || f.device_id || "Unknown")}</div>
+                    <div style="font-size:.72rem;color:var(--tx-3);text-transform:uppercase">${escHtml(f.threat_level || "monitoring")}</div>
+                </div>
+            </div>
+            <div style="margin-bottom:6px">
+                <div style="font-size:.72rem;color:var(--tx-3);margin-bottom:2px">Confidence: ${conf}%</div>
+                <div style="height:4px;background:var(--bg-3);border-radius:2px;overflow:hidden"><div style="height:100%;width:${conf}%;background:${conf > 70 ? 'var(--red)' : conf > 40 ? 'var(--orange)' : 'var(--accent)'};border-radius:2px"></div></div>
+            </div>
+            ${f.reasons ? `<div style="font-size:.68rem;color:var(--tx-2)">${(Array.isArray(f.reasons) ? f.reasons : []).map(r => `<div>• ${escHtml(r)}</div>`).join("")}</div>` : ""}
+            ${f.duration_minutes ? `<div style="font-size:.68rem;color:var(--tx-3);margin-top:4px">Tracking for ${Math.round(f.duration_minutes)} min</div>` : ""}
+            ${f.scan_count ? `<div style="font-size:.68rem;color:var(--tx-3)">Seen in ${f.scan_count} scans</div>` : ""}
+        </div>`;
+    }).join("");
+}
+
+/* ── Shadow Device Detection Panel ────────────────────────── */
+function renderShadowGrid() {
+    const grid = $("shadow-grid");
+    const badge = $("nav-shadow-badge");
+    const topBadge = $("shadow-top");
+    const overview = $("shadow-overview");
+    if (!grid || !badge) return;
+
+    if (!shadowDevices || !shadowDevices.length) {
+        grid.innerHTML = "";
+        badge.style.display = "none";
+        if (topBadge) topBadge.textContent = "0";
+        if (overview) overview.innerHTML = `<div class="shadow-status-card"><div class="shsc-icon">🌙</div><div class="shsc-info"><div class="shsc-title">No Shadows Detected</div><div class="shsc-desc">No devices exhibiting stealth behavior.</div></div></div>`;
+        return;
+    }
+
+    badge.style.display = "";
+    badge.textContent = shadowDevices.length;
+    if (topBadge) topBadge.textContent = shadowDevices.length;
+
+    const high = shadowDevices.filter(s => (s.stealth_score || 0) > 0.7).length;
+    if (overview) overview.innerHTML = `<div class="shadow-status-card${high ? " alert" : ""}"><div class="shsc-icon">${high ? "👻" : "🌙"}</div><div class="shsc-info"><div class="shsc-title">${shadowDevices.length} Shadow Device(s)</div><div class="shsc-desc">${high ? high + " high-stealth device(s) detected!" : "Monitoring devices with intermittent visibility."}</div></div></div>`;
+
+    grid.innerHTML = shadowDevices.map(s => {
+        const score = Math.round((s.stealth_score || 0) * 100);
+        const cls = score > 70 ? "shadow-high" : "shadow-med";
+        return `<div class="shadow-card ${cls}">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+                <span style="font-size:1.4rem">👻</span>
+                <div>
+                    <div style="font-weight:700;color:var(--tx-1);font-size:.88rem">${escHtml(s.device_name || s.device_id || "Unknown")}</div>
+                    <div style="font-size:.72rem;color:var(--purple);text-transform:uppercase">Stealth Score: ${score}%</div>
+                </div>
+            </div>
+            <div style="height:4px;background:var(--bg-3);border-radius:2px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${score}%;background:var(--purple);border-radius:2px"></div></div>
+            ${s.behavior ? `<div style="font-size:.72rem;color:var(--tx-2);margin-bottom:4px">${escHtml(s.behavior)}</div>` : ""}
+            ${s.appearances ? `<div style="font-size:.68rem;color:var(--tx-3)">Appearances: ${s.appearances}</div>` : ""}
+            ${s.disappearances ? `<div style="font-size:.68rem;color:var(--tx-3)">Disappearances: ${s.disappearances}</div>` : ""}
+            ${s.avg_visible_duration ? `<div style="font-size:.68rem;color:var(--tx-3)">Avg visible: ${Math.round(s.avg_visible_duration)}s</div>` : ""}
+        </div>`;
+    }).join("");
+}
+
+/* ── Conversation Graph (BLE relationship visualization) ──── */
+function renderConversationGraph() {
+    const canvas = $("graph-canvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const cw = canvas.parentElement.clientWidth * 0.85 || 800;
+    const ch = canvas.parentElement.clientHeight * 0.85 || 600;
+    canvas.width = cw * dpr;
+    canvas.height = ch * dpr;
+    canvas.style.width = cw + "px";
+    canvas.style.height = ch + "px";
+    ctx.scale(dpr, dpr);
+
+    const styles = getComputedStyle(document.documentElement);
+    const bgColor = styles.getPropertyValue("--bg-1").trim() || "#0d1117";
+    const txColor = styles.getPropertyValue("--tx-1").trim() || "#e6edf3";
+    const txFaint = styles.getPropertyValue("--tx-3").trim() || "#484f58";
+    const accent = styles.getPropertyValue("--accent").trim() || "#58a6ff";
+    const green = styles.getPropertyValue("--green").trim() || "#3fb950";
+    const purple = styles.getPropertyValue("--purple").trim() || "#bc8cff";
+
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, cw, ch);
+
+    // Build nodes from clustered devices
+    const devices = currentClustered || [];
+    if (!devices.length) {
+        ctx.fillStyle = txFaint;
+        ctx.font = "14px Inter";
+        ctx.textAlign = "center";
+        ctx.fillText("No devices to visualize", cw / 2, ch / 2);
+        if ($("graph-info")) $("graph-info").textContent = "0 nodes, 0 connections";
+        return;
+    }
+
+    const cx = cw / 2, cy = ch / 2;
+    const radius = Math.min(cw, ch) * 0.35;
+    const nodes = devices.map((d, i) => {
+        const angle = (i / devices.length) * Math.PI * 2 - Math.PI / 2;
+        return {
+            x: cx + Math.cos(angle) * radius,
+            y: cy + Math.sin(angle) * radius,
+            id: d.fingerprint_id || d.address || `dev-${i}`,
+            name: d.best_name || d.name || "Unknown",
+            ecosystem: d.ecosystem || "",
+            category: d.category || "unknown",
+            risk: d.risk_level || "low",
+            rssi: d.avg_rssi || -100,
+            icon: d.category_icon || "📡",
+        };
+    });
+
+    // Build edges: ecosystem + proximity + co-occurrence
+    const edges = [];
+    for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+            const a = nodes[i], b = nodes[j];
+            // Ecosystem match
+            if (a.ecosystem && b.ecosystem && a.ecosystem === b.ecosystem) {
+                edges.push({ from: i, to: j, type: "ecosystem", color: purple });
+            }
+            // Proximity (both have strong RSSI)
+            if (a.rssi > -70 && b.rssi > -70) {
+                edges.push({ from: i, to: j, type: "proximity", color: accent });
+            }
+            // Co-occurrence (same category)
+            if (a.category !== "unknown" && a.category === b.category && !edges.find(e => e.from === i && e.to === j)) {
+                edges.push({ from: i, to: j, type: "co-occurrence", color: green });
+            }
+        }
+    }
+
+    // Draw edges
+    edges.forEach(e => {
+        const a = nodes[e.from], b = nodes[e.to];
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = e.color + "55";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    });
+
+    // Draw nodes
+    const riskColors = { low: green, medium: "#f0ad4e", high: "#e67e22", critical: "#e74c3c" };
+    nodes.forEach(n => {
+        const nodeR = 18;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, nodeR, 0, Math.PI * 2);
+        ctx.fillStyle = (riskColors[n.risk] || accent) + "33";
+        ctx.fill();
+        ctx.strokeStyle = riskColors[n.risk] || accent;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.fillStyle = txColor;
+        ctx.font = "16px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(n.icon || "📡", n.x, n.y);
+
+        ctx.fillStyle = txFaint;
+        ctx.font = "9px 'JetBrains Mono'";
+        ctx.textBaseline = "top";
+        const label = n.name.length > 14 ? n.name.slice(0, 12) + "…" : n.name;
+        ctx.fillText(label, n.x, n.y + nodeR + 4);
+    });
+
+    if ($("graph-info")) $("graph-info").textContent = `${nodes.length} nodes, ${edges.length} connections`;
+}
+
+/* ── Advanced Mode Toggle ─────────────────────────────────── */
+function updateAdvancedModeBtn() {
+    const btn = $("btn-advanced");
+    if (!btn) return;
+    btn.classList.toggle("active", advancedMode);
+    btn.title = advancedMode ? "Advanced Mode: ON" : "Advanced Mode: OFF";
+    // Show/hide advanced-only nav items
+    const advTabs = ["following", "shadows"];
+    advTabs.forEach(tab => {
+        const navItem = document.querySelector(`.nav-item[data-tab="${tab}"]`);
+        if (navItem) navItem.style.display = advancedMode ? "" : "";
+    });
+}
+if ($("btn-advanced")) {
+    $("btn-advanced").addEventListener("click", async () => {
+        advancedMode = !advancedMode;
+        updateAdvancedModeBtn();
+        try { await fetch("/api/advanced-mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: advancedMode }) }); } catch {}
+    });
+}
+
+/* ── Device Life Story (in detail panel) ──────────────────── */
+async function fetchLifeStory(deviceId) {
+    try {
+        const res = await fetch(`/api/device/${encodeURIComponent(deviceId)}/life-story`);
+        const data = await res.json();
+        return data;
+    } catch { return { events: [] }; }
+}
+
+function renderLifeStorySection(story) {
+    if (!story || !story.events || !story.events.length) return "";
+    const events = story.events.slice(-20); // Show last 20 events
+    return `<div class="detail-section">
+        <div class="detail-section-title" style="color:var(--cyan);font-weight:600;font-size:.78rem">📖 Device Life Story</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--tx-2);max-height:200px;overflow-y:auto">
+            ${events.map(e => {
+                const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "";
+                return `<div class="ls-entry" style="display:flex;gap:6px;padding:2px 0;border-bottom:1px solid var(--border)">
+                    <span class="ls-time" style="color:var(--tx-3);min-width:60px">${ts}</span>
+                    <span class="ls-msg" style="color:var(--tx-1)">${escHtml(e.event || e.message || "State change")}</span>
+                </div>`;
+            }).join("")}
+        </div>
+    </div>`;
 }
 
 /* ── Analytics Dashboard ───────────────────────────────────── */

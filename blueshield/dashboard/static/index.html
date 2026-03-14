@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BlueShield v4 - Bluetooth Intelligence Platform</title>
+    <title>BlueShield v5 - Bluetooth Intelligence Platform</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
@@ -18,7 +18,7 @@
             <div class="brand">
                 <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6.5 6.5l11 11M6.5 17.5l11-11M12 2v20"/></svg>
                 <span class="brand-name">BlueShield</span>
-                <span class="brand-ver">v4.0</span>
+                <span class="brand-ver">v5.0</span>
             </div>
         </div>
         <div class="topbar-center">
@@ -31,6 +31,9 @@
         <div class="topbar-right">
             <button class="icon-btn ghost-btn" id="btn-ghost" title="Ghost Mode - Emergency Shutdown">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></svg>
+            </button>
+            <button class="icon-btn adv-toggle" id="btn-advanced" title="Toggle Advanced Mode">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
             </button>
             <button class="icon-btn" id="btn-theme" title="Toggle theme">
                 <svg id="ico-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
@@ -73,6 +76,10 @@
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
                     <span>Analytics</span>
                 </button>
+                <button class="nav-item" data-tab="graph">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M8.6 7.4L15.4 16.6M8.6 4.6L15.4 4.6"/></svg>
+                    <span>Graph</span>
+                </button>
             </div>
             <div class="nav-section">
                 <div class="nav-label">TOOLS</div>
@@ -83,6 +90,14 @@
                 <button class="nav-item" data-tab="trackers">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
                     <span>Trackers</span><span class="nav-badge tracker-badge" id="nav-tracker-badge" style="display:none">0</span>
+                </button>
+                <button class="nav-item" data-tab="following">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    <span>Following</span><span class="nav-badge follow-badge" id="nav-follow-badge" style="display:none">0</span>
+                </button>
+                <button class="nav-item" data-tab="shadows">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    <span>Shadows</span><span class="nav-badge shadow-badge" id="nav-shadow-badge" style="display:none">0</span>
                 </button>
                 <button class="nav-item" data-tab="alerts">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
@@ -128,7 +143,7 @@
                         <div class="live-center-panel">
                             <div class="live-hero">
                                 <div class="lh-icon">🛡️</div>
-                                <div class="lh-title">BlueShield <span class="lh-ver">v4.0</span></div>
+                                <div class="lh-title">BlueShield <span class="lh-ver">v5.0</span></div>
                                 <div class="lh-subtitle">Bluetooth Intelligence Platform</div>
                             </div>
                             <div class="live-people" id="live-people">
@@ -353,6 +368,50 @@
                 <div class="alert-full" id="alert-full"><div class="empty-msg">No alerts. System clean.</div></div>
             </section>
 
+            <!-- GRAPH TAB — Bluetooth Conversation Graph -->
+            <section class="tab-pane" id="tab-graph">
+                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Bluetooth Conversation Graph</h2></div><div class="tb-right"><span class="tb-info" id="graph-info">0 nodes, 0 connections</span></div></div>
+                <div class="graph-container">
+                    <canvas id="graph-canvas" width="800" height="600"></canvas>
+                    <div class="graph-legend">
+                        <div class="gl-title">Relationship Types</div>
+                        <div class="gl-item"><span class="gl-line" style="background:var(--purple)"></span> Ecosystem</div>
+                        <div class="gl-item"><span class="gl-line" style="background:var(--accent)"></span> Proximity</div>
+                        <div class="gl-item"><span class="gl-line" style="background:var(--green)"></span> Co-occurrence</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- FOLLOWING TAB — Who's Following Me? -->
+            <section class="tab-pane" id="tab-following">
+                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Who's Following Me?</h2><span class="badge badge-follow" id="follow-top">0</span></div></div>
+                <div class="follow-overview" id="follow-overview">
+                    <div class="follow-status-card">
+                        <div class="fsc-icon">🛡️</div>
+                        <div class="fsc-info">
+                            <div class="fsc-title" id="follow-status-title">All Clear</div>
+                            <div class="fsc-desc" id="follow-status-desc">No devices appear to be following you.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="follow-grid" id="follow-grid"></div>
+            </section>
+
+            <!-- SHADOWS TAB — Shadow Device Detection -->
+            <section class="tab-pane" id="tab-shadows">
+                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Shadow Devices</h2><span class="badge badge-shadow" id="shadow-top">0</span></div></div>
+                <div class="shadow-overview" id="shadow-overview">
+                    <div class="shadow-status-card">
+                        <div class="shsc-icon">🌙</div>
+                        <div class="shsc-info">
+                            <div class="shsc-title" id="shadow-status-title">No Shadows Detected</div>
+                            <div class="shsc-desc" id="shadow-status-desc">No devices exhibiting stealth behavior.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="shadow-grid" id="shadow-grid"></div>
+            </section>
+
             <!-- CONFIG TAB -->
             <section class="tab-pane" id="tab-config">
                 <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Configuration</h2></div></div>
@@ -381,7 +440,7 @@
         <span id="sb-jam">Jammer: Off</span><span class="sb-sep">|</span>
         <span id="sb-risk">Risk: --</span>
         <span style="flex:1"></span>
-        <span>BlueShield v4.0</span>
+        <span>BlueShield v5.0</span>
     </footer>
 
     <script src="/static/js/dashboard.js"></script>

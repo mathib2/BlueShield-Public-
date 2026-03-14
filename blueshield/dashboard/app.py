@@ -30,6 +30,10 @@ from blueshield.scanner.fingerprint import BLEFingerprintEngine
 from blueshield.scanner.risk_engine import calculate_risk, calculate_rssi_trend
 from blueshield.scanner.tracker_detector import TrackerDetector
 from blueshield.scanner.ai_classifier import AIDeviceClassifier, estimate_people, calculate_safety_score, get_bluetooth_weather
+from blueshield.scanner.advanced_analysis import (
+    FollowingDetector, ShadowDeviceDetector, EnvironmentFingerprint,
+    DeviceLifeStory, ConversationGraph, MovementTrailTracker,
+)
 from blueshield.jammer.bt_jammer import BluetoothJammer, SimulatedJammer
 from blueshield.logs.logger import BlueShieldLogger
 
@@ -49,6 +53,13 @@ config = None
 fingerprint_engine = None
 tracker_detector = None
 ai_classifier = None
+following_detector = None
+shadow_detector = None
+env_fingerprint = None
+life_story = None
+conversation_graph = None
+trail_tracker = None
+advanced_mode = False
 auto_scan = True
 scan_interval = 5
 rssi_filter = -100  # default: all devices
@@ -365,6 +376,57 @@ def do_scan_and_emit():
             safety = calculate_safety_score(clustered, len(tracker_suspects))
             weather = get_bluetooth_weather(clustered, analytics_summary)
 
+            # ── Advanced Analysis: Following, Shadows, Environment, Life Story, Graph ──
+            following_alerts = []
+            shadow_devices = []
+            env_anomalies = {}
+            trail_data = {}
+
+            if following_detector:
+                following_detector.record_scan()
+                for fp_id, fp in fingerprint_engine.clusters.items():
+                    rssi_hist = fingerprint_engine.get_rssi_history(fp_id)
+                    latest_rssi = rssi_hist[-1][1] if rssi_hist and isinstance(rssi_hist[-1], (list, tuple)) else (rssi_hist[-1] if rssi_hist else -100)
+                    following_detector.record_observation(fp_id, latest_rssi)
+                following_alerts = following_detector.get_all_alerts(clustered)
+
+            if shadow_detector:
+                # Record visibility for all known fingerprints
+                current_ids = set(d.get("fingerprint_id", "") for d in clustered)
+                for fp_id in set(list(shadow_detector.visibility_log.keys()) + list(current_ids)):
+                    visible = fp_id in current_ids
+                    name = ""
+                    fp = fingerprint_engine.clusters.get(fp_id)
+                    if fp:
+                        name = fp.best_name
+                    shadow_detector.record_visibility(fp_id, visible, name)
+                shadow_devices = shadow_detector.get_all_shadows(clustered)
+
+            if env_fingerprint:
+                env_fingerprint.record_scan(clustered)
+                env_anomalies = env_fingerprint.get_anomalies(clustered)
+
+            if life_story:
+                for d in clustered:
+                    fid = d.get("fingerprint_id", "")
+                    life_story.record_state(fid, d)
+
+            if conversation_graph:
+                device_ids = [d.get("fingerprint_id", "") for d in clustered if d.get("fingerprint_id")]
+                conversation_graph.record_scan(device_ids)
+
+            if trail_tracker:
+                for d in clustered:
+                    fid = d.get("fingerprint_id", "")
+                    rssi = d.get("avg_rssi", -100)
+                    # Use hash-based angle (same as radar)
+                    h = 0
+                    for ch in fid:
+                        h = ((h << 5) - h + ord(ch)) & 0xFFFFFFFF
+                    angle = (h % 628) / 100.0
+                    trail_tracker.record_position(fid, rssi, angle)
+                trail_data = trail_tracker.get_all_trails()
+
             # ── Time travel snapshot ──
             snapshot = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -400,6 +462,10 @@ def do_scan_and_emit():
                 "people": people,
                 "safety": safety,
                 "weather": weather,
+                "following": following_alerts,
+                "shadows": shadow_devices,
+                "environment": env_anomalies,
+                "trails": trail_data,
             })
             return result
         except Exception as e:
@@ -613,12 +679,19 @@ def api_export():
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
     global fingerprint_engine, tracker_detector, scan_snapshots
+    global following_detector, shadow_detector, env_fingerprint, life_story, conversation_graph, trail_tracker
     scanner.devices.clear()
     scanner.scan_history.clear()
     scanner.total_scans = 0
     fingerprint_engine = BLEFingerprintEngine()
     tracker_detector = TrackerDetector()
     scan_snapshots = []
+    following_detector = FollowingDetector()
+    shadow_detector = ShadowDeviceDetector()
+    env_fingerprint = EnvironmentFingerprint()
+    life_story = DeviceLifeStory()
+    conversation_graph = ConversationGraph()
+    trail_tracker = MovementTrailTracker()
     socketio.emit("device_update", {
         "summary": scanner.get_device_summary(),
         "devices": [],
@@ -797,6 +870,56 @@ def api_time_travel():
     return jsonify({"snapshots": scan_snapshots})
 
 
+@app.route("/api/following")
+def api_following():
+    """Get following detection alerts."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    return jsonify(following_detector.get_all_alerts(clustered) if following_detector else [])
+
+
+@app.route("/api/shadows")
+def api_shadows():
+    """Get shadow/stealth device detections."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    return jsonify(shadow_detector.get_all_shadows(clustered) if shadow_detector else [])
+
+
+@app.route("/api/environment")
+def api_environment():
+    """Get environment fingerprint and anomalies."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    return jsonify(env_fingerprint.get_anomalies(clustered) if env_fingerprint else {})
+
+
+@app.route("/api/device/<device_id>/life-story")
+def api_life_story(device_id):
+    """Get the life story for a device."""
+    return jsonify(life_story.get_story(device_id) if life_story else {"events": []})
+
+
+@app.route("/api/graph")
+def api_graph():
+    """Get the BLE conversation graph."""
+    clustered = fingerprint_engine.get_clustered_devices() if fingerprint_engine else []
+    return jsonify(conversation_graph.build_graph(clustered) if conversation_graph else {"nodes": [], "edges": []})
+
+
+@app.route("/api/trails")
+def api_trails():
+    """Get movement trail data for radar."""
+    return jsonify(trail_tracker.get_all_trails() if trail_tracker else {})
+
+
+@app.route("/api/advanced-mode", methods=["POST"])
+def api_toggle_advanced():
+    """Toggle advanced mode."""
+    global advanced_mode
+    data = request.get_json(force=True, silent=True) or {}
+    advanced_mode = data.get("enabled", not advanced_mode)
+    socketio.emit("advanced_mode", {"enabled": advanced_mode})
+    return jsonify({"enabled": advanced_mode})
+
+
 # ── Socket.IO Events ────────────────────────────────────────────────────────
 
 @socketio.on("connect")
@@ -821,6 +944,11 @@ def on_connect():
         "people": estimate_people(clustered) if clustered else {},
         "safety": calculate_safety_score(clustered, len(tracker_detector.get_all_suspects()) if tracker_detector else 0),
         "weather": get_bluetooth_weather(clustered, logger.analytics.get_summary() if logger else {}),
+        "following": following_detector.get_all_alerts(clustered) if following_detector and clustered else [],
+        "shadows": shadow_detector.get_all_shadows(clustered) if shadow_detector and clustered else [],
+        "environment": env_fingerprint.get_anomalies(clustered) if env_fingerprint and clustered else {},
+        "trails": trail_tracker.get_all_trails() if trail_tracker else {},
+        "advanced_mode": advanced_mode,
     })
 
 
@@ -864,6 +992,7 @@ def background_scan_loop():
 def main():
     global scanner, jammer, logger, config, scan_interval, platform_info
     global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
+    global following_detector, shadow_detector, env_fingerprint, life_story, conversation_graph, trail_tracker
 
     parser = argparse.ArgumentParser(description="BlueShield Web Dashboard")
     parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware)")
@@ -883,11 +1012,23 @@ def main():
     fingerprint_engine = BLEFingerprintEngine()
     tracker_detector = TrackerDetector()
     ai_classifier = AIDeviceClassifier()
-    print("[BlueShield] BLE Fingerprinting engine v4.0 initialized")
+    following_detector = FollowingDetector()
+    shadow_detector = ShadowDeviceDetector()
+    env_fingerprint = EnvironmentFingerprint()
+    life_story = DeviceLifeStory()
+    conversation_graph = ConversationGraph()
+    trail_tracker = MovementTrailTracker()
+    print("[BlueShield] BLE Fingerprinting engine v5.0 initialized")
     print("[BlueShield] Tracker detection engine initialized")
     print("[BlueShield] Risk scoring engine initialized")
     print("[BlueShield] AI device classifier initialized")
     print("[BlueShield] People detection & safety scoring active")
+    print("[BlueShield] Following detector active (≥70% confidence)")
+    print("[BlueShield] Shadow device detector active")
+    print("[BlueShield] Environment fingerprinting active")
+    print("[BlueShield] Device life story tracker active")
+    print("[BlueShield] Conversation graph engine active")
+    print("[BlueShield] Movement trail tracker active")
 
     if args.sim:
         print("[BlueShield] Using SIMULATED scanner and jammer")
@@ -908,7 +1049,7 @@ def main():
     scan_thread = threading.Thread(target=background_scan_loop, daemon=True)
     scan_thread.start()
 
-    print(f"[BlueShield] Dashboard v4.0 starting at http://localhost:{args.port}")
+    print(f"[BlueShield] Dashboard v5.0 starting at http://localhost:{args.port}")
     socketio.run(app, host=args.host, port=args.port, debug=False, allow_unsafe_werkzeug=True)
 
 
