@@ -1,0 +1,2 @@
+cd "C:\Users\ANON2\OneDrive\Datos adjuntos\Desktop\Bluetooth Project"
+python -m blueshield --port 8080
