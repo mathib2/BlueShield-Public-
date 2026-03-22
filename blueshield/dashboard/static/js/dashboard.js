@@ -1169,23 +1169,24 @@ $("btn-jam").addEventListener("click", async () => {
 });
 
 function updateJammer(status) {
-    jammerActive = status.is_active || false;
+    jammerActive = status.is_jamming || false;
+    const sess = status.active_session || {};
     const btn = $("btn-jam");
     btn.textContent = jammerActive ? "Stop Jammer" : "Start Jammer";
     btn.classList.toggle("active", jammerActive);
     $("jam-ind").classList.toggle("on", jammerActive);
     $("jam-ind-txt").textContent = jammerActive ? "ACTIVE" : "Inactive";
-    $("jl-pkts").textContent = status.packets_sent || 0;
-    $("jl-mode").textContent = status.mode || "--";
-    $("jl-ch").textContent = status.channel || "--";
+    $("jl-pkts").textContent = sess.packets_sent || 0;
+    $("jl-mode").textContent = sess.mode || "--";
+    $("jl-ch").textContent = sess.channel || "--";
     $("jl-be").textContent = status.backend || "--";
     $("nav-jam-badge").style.display = jammerActive ? "" : "none";
     $("pill-scan").classList.toggle("jamming", jammerActive);
 
     document.querySelectorAll(".ch-bar").forEach(bar => {
-        bar.classList.toggle("active", jammerActive && bar.dataset.ch == status.channel);
+        bar.classList.toggle("active", jammerActive && bar.dataset.ch == sess.channel);
     });
-    $("sb-jam").textContent = jammerActive ? `Jammer: ${status.mode}` : "Jammer: Off";
+    $("sb-jam").textContent = jammerActive ? `Jammer: ${sess.mode}` : "Jammer: Off";
 }
 
 /* ── Platform ──────────────────────────────────────────────── */

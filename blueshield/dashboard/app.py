@@ -990,6 +990,9 @@ def background_scan_loop():
     while True:
         if auto_scan:
             do_scan_and_emit()
+        # Broadcast live jammer status every tick so packet counter updates
+        if jammer and jammer.is_jamming:
+            socketio.emit("jammer_update", jammer.get_status())
         time.sleep(scan_interval)
 
 
