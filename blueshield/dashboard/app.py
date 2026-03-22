@@ -18,7 +18,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file
+from functools import wraps
+from flask import Flask, jsonify, request, send_file, session, redirect, url_for, make_response
 from flask_socketio import SocketIO
 
 import sys
@@ -43,7 +44,34 @@ from blueshield.logs.logger import BlueShieldLogger
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+app.secret_key = "blueshield-secret-change-me-in-production"
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# ── Authentication ──────────────────────────────────────────────────────────
+USERS = {"admin": "admin123"}
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            if request.is_json or request.path.startswith("/api/") or request.path.startswith("/socket.io"):
+                return jsonify({"error": "Unauthorized"}), 401
+            return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
+@app.before_request
+def check_auth():
+    """Protect all routes except login, static files, and socket.io."""
+    allowed = ("/login", "/static/")
+    if any(request.path.startswith(p) for p in allowed):
+        return None
+    if request.path.startswith("/socket.io"):
+        return None  # socket.io handles its own auth
+    if not session.get("logged_in"):
+        if request.is_json or request.path.startswith("/api/"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return redirect("/login")
 
 # Global state
 scanner = None
@@ -486,6 +514,30 @@ def do_scan_and_emit():
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        data = request.get_json() if request.is_json else request.form
+        username = data.get("username", "")
+        password = data.get("password", "")
+        if username in USERS and USERS[username] == password:
+            session["logged_in"] = True
+            session["username"] = username
+            if request.is_json:
+                return jsonify({"success": True})
+            return redirect("/")
+        if request.is_json:
+            return jsonify({"error": "Invalid credentials"}), 401
+        return send_file(str(STATIC_DIR / "login.html"))
+    if session.get("logged_in"):
+        return redirect("/")
+    return send_file(str(STATIC_DIR / "login.html"))
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
 @app.route("/")
 def index():

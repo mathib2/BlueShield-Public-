@@ -286,8 +286,22 @@ class BluetoothScanner:
 
         return devices
 
+    def _reset_hci_adapter(self):
+        """Reset the HCI adapter to clear stuck states."""
+        try:
+            subprocess.run(["hciconfig", self.interface, "down"], capture_output=True, timeout=5)
+            import time as _time
+            _time.sleep(0.5)
+            subprocess.run(["hciconfig", self.interface, "up"], capture_output=True, timeout=5)
+            _time.sleep(0.5)
+            print(f"[BlueShield] HCI adapter {self.interface} reset")
+        except Exception:
+            pass
+
     async def scan_ble_bleak(self, rssi_filter: int = -100) -> list[BluetoothDevice]:
         """Scan for BLE devices using bleak with full advertisement parsing.
+
+        Uses stop-before-start pattern to prevent InProgress errors on BlueZ.
 
         Args:
             rssi_filter: Minimum RSSI to include a device (-100 = all, -60 = close range)
@@ -380,21 +394,29 @@ class BluetoothScanner:
                 }
 
             scanner = BleakScanner(detection_callback=detection_callback)
-            try:
-                await scanner.start()
-            except Exception as start_err:
-                if "InProgress" in str(start_err) or "already in progress" in str(start_err).lower():
-                    # BlueZ adapter stuck — reset and retry once
-                    print("[BlueShield] BLE adapter busy, resetting hci0...")
-                    subprocess.run(["hciconfig", self.interface, "down"], capture_output=True, timeout=5)
-                    await asyncio.sleep(1)
-                    subprocess.run(["hciconfig", self.interface, "up"], capture_output=True, timeout=5)
-                    await asyncio.sleep(1)
+
+            # Robust start: reset adapter if BlueZ reports InProgress
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
                     await scanner.start()
-                else:
-                    raise
-            await asyncio.sleep(self.scan_duration)
-            await scanner.stop()
+                    break
+                except Exception as start_err:
+                    err_str = str(start_err)
+                    if ("InProgress" in err_str or "already in progress" in err_str.lower()) and attempt < max_retries:
+                        print(f"[BlueShield] BLE adapter busy (attempt {attempt+1}/{max_retries+1}), resetting...")
+                        self._reset_hci_adapter()
+                        await asyncio.sleep(1)
+                    else:
+                        raise
+
+            try:
+                await asyncio.sleep(self.scan_duration)
+            finally:
+                try:
+                    await scanner.stop()
+                except Exception:
+                    pass  # Don't fail if stop errors
 
             for addr, info in found_devices.items():
                 dev = BluetoothDevice(

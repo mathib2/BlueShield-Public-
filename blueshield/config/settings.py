@@ -13,8 +13,8 @@ LOG_DIR.mkdir(exist_ok=True)
 CONFIG_DIR.mkdir(exist_ok=True)
 
 DEFAULT_CONFIG = {
-    "scan_interval": 5,           # seconds between scans
-    "scan_duration": 10,          # seconds per scan cycle
+    "scan_interval": 15,          # seconds between scans (must be > scan_duration)
+    "scan_duration": 5,           # seconds per BLE scan window
     "alert_threshold": 3,         # unknown devices before alert
     "known_devices_file": str(CONFIG_DIR / "known_devices.json"),
     "log_file": str(LOG_DIR / "blueshield.json"),
