@@ -200,7 +200,13 @@ def do_scan_and_emit():
     global fingerprint_engine
     with _scan_lock:
         try:
+            # Skip scan if jammer is active (they share the HCI adapter)
+            if jammer and jammer.is_jamming:
+                return
+
             result = run_async(scanner.run_scan(rssi_filter=rssi_filter))
+            if result is None:
+                return
             logger.log_scan(result)
 
             # Feed advertisement data into fingerprint engine
