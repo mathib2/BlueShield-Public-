@@ -1032,7 +1032,7 @@ def main():
     print("[BlueShield] Risk scoring engine initialized")
     print("[BlueShield] AI device classifier initialized")
     print("[BlueShield] People detection & safety scoring active")
-    print("[BlueShield] Following detector active (≥70% confidence)")
+    print("[BlueShield] Following detector active (>=70% confidence)")
     print("[BlueShield] Shadow device detector active")
     print("[BlueShield] Environment fingerprinting active")
     print("[BlueShield] Device life story tracker active")
