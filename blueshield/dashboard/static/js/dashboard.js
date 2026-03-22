@@ -1154,7 +1154,8 @@ window.toggleAlertRule = async function(id, enabled) {
 
 /* ── Jammer Controls ───────────────────────────────────────── */
 $("j-mode").addEventListener("change", e => {
-    $("j-target-grp").style.display = e.target.value === "targeted" ? "" : "none";
+    const needsTarget = ["targeted", "deauth"].includes(e.target.value);
+    $("j-target-grp").style.display = needsTarget ? "" : "none";
 });
 $("btn-jam").addEventListener("click", async () => {
     if (jammerActive) {

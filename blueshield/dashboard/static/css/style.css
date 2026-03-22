@@ -569,6 +569,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
 /* ── Improved Nav Item Spacing ────────── */
 .nav-item{padding:8px 14px;gap:10px;font-size:.82rem}
 
+/* ── Tablet ────────────────────────────── */
 @media(max-width:1024px){
     .sidebar{width:52px;min-width:52px}
     .sidebar .nav-item span,.sidebar .nav-label,.sidebar .nav-badge,.sidebar .sidebar-footer{display:none}
@@ -582,4 +583,121 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
     .env-stats{flex-wrap:wrap}
     .env-stat{min-width:90px}
     .live-top-row{grid-template-columns:1fr}
+    .split-detail{width:280px}
+}
+
+/* ── Mobile ────────────────────────────── */
+@media(max-width:768px){
+    body{overflow:auto;height:auto}
+    .app-layout{flex-direction:column;height:auto;min-height:calc(100vh - 42px - 24px);overflow:visible}
+
+    /* Sidebar → bottom tab bar */
+    .sidebar{position:fixed;bottom:0;left:0;right:0;width:100%!important;min-width:100%!important;height:56px;flex-direction:row;border-right:none;border-top:1px solid var(--border);z-index:200;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+    .sidebar.collapsed{width:100%!important;min-width:100%!important;height:56px}
+    .sidebar .nav-section{display:flex;padding:0;gap:0;flex-shrink:0}
+    .sidebar .nav-label{display:none!important}
+    .sidebar .nav-badge{display:none!important}
+    .sidebar .sidebar-footer{display:none!important}
+    .sidebar .nav-item{flex-direction:column;padding:6px 12px;gap:2px;border-left:none!important;border-bottom:3px solid transparent;font-size:.58rem;min-width:52px;align-items:center;justify-content:center}
+    .sidebar .nav-item.active{border-bottom-color:var(--accent);border-left-color:transparent!important}
+    .sidebar .nav-item span{display:block!important;font-size:.55rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:52px;text-align:center}
+    .sidebar .nav-item svg{width:18px;height:18px}
+
+    /* Content */
+    .content{padding-bottom:64px;overflow:visible}
+    .tab-pane.active{overflow:visible}
+
+    /* Topbar */
+    .topbar{padding:0 8px;height:48px;flex-wrap:nowrap}
+    .topbar-left{gap:4px}
+    .topbar-center .pills{gap:3px}
+    .topbar-center{display:none}
+    .topbar-clock{display:none}
+    .brand-ver{display:none}
+    .brand-name{font-size:.85rem}
+
+    /* Split pane */
+    .split-h{flex-direction:column}
+    .split-detail{width:100%!important;border-left:none;border-top:1px solid var(--border);max-height:50vh}
+    .split-detail.open{display:flex}
+    .split-main{overflow:visible}
+
+    /* Device table — horizontal scroll */
+    .split-main{overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .data-table{min-width:600px}
+    .data-table td,.data-table th{padding:8px 6px;font-size:.72rem}
+
+    /* Toolbar */
+    .tab-toolbar{flex-wrap:wrap;padding:6px 8px;gap:6px}
+    .tb-left,.tb-right{flex-wrap:wrap;gap:4px}
+    .tb-search{width:100%;max-width:none}
+
+    /* Stats strip */
+    .stats-strip{flex-wrap:wrap}
+    .ss{min-width:33.3%;border-bottom:1px solid var(--border)}
+    .env-stats{flex-wrap:wrap}
+    .env-stat{min-width:50%;border-bottom:1px solid var(--border)}
+
+    /* Radar */
+    .radar-container{flex-direction:column;padding:8px}
+    #radar-canvas{max-width:100%;max-height:60vw}
+    .radar-legend{flex-direction:row;flex-wrap:wrap;min-width:auto;gap:6px}
+
+    /* Signal grid */
+    .signal-grid{grid-template-columns:1fr!important;padding:8px}
+
+    /* Jammer */
+    .jam-layout{grid-template-columns:1fr!important;padding:8px}
+    .jam-wide{grid-column:1!important}
+    .ch-strip{flex-wrap:wrap;gap:6px}
+
+    /* Analytics */
+    .analytics-grid{grid-template-columns:1fr!important;padding:8px}
+    .analytics-wide{grid-column:1!important}
+
+    /* Config */
+    .cfg-grid{grid-template-columns:1fr!important;padding:8px}
+
+    /* Live dashboard */
+    .live-dashboard{padding:8px}
+    .live-top-row{grid-template-columns:1fr!important;gap:10px;min-height:auto}
+    .safety-gauge{padding:14px 10px}
+    .sg-ring{width:120px;height:120px}
+    .sg-score{font-size:2rem}
+    .live-stats-col{flex-direction:row;flex-wrap:wrap}
+    .ls-card{min-width:calc(50% - 4px)}
+    .lp-big{font-size:2rem}
+
+    /* Channels */
+    .ch-grid{grid-template-columns:repeat(auto-fill,minmax(60px,1fr))!important;padding:8px}
+
+    /* Timeline */
+    .tl-entry{flex-wrap:wrap;gap:4px}
+
+    /* Trackers, following, shadows */
+    .tracker-grid,.follow-grid,.shadow-grid{grid-template-columns:1fr!important;padding:0 8px 8px}
+    .tracker-overview,.follow-overview,.shadow-overview{padding:8px}
+
+    /* Graph */
+    .graph-container{flex-direction:column;padding:8px}
+    #graph-canvas{max-width:100%;max-height:50vh}
+    .graph-legend{flex-direction:row;flex-wrap:wrap;min-width:auto}
+
+    /* Status bar */
+    .statusbar{display:none}
+
+    /* Hide sidebar toggle on mobile (bottom bar is always visible) */
+    .sidebar-toggle{display:none}
+}
+
+/* ── Small phones ──────────────────────── */
+@media(max-width:400px){
+    .topbar{height:44px}
+    .brand-name{font-size:.78rem}
+    .sidebar .nav-item{padding:4px 8px;min-width:44px}
+    .sidebar .nav-item span{font-size:.5rem;max-width:44px}
+    .tab-toolbar{padding:4px 6px}
+    .btn{padding:4px 8px;font-size:.68rem}
+    .data-table{min-width:500px}
+    .live-stats-col .ls-card{min-width:100%}
 }
