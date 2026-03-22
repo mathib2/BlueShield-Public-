@@ -61,7 +61,7 @@ conversation_graph = None
 trail_tracker = None
 advanced_mode = False
 auto_scan = True
-scan_interval = 5
+scan_interval = 15  # must be > scan_duration (default 10s) to avoid InProgress errors
 rssi_filter = -100  # default: all devices
 platform_info = {}
 _scan_lock = threading.Lock()
@@ -198,7 +198,9 @@ def evaluate_alert_rules(device_fp):
 def do_scan_and_emit():
     """Execute a scan, feed fingerprint engine, run risk/tracker analysis, emit results."""
     global fingerprint_engine
-    with _scan_lock:
+    if not _scan_lock.acquire(blocking=False):
+        return  # Previous scan still running — skip this cycle
+    try:
         try:
             # Skip scan if jammer is active (they share the HCI adapter)
             if jammer and jammer.is_jamming:
@@ -479,6 +481,8 @@ def do_scan_and_emit():
             import traceback
             traceback.print_exc()
             return {"error": str(e)}
+    finally:
+        _scan_lock.release()
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────

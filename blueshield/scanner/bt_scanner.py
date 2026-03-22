@@ -380,7 +380,19 @@ class BluetoothScanner:
                 }
 
             scanner = BleakScanner(detection_callback=detection_callback)
-            await scanner.start()
+            try:
+                await scanner.start()
+            except Exception as start_err:
+                if "InProgress" in str(start_err) or "already in progress" in str(start_err).lower():
+                    # BlueZ adapter stuck — reset and retry once
+                    print("[BlueShield] BLE adapter busy, resetting hci0...")
+                    subprocess.run(["hciconfig", self.interface, "down"], capture_output=True, timeout=5)
+                    await asyncio.sleep(1)
+                    subprocess.run(["hciconfig", self.interface, "up"], capture_output=True, timeout=5)
+                    await asyncio.sleep(1)
+                    await scanner.start()
+                else:
+                    raise
             await asyncio.sleep(self.scan_duration)
             await scanner.stop()
 
