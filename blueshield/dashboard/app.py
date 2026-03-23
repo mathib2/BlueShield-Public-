@@ -89,7 +89,8 @@ conversation_graph = None
 trail_tracker = None
 advanced_mode = False
 auto_scan = True
-scan_interval = 15  # must be > scan_duration (default 10s) to avoid InProgress errors
+scan_interval = 15  # must be > scan_duration (default 5s) to avoid InProgress errors
+_advanced_scan_counter = 0  # throttle heavy analysis — only run every 3rd scan on Pi 3
 rssi_filter = -100  # default: all devices
 platform_info = {}
 _scan_lock = threading.Lock()
@@ -115,7 +116,7 @@ watch_list = set()
 
 # Time-travel snapshot history (stores last N scan snapshots)
 scan_snapshots = []
-MAX_SNAPSHOTS = 120  # ~10 minutes at 5s interval
+MAX_SNAPSHOTS = 60   # ~15 minutes at 15s interval (keep low to save Pi 3 RAM)
 
 # Range presets: name -> RSSI threshold
 RANGE_PRESETS = {
@@ -225,7 +226,7 @@ def evaluate_alert_rules(device_fp):
 
 def do_scan_and_emit():
     """Execute a scan, feed fingerprint engine, run risk/tracker analysis, emit results."""
-    global fingerprint_engine
+    global fingerprint_engine, _advanced_scan_counter
     if not _scan_lock.acquire(blocking=False):
         return  # Previous scan still running — skip this cycle
     try:
@@ -413,12 +414,16 @@ def do_scan_and_emit():
             weather = get_bluetooth_weather(clustered, analytics_summary)
 
             # ── Advanced Analysis: Following, Shadows, Environment, Life Story, Graph ──
+            # Only run every 3rd scan to reduce CPU load on Pi 3
+            _advanced_scan_counter += 1
+            run_advanced = (_advanced_scan_counter % 3 == 0)
+
             following_alerts = []
             shadow_devices = []
             env_anomalies = {}
             trail_data = {}
 
-            if following_detector:
+            if following_detector and run_advanced:
                 following_detector.record_scan()
                 for fp_id, fp in fingerprint_engine.clusters.items():
                     rssi_hist = fingerprint_engine.get_rssi_history(fp_id)
@@ -426,7 +431,7 @@ def do_scan_and_emit():
                     following_detector.record_observation(fp_id, latest_rssi)
                 following_alerts = following_detector.get_all_alerts(clustered)
 
-            if shadow_detector:
+            if shadow_detector and run_advanced:
                 # Record visibility for all known fingerprints
                 current_ids = set(d.get("fingerprint_id", "") for d in clustered)
                 for fp_id in set(list(shadow_detector.visibility_log.keys()) + list(current_ids)):
@@ -438,16 +443,16 @@ def do_scan_and_emit():
                     shadow_detector.record_visibility(fp_id, visible, name)
                 shadow_devices = shadow_detector.get_all_shadows(clustered)
 
-            if env_fingerprint:
+            if env_fingerprint and run_advanced:
                 env_fingerprint.record_scan(clustered)
                 env_anomalies = env_fingerprint.get_anomalies(clustered)
 
-            if life_story:
+            if life_story and run_advanced:
                 for d in clustered:
                     fid = d.get("fingerprint_id", "")
                     life_story.record_state(fid, d)
 
-            if conversation_graph:
+            if conversation_graph and run_advanced:
                 device_ids = [d.get("fingerprint_id", "") for d in clustered if d.get("fingerprint_id")]
                 conversation_graph.record_scan(device_ids)
 
@@ -776,7 +781,7 @@ def api_config_set():
     data = request.get_json(force=True, silent=True) or {}
     for key, val in data.items():
         config[key] = val
-    scan_interval = config.get("scan_interval", 5)
+    scan_interval = config.get("scan_interval", 15)
     save_config(config)
     return jsonify(config)
 
@@ -787,6 +792,100 @@ def api_platform():
 
 
 # ── New v4 API endpoints ─────────────────────────────────────────────────────
+
+@app.route("/api/system")
+def api_system():
+    """Raspberry Pi system health — CPU temp, RAM, voltage, uptime."""
+    info = {
+        "cpu_temp": None,
+        "cpu_percent": None,
+        "ram_used_mb": None,
+        "ram_total_mb": None,
+        "ram_percent": None,
+        "undervoltage": False,
+        "throttled": False,
+        "uptime_seconds": None,
+        "disk_used_gb": None,
+        "disk_total_gb": None,
+        "ip_address": None,
+    }
+    try:
+        # CPU temperature (Linux/RPi)
+        temp_file = Path("/sys/class/thermal/thermal_zone0/temp")
+        if temp_file.exists():
+            info["cpu_temp"] = round(int(temp_file.read_text().strip()) / 1000, 1)
+    except Exception:
+        pass
+    try:
+        # RAM from /proc/meminfo
+        meminfo = Path("/proc/meminfo").read_text()
+        mem = {}
+        for line in meminfo.splitlines():
+            parts = line.split()
+            if parts[0] in ("MemTotal:", "MemAvailable:"):
+                mem[parts[0]] = int(parts[1])
+        total = mem.get("MemTotal:", 0)
+        avail = mem.get("MemAvailable:", 0)
+        used = total - avail
+        info["ram_total_mb"] = round(total / 1024, 1)
+        info["ram_used_mb"] = round(used / 1024, 1)
+        info["ram_percent"] = round(used / total * 100, 1) if total else 0
+    except Exception:
+        pass
+    try:
+        # CPU usage from /proc/stat (two samples 200ms apart)
+        def read_cpu():
+            line = Path("/proc/stat").read_text().splitlines()[0].split()
+            vals = [int(x) for x in line[1:]]
+            idle = vals[3]
+            total = sum(vals)
+            return idle, total
+        i1, t1 = read_cpu()
+        time.sleep(0.2)
+        i2, t2 = read_cpu()
+        dt = t2 - t1
+        info["cpu_percent"] = round((1 - (i2 - i1) / dt) * 100, 1) if dt else 0
+    except Exception:
+        pass
+    try:
+        # Uptime
+        uptime_sec = float(Path("/proc/uptime").read_text().split()[0])
+        info["uptime_seconds"] = int(uptime_sec)
+    except Exception:
+        pass
+    try:
+        # Throttle/undervoltage via vcgencmd (RPi only)
+        result = subprocess.run(
+            ["vcgencmd", "get_throttled"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0:
+            val = int(result.stdout.strip().split("=")[1], 16)
+            info["undervoltage"] = bool(val & 0x1)       # bit 0: currently undervolted
+            info["throttled"] = bool(val & 0x4)          # bit 2: currently throttled
+            info["throttle_raw"] = hex(val)
+    except Exception:
+        pass
+    try:
+        # Disk usage
+        stat = subprocess.run(["df", "-BG", "/"], capture_output=True, text=True, timeout=2)
+        if stat.returncode == 0:
+            parts = stat.stdout.splitlines()[1].split()
+            info["disk_total_gb"] = int(parts[1].rstrip("G"))
+            info["disk_used_gb"] = int(parts[2].rstrip("G"))
+    except Exception:
+        pass
+    try:
+        # IP address
+        import socket as _sock
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        info["ip_address"] = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    return jsonify(info)
+
 
 @app.route("/api/ghost", methods=["POST"])
 def api_ghost():
@@ -1024,7 +1123,7 @@ def on_toggle_autoscan(data):
 @socketio.on("set_scan_interval")
 def on_set_interval(data):
     global scan_interval
-    scan_interval = max(1, min(60, int(data.get("interval", 5))))
+    scan_interval = max(10, min(120, int(data.get("interval", 15))))
     config["scan_interval"] = scan_interval
 
 
@@ -1043,13 +1142,17 @@ def on_set_range(data):
 
 def background_scan_loop():
     """Periodically scan and push results to connected clients."""
+    last_scan_time = 0
     while True:
-        if auto_scan:
+        now = time.monotonic()
+        # Run scan on interval
+        if auto_scan and (now - last_scan_time) >= scan_interval:
             do_scan_and_emit()
-        # Broadcast live jammer status every tick so packet counter updates
+            last_scan_time = time.monotonic()
+        # Broadcast jammer status every 2s so packet counter stays live
         if jammer and jammer.is_jamming:
             socketio.emit("jammer_update", jammer.get_status())
-        time.sleep(scan_interval)
+        time.sleep(2)
 
 
 # ── Entry Point ──────────────────────────────────────────────────────────────
@@ -1066,7 +1169,7 @@ def main():
     args = parser.parse_args()
 
     config = load_config()
-    scan_interval = config.get("scan_interval", 5)
+    scan_interval = config.get("scan_interval", 15)
     platform_info = detect_platform()
 
     print(f"[BlueShield] Platform: {platform_info['os']}")

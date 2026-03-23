@@ -166,6 +166,8 @@ function switchTab(tab) {
     if (tab === "following") renderFollowingGrid();
     if (tab === "shadows") renderShadowGrid();
     if (tab === "live") { renderLiveDemo(); fetchTimeTravel(); }
+    healthTabActive = (tab === "health");
+    if (tab === "health") fetchSystemHealth();
 }
 
 /* ── Sidebar Toggle ────────────────────────────────────────── */
@@ -1380,6 +1382,118 @@ if ($("tt-live-btn")) {
         renderLiveDemo();
     });
 }
+
+/* ── Pi Health Monitor ─────────────────────────────────────── */
+async function fetchSystemHealth() {
+    try {
+        const res = await fetch("/api/system");
+        if (!res.ok) return;
+        const d = await res.json();
+        renderHealthTab(d);
+    } catch {}
+}
+
+function renderHealthTab(d) {
+    const now = new Date().toLocaleTimeString();
+    if ($("health-updated")) $("health-updated").textContent = `Updated ${now}`;
+
+    const alerts = [];
+
+    // CPU Temp
+    if (d.cpu_temp !== null) {
+        const t = d.cpu_temp;
+        $("hv-temp").textContent = `${t}°C`;
+        const pct = Math.min((t / 90) * 100, 100);
+        $("hb-temp").style.width = pct + "%";
+        const col = t > 80 ? "var(--red)" : t > 65 ? "var(--orange)" : "var(--green)";
+        $("hb-temp").style.background = col;
+        $("hs-temp").textContent = t > 80 ? "CRITICAL — throttling!" : t > 65 ? "Warm — check cooling" : "Normal";
+        const hcard = $("hc-temp");
+        if (hcard) { hcard.classList.toggle("crit", t > 80); hcard.classList.toggle("warn", t > 65 && t <= 80); }
+        if (t > 80) alerts.push({ cls: "crit", msg: `🌡️ CPU temp ${t}°C — Pi is throttling! Add a heatsink/fan.` });
+        else if (t > 65) alerts.push({ cls: "warn", msg: `🌡️ CPU temp ${t}°C — Running warm. Consider a heatsink.` });
+    } else {
+        $("hv-temp").textContent = "N/A";
+        $("hs-temp").textContent = "Not available (non-Linux)";
+    }
+
+    // CPU Usage
+    if (d.cpu_percent !== null) {
+        const c = d.cpu_percent;
+        $("hv-cpu").textContent = `${c}%`;
+        $("hb-cpu").style.width = c + "%";
+        $("hb-cpu").style.background = c > 85 ? "var(--red)" : c > 60 ? "var(--orange)" : "var(--green)";
+        $("hs-cpu").textContent = c > 85 ? "Very high load" : c > 60 ? "Moderate load" : "Normal";
+        if (c > 90) alerts.push({ cls: "warn", msg: `⚡ CPU usage ${c}% — Pi 3 is under heavy load.` });
+    } else {
+        $("hv-cpu").textContent = "N/A";
+    }
+
+    // RAM
+    if (d.ram_percent !== null) {
+        const r = d.ram_percent;
+        $("hv-ram").textContent = `${d.ram_used_mb}MB / ${d.ram_total_mb}MB`;
+        $("hb-ram").style.width = r + "%";
+        $("hb-ram").style.background = r > 85 ? "var(--red)" : r > 65 ? "var(--orange)" : "var(--green)";
+        $("hs-ram").textContent = `${r}% used`;
+        if (r > 85) alerts.push({ cls: "warn", msg: `🧠 RAM ${r}% used — Pi 3 only has 1GB. Consider reducing scan load.` });
+    } else {
+        $("hv-ram").textContent = "N/A";
+    }
+
+    // Voltage / Throttle
+    if (d.undervoltage !== undefined) {
+        const uv = d.undervoltage;
+        const th = d.throttled;
+        $("hv-volt").textContent = uv ? "⚠️ UNDER-VOLTAGE" : th ? "⚠️ THROTTLED" : "✅ Good";
+        $("hs-volt").textContent = uv ? "Use 5V 2.5A PSU" : th ? "Check power supply" : "Power OK";
+        const hcard = $("hc-volt");
+        if (hcard) { hcard.classList.toggle("crit", uv); hcard.classList.toggle("warn", th && !uv); }
+        if (uv) alerts.push({ cls: "crit", msg: "🔋 Undervoltage detected! Use an official 5V 2.5A Raspberry Pi PSU. This causes USB instability and scan failures." });
+        else if (th) alerts.push({ cls: "warn", msg: "🔋 Pi is throttling due to power. Check your power supply." });
+    } else {
+        $("hv-volt").textContent = "N/A";
+        $("hs-volt").textContent = "vcgencmd not available";
+    }
+
+    // Disk
+    if (d.disk_total_gb !== null) {
+        const pct = Math.round(d.disk_used_gb / d.disk_total_gb * 100);
+        $("hv-disk").textContent = `${d.disk_used_gb}GB / ${d.disk_total_gb}GB`;
+        $("hb-disk").style.width = pct + "%";
+        $("hb-disk").style.background = pct > 90 ? "var(--red)" : pct > 75 ? "var(--orange)" : "var(--accent)";
+        $("hs-disk").textContent = `${pct}% used`;
+        if (pct > 90) alerts.push({ cls: "warn", msg: `💾 Disk ${pct}% full — clear old logs soon.` });
+    }
+
+    // Uptime + IP
+    if (d.uptime_seconds !== null) {
+        const h = Math.floor(d.uptime_seconds / 3600);
+        const m = Math.floor((d.uptime_seconds % 3600) / 60);
+        $("hv-uptime").textContent = `${h}h ${m}m`;
+    }
+    if (d.ip_address && $("hs-ip")) {
+        $("hs-ip").textContent = `IP: ${d.ip_address}`;
+    }
+
+    // Health badge on nav
+    const badge = $("nav-health-badge");
+    if (badge) badge.style.display = alerts.filter(a => a.cls === "crit").length ? "" : "none";
+
+    // Render alerts
+    const container = $("health-alerts");
+    if (container) {
+        if (!alerts.length) {
+            container.innerHTML = `<div class="health-alert-item ok">✅ All systems nominal — Pi 3 is running healthy.</div>`;
+        } else {
+            container.innerHTML = alerts.map(a => `<div class="health-alert-item ${a.cls}">${a.msg}</div>`).join("");
+        }
+    }
+}
+
+// Fetch health when health tab is opened, and refresh every 15s while on that tab
+let healthTabActive = false;
+setInterval(() => { if (healthTabActive) fetchSystemHealth(); }, 15000);
 
 /* ── Initial fetch ─────────────────────────────────────────── */
 (async function init() {

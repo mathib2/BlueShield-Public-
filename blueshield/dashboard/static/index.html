@@ -18,7 +18,7 @@
             <div class="brand">
                 <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6.5 6.5l11 11M6.5 17.5l11-11M12 2v20"/></svg>
                 <span class="brand-name">BlueShield</span>
-                <span class="brand-ver">v5.0</span>
+                <span class="brand-ver">v5.1</span>
             </div>
         </div>
         <div class="topbar-center">
@@ -106,6 +106,10 @@
             </div>
             <div class="nav-section">
                 <div class="nav-label">SYSTEM</div>
+                <button class="nav-item" data-tab="health">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    <span>Pi Health</span><span class="nav-badge" id="nav-health-badge" style="display:none;background:var(--red-bg);color:var(--red)">!</span>
+                </button>
                 <button class="nav-item" data-tab="config">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     <span>Config</span>
@@ -143,7 +147,7 @@
                         <div class="live-center-panel">
                             <div class="live-hero">
                                 <div class="lh-icon">🛡️</div>
-                                <div class="lh-title">BlueShield <span class="lh-ver">v5.0</span></div>
+                                <div class="lh-title">BlueShield <span class="lh-ver">v5.1</span></div>
                                 <div class="lh-subtitle">Bluetooth Intelligence Platform</div>
                             </div>
                             <div class="live-people" id="live-people">
@@ -412,13 +416,66 @@
                 <div class="shadow-grid" id="shadow-grid"></div>
             </section>
 
+            <!-- PI HEALTH TAB -->
+            <section class="tab-pane" id="tab-health">
+                <div class="tab-toolbar">
+                    <div class="tb-left"><h2 class="tab-title">Pi Health</h2></div>
+                    <div class="tb-right"><span style="font-size:.72rem;color:var(--tx-3)" id="health-updated">--</span></div>
+                </div>
+                <div class="health-grid">
+                    <div class="health-card" id="hc-temp">
+                        <div class="hc-icon">🌡️</div>
+                        <div class="hc-label">CPU Temp</div>
+                        <div class="hc-value" id="hv-temp">--</div>
+                        <div class="hc-bar"><div class="hc-bar-fill" id="hb-temp"></div></div>
+                        <div class="hc-status" id="hs-temp">--</div>
+                    </div>
+                    <div class="health-card" id="hc-cpu">
+                        <div class="hc-icon">⚡</div>
+                        <div class="hc-label">CPU Usage</div>
+                        <div class="hc-value" id="hv-cpu">--</div>
+                        <div class="hc-bar"><div class="hc-bar-fill" id="hb-cpu"></div></div>
+                        <div class="hc-status" id="hs-cpu">--</div>
+                    </div>
+                    <div class="health-card" id="hc-ram">
+                        <div class="hc-icon">🧠</div>
+                        <div class="hc-label">RAM Usage</div>
+                        <div class="hc-value" id="hv-ram">--</div>
+                        <div class="hc-bar"><div class="hc-bar-fill" id="hb-ram"></div></div>
+                        <div class="hc-status" id="hs-ram">--</div>
+                    </div>
+                    <div class="health-card" id="hc-volt">
+                        <div class="hc-icon">🔋</div>
+                        <div class="hc-label">Power Status</div>
+                        <div class="hc-value" id="hv-volt">--</div>
+                        <div class="hc-bar" style="display:none"></div>
+                        <div class="hc-status" id="hs-volt">--</div>
+                    </div>
+                    <div class="health-card" id="hc-disk">
+                        <div class="hc-icon">💾</div>
+                        <div class="hc-label">Disk Usage</div>
+                        <div class="hc-value" id="hv-disk">--</div>
+                        <div class="hc-bar"><div class="hc-bar-fill" id="hb-disk"></div></div>
+                        <div class="hc-status" id="hs-disk">--</div>
+                    </div>
+                    <div class="health-card" id="hc-uptime">
+                        <div class="hc-icon">⏱️</div>
+                        <div class="hc-label">Uptime</div>
+                        <div class="hc-value" id="hv-uptime">--</div>
+                        <div class="hc-bar" style="display:none"></div>
+                        <div class="hc-status" id="hs-ip">--</div>
+                    </div>
+                </div>
+                <div class="health-alerts" id="health-alerts"></div>
+            </section>
+
             <!-- CONFIG TAB -->
             <section class="tab-pane" id="tab-config">
                 <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Configuration</h2></div></div>
                 <div class="cfg-grid">
                     <div class="cfg-card"><h3>Scan Settings</h3>
-                        <div class="field"><label>Scan Interval (s)</label><input type="number" id="cfg-interval" class="input" value="5" min="2" max="60"></div>
-                        <div class="field"><label>Scan Duration (s)</label><input type="number" id="cfg-duration" class="input" value="10" min="3" max="30"></div>
+                        <div class="field"><label>Scan Interval (s)</label><input type="number" id="cfg-interval" class="input" value="15" min="10" max="120"></div>
+                        <div class="field"><label>Scan Duration (s)</label><input type="number" id="cfg-duration" class="input" value="5" min="3" max="30"></div>
                         <div class="field"><label>Alert Threshold</label><input type="number" id="cfg-threshold" class="input" value="3" min="1" max="20"></div>
                         <button class="btn btn-accent" id="btn-save-cfg">Save</button>
                     </div>
