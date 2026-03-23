@@ -50,13 +50,11 @@ class AnalyticsTracker:
         """Persist analytics to disk."""
         data = {
             "daily_stats": self.daily_stats,
-            "all_seen_ids": list(self.all_seen_ids)[-500:],  # Keep last 500
+            "all_seen_ids": list(self.all_seen_ids)[-500:],
             "peak_device_count": self.peak_device_count,
             "peak_device_time": self.peak_device_time,
         }
         try:
-            # Only keep last 500 IDs
-            data["all_seen_ids"] = list(self.all_seen_ids)[-500:]
             with open(self.analytics_file, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception:

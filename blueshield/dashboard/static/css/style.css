@@ -690,6 +690,23 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
     .sidebar-toggle{display:none}
 }
 
+/* ── Pi Health Tab ─────────────────────── */
+.health-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;padding:16px}
+.health-card{background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:6px;transition:border-color .2s}
+.health-card.warn{border-color:var(--orange)}
+.health-card.crit{border-color:var(--red);background:var(--red-bg)}
+.hc-icon{font-size:1.4rem}
+.hc-label{font-size:.7rem;font-weight:600;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px}
+.hc-value{font-size:1.6rem;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--tx-1)}
+.hc-bar{height:6px;background:var(--bg-4);border-radius:3px;overflow:hidden;margin:2px 0}
+.hc-bar-fill{height:100%;border-radius:3px;transition:width .5s,background .3s}
+.hc-status{font-size:.72rem;color:var(--tx-3)}
+.health-alerts{padding:0 16px 16px}
+.health-alert-item{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:8px;margin-bottom:8px;font-size:.8rem;font-weight:500}
+.health-alert-item.warn{background:var(--orange-bg);border:1px solid var(--orange);color:var(--orange)}
+.health-alert-item.crit{background:var(--red-bg);border:1px solid var(--red);color:var(--red)}
+.health-alert-item.ok{background:var(--green-bg);border:1px solid var(--green);color:var(--green)}
+
 /* ── Small phones ──────────────────────── */
 @media(max-width:400px){
     .topbar{height:44px}

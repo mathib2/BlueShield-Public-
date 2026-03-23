@@ -22,20 +22,77 @@ from pathlib import Path
 # ── Bluetooth SIG Company IDs (built-in fallback) ─────────────────────────
 # Used when bluetooth-numbers is not installed
 COMPANY_IDS = {
-    6: "Microsoft",
-    76: "Apple, Inc.",
-    89: "Nordic Semiconductor",
-    117: "Samsung Electronics",
-    224: "Google",
-    301: "Bose Corporation",
-    343: "Texas Instruments",
-    397: "Laird Connectivity",
-    741: "Xiaomi",
-    919: "Amazfit",
+    6:    "Microsoft",
+    15:   "Broadcom",
+    18:   "Zeevo",
+    29:   "Qualcomm",
+    38:   "Atheros",
+    46:   "ST Microelectronics",
+    48:   "Harman",
+    56:   "Plantronics",
+    76:   "Apple, Inc.",
+    89:   "Nordic Semiconductor",
+    94:   "Cisco Systems",
+    117:  "Samsung Electronics",
+    121:  "Jawbone",
+    157:  "Sony Ericsson",
+    171:  "Motorola",
+    196:  "Polar Electro",
+    199:  "Sony",
+    202:  "Amazon",
+    211:  "Wahoo Fitness",
+    224:  "Google",
+    229:  "Garmin",
+    240:  "Zebra Technologies",
+    256:  "GN Audio (Jabra)",
+    273:  "Razer",
+    282:  "Huawei Technologies",
+    301:  "Bose Corporation",
+    305:  "Fossil",
+    309:  "Tile",
+    343:  "Texas Instruments",
+    397:  "Laird Connectivity",
+    412:  "Bang & Olufsen",
+    426:  "Dell",
+    435:  "HP",
+    460:  "Skullcandy",
+    473:  "Lenovo",
+    483:  "Sennheiser",
+    499:  "iRobot",
+    529:  "Beats Electronics",
+    546:  "Realtek",
+    551:  "Nintendo",
+    604:  "Fitbit (acquired by Google)",
+    628:  "Anker",
+    636:  "Nreal",
+    665:  "OnePlus",
+    741:  "Xiaomi",
+    789:  "OPPO",
+    807:  "Vivo",
+    853:  "Nothing Technology",
+    875:  "Withings",
+    882:  "Sonos",
+    919:  "Amazfit (Zepp Health)",
+    960:  "Pebble",
+    1008: "Misfit",
+    1056: "Anker Soundcore",
     1177: "Fitbit",
     1370: "JBL",
+    1410: "Ember",
+    1424: "Peloton",
     1452: "Logitech",
+    1480: "Audio-Technica",
+    1521: "boAt",
+    1543: "Oura Health",
+    1557: "Whoop",
+    1622: "August Home",
+    1681: "Tile",
+    1724: "Ledger",
+    1808: "Polar",
+    1899: "Haylou",
     2558: "Meta Platforms",
+    2657: "Google (Pixel Buds)",
+    2768: "Nothing",
 }
 
 # ── Apple Continuity Device Types ──────────────────────────────────────────
@@ -244,46 +301,50 @@ class BluetoothScanner:
         self.save_known_devices()
 
     def scan_classic_hcitool(self) -> list[BluetoothDevice]:
-        """Scan for Classic Bluetooth devices using hcitool (Linux/RPi)."""
+        """Scan for Classic Bluetooth devices using hcitool inq (Linux/RPi).
+
+        Uses a short timeout to avoid blocking BLE scans. Classic BT inquiry
+        is slow by design (10.24s per round); we cap it at 8s max.
+        """
         devices = []
         try:
             result = subprocess.run(
-                ["hcitool", "-i", self.interface, "scan", "--flush"],
-                capture_output=True, text=True, timeout=self.scan_duration + 5
+                ["hcitool", "-i", self.interface, "inq", "--flush", "--numrsp=10"],
+                capture_output=True, text=True, timeout=8
             )
-            for line in result.stdout.strip().split("\n")[1:]:  # skip header
-                parts = line.strip().split("\t")
-                if len(parts) >= 2:
-                    addr = parts[0].strip()
-                    name = parts[1].strip() if len(parts) > 1 else "Unknown"
-                    cat = classify_device(name, "", [], -70)
-                    dev = BluetoothDevice(
-                        address=addr, name=name, device_type="classic",
-                        category=cat, category_icon=CATEGORY_ICONS.get(cat, "❓"),
-                    )
-                    devices.append(dev)
-        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
-            pass
-
-        # Try to get RSSI via hcitool inq
-        try:
-            result = subprocess.run(
-                ["hcitool", "-i", self.interface, "inq", "--flush"],
-                capture_output=True, text=True, timeout=self.scan_duration + 5
-            )
-            for line in result.stdout.strip().split("\n")[1:]:
+            for line in result.stdout.strip().split("\n"):
                 parts = line.strip().split()
-                if len(parts) >= 1:
-                    addr = parts[0]
-                    for dev in devices:
-                        if dev.address == addr and len(parts) >= 6:
-                            try:
-                                dev.rssi = int(parts[-1])
-                            except ValueError:
-                                pass
+                # inq output: "XX:XX:XX:XX:XX:XX  clock_offset  class  rssi"
+                if not parts or ":" not in parts[0]:
+                    continue
+                addr = parts[0].strip()
+                # Try to get name via btinfo (non-blocking)
+                name = self._name_cache.get(addr.upper(), "Classic BT Device")
+                try:
+                    nr = subprocess.run(
+                        ["hcitool", "-i", self.interface, "name", addr],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    fetched = nr.stdout.strip()
+                    if fetched and fetched != addr:
+                        name = fetched
+                        self._name_cache[addr.upper()] = name
+                except Exception:
+                    pass
+                rssi = -70
+                try:
+                    rssi = int(parts[-1])
+                except (ValueError, IndexError):
+                    pass
+                cat = classify_device(name, "", [], rssi)
+                dev = BluetoothDevice(
+                    address=addr.upper(), name=name, rssi=rssi,
+                    device_type="classic",
+                    category=cat, category_icon=CATEGORY_ICONS.get(cat, "❓"),
+                )
+                devices.append(dev)
         except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             pass
-
         return devices
 
     def _reset_hci_adapter(self):
