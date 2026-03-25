@@ -18,12 +18,16 @@ DEFAULT_CONFIG = {
     "alert_threshold": 3,         # unknown devices before alert
     "known_devices_file": str(CONFIG_DIR / "known_devices.json"),
     "log_file": str(LOG_DIR / "blueshield.json"),
-    "interface": "hci0",          # Bluetooth HCI interface
-    "dashboard_refresh": 2,       # dashboard refresh rate (seconds)
-    "jam_enabled": False,         # jamming disabled by default (research only)
-    "jam_channel": 39,            # BLE advertising channel (37, 38, 39)
-    "jam_power": -20,             # transmit power dBm (low for research)
-    "max_log_entries": 10000,     # max entries before rotation
+    "interface": "hci0",              # scanner adapter (Feasycom BP119)
+    "jammer_interface": "hci1",       # dedicated jammer adapter (Hakimonoe BT548)
+    "long_range_interface": "hci2",   # nRF52840 Zephyr HCI — Coded PHY long range
+    "sniffle_port": "/dev/ttyACM0",   # nRF52840 #1 Sniffle serial port
+    "sniffle_enabled": False,         # enable Sniffle packet capture
+    "dashboard_refresh": 2,           # dashboard refresh rate (seconds)
+    "jam_enabled": False,             # jamming disabled by default (research only)
+    "jam_channel": 39,                # BLE advertising channel (37, 38, 39)
+    "jam_power": -20,                 # transmit power dBm (low for research)
+    "max_log_entries": 10000,         # max entries before rotation
 }
 
 
