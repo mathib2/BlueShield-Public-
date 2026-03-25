@@ -1298,17 +1298,17 @@ def main():
     else:
         print("[BlueShield] Using REAL hardware scanner")
         scanner = BluetoothScanner(config)
-        print(f"[BlueShield] Scanner  → {config.get('interface', 'hci0')} (Feasycom BP119)")
+        print(f"[BlueShield] Scanner    → {config.get('interface', 'hci2')} (Feasycom BP119, BT5.4)")
         if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
             # Use dedicated jammer adapter (hci1 = Hakimonoe BT548)
             jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci1")}
             jammer = BluetoothJammer(jammer_cfg)
-            print(f"[BlueShield] Jammer   → {jammer_cfg['interface']} (Hakimonoe BT548)")
+            print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} (Hakimonoe BT548, BT5.3)")
         else:
             print("[BlueShield] Jammer: simulated (requires Linux + hcitool)")
             jammer = SimulatedJammer(config)
-        lr = config.get("long_range_interface", "hci2")
-        print(f"[BlueShield] Long Range → {lr} (nRF52840 Coded PHY)")
+        lr = config.get("long_range_interface", "hci3")
+        print(f"[BlueShield] Long Range → {lr} (nRF52840 Zephyr HCI, Coded PHY)")
         if config.get("sniffle_enabled"):
             print(f"[BlueShield] Sniffle  → {config.get('sniffle_port', '/dev/ttyACM0')}")
 
