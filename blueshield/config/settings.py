@@ -18,9 +18,9 @@ DEFAULT_CONFIG = {
     "alert_threshold": 3,         # unknown devices before alert
     "known_devices_file": str(CONFIG_DIR / "known_devices.json"),
     "log_file": str(LOG_DIR / "blueshield.json"),
-    "interface": "hci0",              # scanner adapter (Feasycom BP119)
-    "jammer_interface": "hci1",       # dedicated jammer adapter (Hakimonoe BT548)
-    "long_range_interface": "hci2",   # nRF52840 Zephyr HCI — Coded PHY long range
+    "interface": "hci2",              # scanner adapter (Feasycom BP119 — USB, BT5.4)
+    "jammer_interface": "hci1",       # dedicated jammer adapter (Hakimonoe BT548 — USB, BT5.3)
+    "long_range_interface": "hci3",   # nRF52840 Zephyr HCI — Coded PHY long range
     "sniffle_port": "/dev/ttyACM0",   # nRF52840 #1 Sniffle serial port
     "sniffle_enabled": False,         # enable Sniffle packet capture
     "dashboard_refresh": 2,           # dashboard refresh rate (seconds)
