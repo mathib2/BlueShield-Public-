@@ -905,6 +905,99 @@ def api_ghost():
         return jsonify({"status": "simulated", "message": "Ghost mode only available on Linux/RPi"})
 
 
+@app.route("/api/adapters")
+@login_required
+def api_adapters():
+    """Detect and return status of all HCI Bluetooth adapters."""
+    adapters = []
+    if platform_info.get("os") != "Linux":
+        return jsonify({"adapters": [], "note": "Adapter detection requires Linux"})
+    try:
+        result = subprocess.run(
+            ["hciconfig", "-a"],
+            capture_output=True, text=True, timeout=5
+        )
+        current = None
+        roles = {
+            config.get("interface", "hci0"): "Scanner (BP119)",
+            config.get("jammer_interface", "hci1"): "Jammer (BT548)",
+            config.get("long_range_interface", "hci2"): "Long Range (nRF52840)",
+        }
+        for line in result.stdout.splitlines():
+            if line and not line.startswith("\t") and not line.startswith(" "):
+                if current:
+                    adapters.append(current)
+                name = line.split(":")[0].strip()
+                current = {
+                    "name": name,
+                    "role": roles.get(name, "Unassigned"),
+                    "up": "UP RUNNING" in line,
+                    "details": line.strip(),
+                }
+            elif current and line.strip():
+                if "BD Address" in line:
+                    current["address"] = line.split("BD Address:")[1].split()[0]
+                if "Name:" in line:
+                    current["hw_name"] = line.split("Name:")[1].strip().strip("'")
+        if current:
+            adapters.append(current)
+    except Exception as e:
+        return jsonify({"error": str(e), "adapters": []})
+    return jsonify({"adapters": adapters})
+
+
+@app.route("/api/long_range/scan", methods=["POST"])
+@login_required
+def api_long_range_scan():
+    """Trigger a BLE scan on hci2 (nRF52840 Coded PHY — up to 1,300m)."""
+    if not config:
+        return jsonify({"error": "Not initialized"}), 500
+    lr_interface = config.get("long_range_interface", "hci2")
+
+    # Verify hci2 exists before attempting scan
+    if platform_info.get("os") == "Linux":
+        check = subprocess.run(
+            ["hciconfig", lr_interface],
+            capture_output=True, text=True, timeout=3
+        )
+        if check.returncode != 0:
+            return jsonify({
+                "error": f"{lr_interface} not found — is the nRF52840 (Zephyr HCI) plugged in?",
+                "devices": []
+            }), 404
+
+    lr_config = {**config, "interface": lr_interface, "scan_duration": 8}
+    from blueshield.scanner.bt_scanner import BluetoothScanner as _BS
+    lr_scanner = _BS(lr_config)
+    try:
+        devices = run_async(lr_scanner.scan_ble())
+        result = [d.to_dict() for d in devices]
+        # Tag every device as long-range
+        for d in result:
+            d["source"] = "long_range"
+        return jsonify({"devices": result, "adapter": lr_interface, "count": len(result)})
+    except Exception as e:
+        return jsonify({"error": str(e), "devices": []}), 500
+
+
+@app.route("/api/sniffle/status")
+@login_required
+def api_sniffle_status():
+    """Return Sniffle (nRF52840 #1) configuration and status."""
+    port = config.get("sniffle_port", "/dev/ttyACM0") if config else "/dev/ttyACM0"
+    enabled = config.get("sniffle_enabled", False) if config else False
+    port_exists = False
+    if platform_info.get("os") == "Linux":
+        from pathlib import Path as _P
+        port_exists = _P(port).exists()
+    return jsonify({
+        "enabled": enabled,
+        "port": port,
+        "port_exists": port_exists,
+        "note": "Sniffle capture: run 'python -m sniffle.sniff_receiver -s <port>' on the Pi",
+    })
+
+
 @app.route("/api/analytics")
 def api_analytics():
     """Get historical device analytics."""
@@ -1205,11 +1298,19 @@ def main():
     else:
         print("[BlueShield] Using REAL hardware scanner")
         scanner = BluetoothScanner(config)
+        print(f"[BlueShield] Scanner  → {config.get('interface', 'hci0')} (Feasycom BP119)")
         if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
-            jammer = BluetoothJammer(config)
+            # Use dedicated jammer adapter (hci1 = Hakimonoe BT548)
+            jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci1")}
+            jammer = BluetoothJammer(jammer_cfg)
+            print(f"[BlueShield] Jammer   → {jammer_cfg['interface']} (Hakimonoe BT548)")
         else:
             print("[BlueShield] Jammer: simulated (requires Linux + hcitool)")
             jammer = SimulatedJammer(config)
+        lr = config.get("long_range_interface", "hci2")
+        print(f"[BlueShield] Long Range → {lr} (nRF52840 Coded PHY)")
+        if config.get("sniffle_enabled"):
+            print(f"[BlueShield] Sniffle  → {config.get('sniffle_port', '/dev/ttyACM0')}")
 
     logger = BlueShieldLogger(config)
 
@@ -1217,7 +1318,7 @@ def main():
     scan_thread = threading.Thread(target=background_scan_loop, daemon=True)
     scan_thread.start()
 
-    print(f"[BlueShield] Dashboard v5.0 starting at http://localhost:{args.port}")
+    print(f"[BlueShield] Dashboard v5.3 starting at http://localhost:{args.port}")
     socketio.run(app, host=args.host, port=args.port, debug=False, allow_unsafe_werkzeug=True)
 
 
