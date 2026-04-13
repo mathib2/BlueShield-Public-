@@ -37,6 +37,10 @@ from blueshield.scanner.advanced_analysis import (
 )
 from blueshield.jammer.bt_jammer import BluetoothJammer, SimulatedJammer
 from blueshield.logs.logger import BlueShieldLogger
+from blueshield.sniffer.sniffle_engine import make_sniffer, BLEPacket, ConnectionRecord
+from blueshield.sniffer.gatt_inspector import make_gatt_inspector
+from blueshield.sniffer.crackle_runner import CrackleRunner
+from blueshield.sniffer.pairing_detector import PairingEvent
 
 
 # ── App Setup ────────────────────────────────────────────────────────────────
@@ -94,6 +98,12 @@ _advanced_scan_counter = 0  # throttle heavy analysis — only run every 3rd sca
 rssi_filter = -100  # default: all devices
 platform_info = {}
 _scan_lock = threading.Lock()
+
+# ── Sniffer global state ─────────────────────────────────────────────────────
+sniffer_engine   = None
+gatt_inspector   = None
+crackle_runner   = None
+_sniffer_sim     = False        # set to True when running with --sim
 
 # Configurable alert rules
 alert_rules = [
@@ -998,6 +1008,163 @@ def api_sniffle_status():
     })
 
 
+# ── Sniffer API ──────────────────────────────────────────────────────────────
+
+@app.route("/api/sniffer/status")
+@login_required
+def api_sniffer_status():
+    """Current sniffer engine status, packet stats, and connection list."""
+    if sniffer_engine is None:
+        return jsonify({"running": False, "error": "Sniffer not initialised"})
+    stats = sniffer_engine.get_stats()
+    stats["simulated"]   = _sniffer_sim
+    stats["connections"] = sniffer_engine.get_connections()
+    stats["pairing_sessions"] = (
+        sniffer_engine.pairing_detector.get_active_sessions()
+        + sniffer_engine.pairing_detector.get_history()
+    )
+    stats["crackle_available"] = crackle_runner.binary_available() if crackle_runner else False
+    return jsonify(stats)
+
+
+@app.route("/api/sniffer/start", methods=["POST"])
+@login_required
+def api_sniffer_start():
+    """Start BLE packet capture."""
+    if sniffer_engine is None:
+        return jsonify({"error": "Sniffer not initialised"}), 503
+    if sniffer_engine._running:
+        return jsonify({"status": "already_running"})
+    data       = request.get_json(force=True, silent=True) or {}
+    target_mac = data.get("target_mac") or None
+    rssi_min   = int(data.get("rssi_min", -100))
+    coded_phy  = bool(data.get("coded_phy", False))
+    sniffer_engine.start(target_mac=target_mac, rssi_min=rssi_min, coded_phy=coded_phy)
+    socketio.emit("sniffer_state", {"state": "SCANNING", "simulated": _sniffer_sim})
+    return jsonify({"status": "started", "simulated": _sniffer_sim})
+
+
+@app.route("/api/sniffer/stop", methods=["POST"])
+@login_required
+def api_sniffer_stop():
+    """Stop BLE packet capture."""
+    if sniffer_engine is None:
+        return jsonify({"error": "Sniffer not initialised"}), 503
+    sniffer_engine.stop()
+    socketio.emit("sniffer_state", {"state": "IDLE"})
+    return jsonify({"status": "stopped"})
+
+
+@app.route("/api/sniffer/packets")
+@login_required
+def api_sniffer_packets():
+    """Return the most recent N captured packets."""
+    count = min(int(request.args.get("count", 200)), 500)
+    if sniffer_engine is None:
+        return jsonify({"packets": []})
+    return jsonify({"packets": sniffer_engine.get_recent_packets(count)})
+
+
+@app.route("/api/sniffer/connections")
+@login_required
+def api_sniffer_connections():
+    """Return all captured connections."""
+    if sniffer_engine is None:
+        return jsonify({"connections": []})
+    return jsonify({"connections": sniffer_engine.get_connections()})
+
+
+@app.route("/api/sniffer/pairing")
+@login_required
+def api_sniffer_pairing():
+    """Return pairing sessions (active + history)."""
+    if sniffer_engine is None:
+        return jsonify({"sessions": []})
+    sessions = (
+        sniffer_engine.pairing_detector.get_active_sessions()
+        + sniffer_engine.pairing_detector.get_history()
+    )
+    return jsonify({"sessions": sessions})
+
+
+@app.route("/api/sniffer/pcap/export")
+@login_required
+def api_sniffer_pcap_export():
+    """Download the current PCAP capture file."""
+    if sniffer_engine is None or not hasattr(sniffer_engine, "_current_pcap_path"):
+        return jsonify({"error": "No PCAP available"}), 404
+    path = sniffer_engine._current_pcap_path
+    if not path or not Path(path).exists():
+        return jsonify({"error": "PCAP file not found"}), 404
+    return send_file(path, as_attachment=True,
+                     download_name=Path(path).name,
+                     mimetype="application/vnd.tcpdump.pcap")
+
+
+@app.route("/api/sniffer/gatt", methods=["POST"])
+@login_required
+def api_sniffer_gatt():
+    """Start a GATT inspection for the given MAC address."""
+    if gatt_inspector is None:
+        return jsonify({"error": "GATT inspector not initialised"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    mac  = (data.get("mac") or "").strip().upper()
+    if not mac:
+        return jsonify({"error": "mac required"}), 400
+    if gatt_inspector.is_busy(mac):
+        return jsonify({"status": "already_inspecting", "mac": mac})
+
+    def on_gatt_done(result: dict):
+        socketio.emit("gatt_result", result)
+
+    gatt_inspector.inspect(mac, on_result=on_gatt_done,
+                           read_values=bool(data.get("read_values", True)))
+    return jsonify({"status": "started", "mac": mac})
+
+
+@app.route("/api/sniffer/gatt/<mac>")
+@login_required
+def api_sniffer_gatt_cached(mac):
+    """Return the most recent GATT inspection result for a MAC."""
+    if gatt_inspector is None:
+        return jsonify({"error": "GATT inspector not initialised"}), 503
+    result = gatt_inspector.get_cached_result(mac.upper())
+    if result is None:
+        return jsonify({"error": "No cached result — start inspection first"}), 404
+    return jsonify(result)
+
+
+@app.route("/api/sniffer/crackle", methods=["POST"])
+@login_required
+def api_sniffer_crackle():
+    """Run crackle against a legacy pairing PCAP."""
+    if crackle_runner is None:
+        return jsonify({"error": "Crackle runner not initialised"}), 503
+    data = request.get_json(force=True, silent=True) or {}
+    session_id = data.get("session_id", "manual")
+
+    # Determine PCAP source: explicit path or current capture
+    pcap_path = data.get("pcap_path")
+    if not pcap_path and sniffer_engine and hasattr(sniffer_engine, "_current_pcap_path"):
+        pcap_path = sniffer_engine._current_pcap_path
+
+    if not pcap_path:
+        return jsonify({"error": "No PCAP path available — start a capture first"}), 400
+
+    passkey_max = int(data.get("passkey_max", 0))
+
+    def on_crackle_done(result):
+        socketio.emit("crackle_result", result.to_dict())
+
+    crackle_runner.crack(
+        pcap_path=pcap_path,
+        session_id=session_id,
+        on_result=on_crackle_done,
+        passkey_max=passkey_max,
+    )
+    return jsonify({"status": "started", "pcap_path": pcap_path})
+
+
 @app.route("/api/analytics")
 def api_analytics():
     """Get historical device analytics."""
@@ -1174,6 +1341,31 @@ def api_toggle_advanced():
     return jsonify({"enabled": advanced_mode})
 
 
+# ── Sniffer Socket.IO event emitters (called from sniffer callbacks) ─────────
+
+def _on_sniffer_packet(pkt: BLEPacket):
+    """Push a captured BLE packet to all connected clients."""
+    socketio.emit("sniffer_packet", pkt.to_dict())
+
+
+def _on_sniffer_connection(conn: ConnectionRecord):
+    """Push a CONNECT_IND event to all connected clients."""
+    socketio.emit("sniffer_connection", conn.to_dict())
+
+
+def _on_sniffer_pairing(session: PairingEvent):
+    """Push an SMP pairing event to all connected clients."""
+    socketio.emit("sniffer_pairing", session.to_dict())
+
+
+def _on_sniffer_state(state: str):
+    socketio.emit("sniffer_state", {"state": state, "simulated": _sniffer_sim})
+
+
+def _on_sniffer_error(msg: str):
+    socketio.emit("sniffer_error", {"message": msg})
+
+
 # ── Socket.IO Events ────────────────────────────────────────────────────────
 
 @socketio.on("connect")
@@ -1254,6 +1446,7 @@ def main():
     global scanner, jammer, logger, config, scan_interval, platform_info
     global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
     global following_detector, shadow_detector, env_fingerprint, life_story, conversation_graph, trail_tracker
+    global sniffer_engine, gatt_inspector, crackle_runner, _sniffer_sim
 
     parser = argparse.ArgumentParser(description="BlueShield Web Dashboard")
     parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware)")
@@ -1291,6 +1484,8 @@ def main():
     print("[BlueShield] Conversation graph engine active")
     print("[BlueShield] Movement trail tracker active")
 
+    _sniffer_sim = args.sim
+
     if args.sim:
         print("[BlueShield] Using SIMULATED scanner and jammer")
         scanner = SimulatedScanner(config)
@@ -1313,6 +1508,27 @@ def main():
             print(f"[BlueShield] Sniffle  → {config.get('sniffle_port', '/dev/ttyACM0')}")
 
     logger = BlueShieldLogger(config)
+
+    # ── Initialise sniffer subsystem ─────────────────────────────────────────
+    pcap_dir = str(Path(__file__).parent.parent.parent / "captures")
+    sniffer_engine = make_sniffer(
+        sim=args.sim,
+        serial_port=config.get("sniffle_port", "/dev/ttyACM0"),
+        pcap_dir=pcap_dir,
+    )
+    sniffer_engine.on_packet     = _on_sniffer_packet
+    sniffer_engine.on_connection = _on_sniffer_connection
+    sniffer_engine.on_pairing    = _on_sniffer_pairing
+    sniffer_engine.on_state      = _on_sniffer_state
+    sniffer_engine.on_error      = _on_sniffer_error
+
+    gatt_inspector = make_gatt_inspector(sim=args.sim)
+    crackle_runner = CrackleRunner(output_dir=str(Path(pcap_dir) / "crackle"))
+
+    hw_type = "SIMULATED" if (args.sim or not sniffer_engine.hardware_available) else "HARDWARE"
+    print(f"[BlueShield] Sniffer engine  : {hw_type} (Sniffle / BLE PDU capture)")
+    print(f"[BlueShield] GATT inspector  : {'simulated' if args.sim else 'bleak'}")
+    print(f"[BlueShield] Crackle runner  : {'binary: ' + crackle_runner._binary if crackle_runner.binary_available() else 'Python fallback'}")
 
     # Start background scanning in a daemon thread
     scan_thread = threading.Thread(target=background_scan_loop, daemon=True)

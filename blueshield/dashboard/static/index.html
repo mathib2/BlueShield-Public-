@@ -83,6 +83,10 @@
             </div>
             <div class="nav-section">
                 <div class="nav-label">TOOLS</div>
+                <button class="nav-item" data-tab="sniffer">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 6s2-2 5-2 5 4 8 4 5-2 5-2V2s-2 2-5 2-5-4-8-4-5 2-5 2z"/><path d="M1 12s2-2 5-2 5 4 8 4 5-2 5-2"/><path d="M1 18s2-2 5-2 5 4 8 4 5-2 5-2"/></svg>
+                    <span>Sniffer</span><span class="nav-badge sniffer-badge" id="nav-sniffer-badge" style="display:none">●</span>
+                </button>
                 <button class="nav-item" data-tab="jammer">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 5.64a9 9 0 0 1 0 12.73M15.54 8.46a5 5 0 0 1 0 7.07"/><circle cx="12" cy="12" r="1"/><path d="M1 1l22 22"/></svg>
                     <span>Jammer</span><span class="nav-badge jam-badge" id="nav-jam-badge" style="display:none">ON</span>
@@ -311,6 +315,174 @@
                         <div class="ac-header">Device Activity (7 days)</div>
                         <canvas id="an-weekly-chart" width="700" height="150"></canvas>
                     </div>
+                </div>
+            </section>
+
+            <!-- SNIFFER TAB -->
+            <section class="tab-pane" id="tab-sniffer">
+                <div class="tab-toolbar">
+                    <div class="tb-left">
+                        <h2 class="tab-title">BLE Packet Sniffer</h2>
+                        <span class="tab-subtitle" id="sniffer-status-text">Idle — press Start to capture</span>
+                    </div>
+                    <div class="tb-right">
+                        <span class="snf-badge" id="snf-hw-badge">SIM</span>
+                        <button class="btn btn-ghost" id="snf-export-btn" onclick="snifferExportPCAP()" disabled title="Download .pcap">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            Export PCAP
+                        </button>
+                        <button class="btn btn-primary" id="snf-start-btn" onclick="snifferToggle()">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" id="snf-btn-icon"><polygon points="5,3 19,12 5,21" fill="currentColor"/></svg>
+                            <span id="snf-btn-label">Start Capture</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Filter bar -->
+                <div class="snf-filter-bar">
+                    <div class="snf-filter-group">
+                        <label class="snf-label">Target MAC</label>
+                        <input type="text" id="snf-target-mac" class="input snf-input-mac" placeholder="AA:BB:CC:DD:EE:FF (blank = all)">
+                    </div>
+                    <div class="snf-filter-group">
+                        <label class="snf-label">Min RSSI</label>
+                        <select id="snf-rssi-min" class="input">
+                            <option value="-100">All (−100 dBm)</option>
+                            <option value="-80">Nearby (−80 dBm)</option>
+                            <option value="-65">Close (−65 dBm)</option>
+                            <option value="-50">Very close (−50 dBm)</option>
+                        </select>
+                    </div>
+                    <div class="snf-filter-group">
+                        <label class="snf-label">PHY</label>
+                        <select id="snf-phy" class="input">
+                            <option value="1m">1M (standard)</option>
+                            <option value="coded">Coded (long range)</option>
+                        </select>
+                    </div>
+                    <div class="snf-filter-group">
+                        <label class="snf-label">Type filter</label>
+                        <select id="snf-type-filter" class="input" onchange="renderSnifferTable()">
+                            <option value="all">All packets</option>
+                            <option value="adv">Advertising</option>
+                            <option value="connect_ind">Connections</option>
+                            <option value="data">Data PDUs</option>
+                            <option value="smp">SMP / Pairing</option>
+                        </select>
+                    </div>
+                    <div class="snf-filter-group snf-filter-group--grow">
+                        <label class="snf-label">Search</label>
+                        <input type="text" id="snf-search" class="input" placeholder="MAC, name, hex…" oninput="renderSnifferTable()">
+                    </div>
+                    <div class="snf-counter-group">
+                        <div class="snf-counter"><span class="snf-cnt-val" id="snf-cnt-pkts">0</span><span class="snf-cnt-lbl">Packets</span></div>
+                        <div class="snf-counter"><span class="snf-cnt-val" id="snf-cnt-conns">0</span><span class="snf-cnt-lbl">Connections</span></div>
+                        <div class="snf-counter"><span class="snf-cnt-val" id="snf-cnt-pairs">0</span><span class="snf-cnt-lbl">Pairings</span></div>
+                    </div>
+                </div>
+
+                <!-- Main 3-column layout -->
+                <div class="snf-layout">
+
+                    <!-- Left: Packet log -->
+                    <div class="snf-col snf-col--log">
+                        <div class="snf-card">
+                            <div class="snf-card-hd">
+                                <span>Packet Log</span>
+                                <div class="snf-hd-actions">
+                                    <label class="snf-toggle-wrap">
+                                        <input type="checkbox" id="snf-autoscroll" checked>
+                                        <span class="snf-toggle-lbl">Auto-scroll</span>
+                                    </label>
+                                    <button class="btn btn-ghost btn-xs" onclick="snifferClearLog()">Clear</button>
+                                </div>
+                            </div>
+                            <div class="snf-card-bd snf-log-wrap">
+                                <table class="snf-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Time</th>
+                                            <th>Ch</th>
+                                            <th>Type</th>
+                                            <th>Address</th>
+                                            <th>RSSI</th>
+                                            <th>Len</th>
+                                            <th>Info</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="snf-log-body">
+                                        <tr class="snf-empty-row"><td colspan="7">No packets yet — start capture above.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right column: Connections + Pairing + GATT + Crackle -->
+                    <div class="snf-col snf-col--right">
+
+                        <!-- Connections -->
+                        <div class="snf-card">
+                            <div class="snf-card-hd">Connection Follower
+                                <span class="snf-hd-count" id="snf-conn-count">0</span>
+                            </div>
+                            <div class="snf-card-bd" id="snf-conn-list">
+                                <div class="snf-empty">No connections captured yet.</div>
+                            </div>
+                        </div>
+
+                        <!-- Pairing events -->
+                        <div class="snf-card">
+                            <div class="snf-card-hd">Pairing Detector
+                                <span class="snf-hd-count" id="snf-pair-count">0</span>
+                            </div>
+                            <div class="snf-card-bd" id="snf-pair-list">
+                                <div class="snf-empty">No pairing sessions captured.</div>
+                            </div>
+                        </div>
+
+                        <!-- GATT Inspector -->
+                        <div class="snf-card">
+                            <div class="snf-card-hd">GATT Inspector</div>
+                            <div class="snf-card-bd">
+                                <div class="snf-gatt-form">
+                                    <input type="text" id="snf-gatt-mac" class="input snf-input-mac" placeholder="AA:BB:CC:DD:EE:FF">
+                                    <button class="btn btn-primary btn-xs" id="snf-gatt-btn" onclick="snifferStartGATT()">Inspect</button>
+                                </div>
+                                <div id="snf-gatt-status" class="snf-gatt-status"></div>
+                                <div id="snf-gatt-result" class="snf-gatt-tree"></div>
+                            </div>
+                        </div>
+
+                        <!-- Crackle -->
+                        <div class="snf-card snf-card--crackle" id="snf-crackle-card" style="display:none">
+                            <div class="snf-card-hd">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--orange)" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                                Crackle — Legacy Pairing Attack
+                            </div>
+                            <div class="snf-card-bd" id="snf-crackle-body">
+                                <p class="snf-crackle-warn">Legacy Just Works pairing detected. TK=0 — this session may be crackable.</p>
+                                <div class="snf-crackle-controls">
+                                    <select id="snf-crackle-mode" class="input">
+                                        <option value="0">Just Works only (TK=0, instant)</option>
+                                        <option value="999999">Full Passkey range (0–999999)</option>
+                                    </select>
+                                    <button class="btn btn-warn" id="snf-crackle-btn" onclick="snifferRunCrackle()">Run Crackle</button>
+                                </div>
+                                <div id="snf-crackle-result" class="snf-crackle-result"></div>
+                            </div>
+                        </div>
+
+                    </div><!-- /snf-col--right -->
+                </div><!-- /snf-layout -->
+
+                <!-- Packet detail inspector (bottom drawer) -->
+                <div class="snf-detail-drawer" id="snf-detail-drawer" style="display:none">
+                    <div class="snf-detail-hd">
+                        <span>Packet Detail</span>
+                        <button class="btn btn-ghost btn-xs" onclick="$('snf-detail-drawer').style.display='none'">✕</button>
+                    </div>
+                    <div class="snf-detail-body" id="snf-detail-body"></div>
                 </div>
             </section>
 
