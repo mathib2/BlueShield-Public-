@@ -1634,6 +1634,588 @@ function renderHealthTab(d) {
 let healthTabActive = false;
 setInterval(() => { if (healthTabActive) fetchSystemHealth(); }, 15000);
 
+/* ═══════════════════════════════════════════════════════════
+   SNIFFER MODULE
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── Sniffer State ─────────────────────────────────────────── */
+let snifferRunning    = false;
+let snifferPackets    = [];     // all raw packet dicts (capped at 2000)
+let snifferFiltered   = [];     // after type + search filter
+let snifferConnections = [];
+let snifferPairings   = [];
+let snifferSimulated  = false;
+let _snfPendingCrackleSession = null;
+
+const SNF_MAX_LOG = 500;        // rows rendered in table at once
+
+/* ── Socket.IO — sniffer events ────────────────────────────── */
+socket.on("sniffer_packet", pkt => {
+    snifferPackets.push(pkt);
+    if (snifferPackets.length > 2000) snifferPackets.shift();
+    _snfUpdateCounters();
+    if (document.getElementById("tab-sniffer")?.classList.contains("active")) {
+        _snfAppendRow(pkt);
+    }
+});
+
+socket.on("sniffer_connection", conn => {
+    // Update or push
+    const idx = snifferConnections.findIndex(c => c.session_id === conn.session_id);
+    if (idx >= 0) snifferConnections[idx] = conn; else snifferConnections.push(conn);
+    _snfUpdateCounters();
+    _snfRenderConnections();
+});
+
+socket.on("sniffer_pairing", session => {
+    const idx = snifferPairings.findIndex(p => p.session_id === session.session_id);
+    if (idx >= 0) snifferPairings[idx] = session; else snifferPairings.push(session);
+    _snfUpdateCounters();
+    _snfRenderPairings();
+    // Show crackle card if a crackable session appeared
+    if (session.crackable && !snifferSimulated) {
+        _snfPendingCrackleSession = session;
+        const card = $("snf-crackle-card");
+        if (card) card.style.display = "";
+    }
+});
+
+socket.on("sniffer_state", data => {
+    const state = data.state || "IDLE";
+    snifferSimulated = !!data.simulated;
+    snifferRunning   = (state === "SCANNING" || state === "CONNECTED");
+    _snfUpdateControlState(state);
+});
+
+socket.on("sniffer_error", data => {
+    const st = $("sniffer-status-text");
+    if (st) { st.textContent = "Error: " + (data.message || "unknown"); st.style.color = "var(--red)"; }
+});
+
+socket.on("gatt_result", result => {
+    _snfRenderGATTResult(result);
+});
+
+socket.on("crackle_result", result => {
+    _snfRenderCrackleResult(result);
+});
+
+/* ── Tab hook ──────────────────────────────────────────────── */
+const _origSwitchTab = switchTab;
+// Extend switchTab to hook sniffer tab activation
+(function() {
+    const _orig = switchTab;
+    switchTab = function(tab) {
+        _orig(tab);
+        if (tab === "sniffer") _snfOnTabOpen();
+    };
+})();
+
+function _snfOnTabOpen() {
+    fetch("/api/sniffer/status")
+        .then(r => r.json())
+        .then(data => {
+            if (data.running !== undefined) {
+                snifferRunning = data.running;
+                snifferSimulated = !!data.simulated;
+            }
+            if (data.connections)    snifferConnections = data.connections;
+            if (data.pairing_sessions) snifferPairings  = data.pairing_sessions;
+            _snfUpdateControlState(data.running ? "SCANNING" : "IDLE");
+            _snfUpdateCounters();
+            _snfRenderConnections();
+            _snfRenderPairings();
+            renderSnifferTable();
+            // Show crackle card if there is a crackable pairing
+            const crackable = snifferPairings.find(p => p.crackable);
+            if (crackable) {
+                _snfPendingCrackleSession = crackable;
+                const card = $("snf-crackle-card");
+                if (card) card.style.display = "";
+            }
+        })
+        .catch(() => {});
+}
+
+/* ── Controls ──────────────────────────────────────────────── */
+async function snifferToggle() {
+    if (snifferRunning) {
+        await fetch("/api/sniffer/stop", { method: "POST" });
+    } else {
+        const mac    = ($("snf-target-mac")?.value || "").trim() || null;
+        const rssi   = parseInt($("snf-rssi-min")?.value || "-100");
+        const coded  = $("snf-phy")?.value === "coded";
+        await fetch("/api/sniffer/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target_mac: mac, rssi_min: rssi, coded_phy: coded }),
+        });
+    }
+}
+
+function snifferClearLog() {
+    snifferPackets   = [];
+    snifferFiltered  = [];
+    const tb = $("snf-log-body");
+    if (tb) tb.innerHTML = `<tr class="snf-empty-row"><td colspan="7">Log cleared.</td></tr>`;
+    _snfUpdateCounters();
+}
+
+function snifferExportPCAP() {
+    window.location.href = "/api/sniffer/pcap/export";
+}
+
+async function snifferStartGATT() {
+    const mac = ($("snf-gatt-mac")?.value || "").trim().toUpperCase();
+    if (!mac || !mac.match(/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i)) {
+        const st = $("snf-gatt-status");
+        if (st) { st.textContent = "Invalid MAC address format."; st.style.color = "var(--red)"; }
+        return;
+    }
+    const btn = $("snf-gatt-btn");
+    const st  = $("snf-gatt-status");
+    if (btn) btn.disabled = true;
+    if (st)  { st.textContent = `Connecting to ${mac}…`; st.style.color = "var(--tx-3)"; }
+
+    try {
+        const res = await fetch("/api/sniffer/gatt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mac, read_values: true }),
+        });
+        const data = await res.json();
+        if (data.status === "already_inspecting") {
+            if (st) st.textContent = "Already inspecting — waiting for result…";
+        } else if (data.error) {
+            if (st) { st.textContent = data.error; st.style.color = "var(--red)"; }
+            if (btn) btn.disabled = false;
+        } else {
+            if (st) st.textContent = `Enumerating GATT services for ${mac}…`;
+        }
+    } catch (e) {
+        if (st) { st.textContent = "Request failed: " + e; st.style.color = "var(--red)"; }
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function snifferRunCrackle() {
+    const btn = $("snf-crackle-btn");
+    const res = $("snf-crackle-result");
+    const passkey_max = parseInt($("snf-crackle-mode")?.value || "0");
+    const session_id  = _snfPendingCrackleSession?.session_id || "manual";
+
+    if (btn) btn.disabled = true;
+    if (res) { res.textContent = "Running crackle…"; res.className = "snf-crackle-result snf-crackle-log"; }
+
+    try {
+        await fetch("/api/sniffer/crackle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id, passkey_max }),
+        });
+    } catch (e) {
+        if (res) { res.textContent = "Request failed: " + e; res.className = "snf-crackle-result snf-crackle-fail"; }
+        if (btn) btn.disabled = false;
+    }
+    // Result arrives via socket.on("crackle_result")
+}
+
+/* ── Table rendering ───────────────────────────────────────── */
+function renderSnifferTable() {
+    const typeFilter = $("snf-type-filter")?.value || "all";
+    const search     = ($("snf-search")?.value || "").toLowerCase();
+
+    snifferFiltered = snifferPackets.filter(p => {
+        if (typeFilter !== "all") {
+            if (typeFilter === "smp"         && !_snfIsSMP(p))      return false;
+            if (typeFilter === "connect_ind" && p.pkt_type !== "connect_ind") return false;
+            if (typeFilter === "adv"         && p.pkt_type !== "adv" && p.pkt_type !== "scan_rsp") return false;
+            if (typeFilter === "data"        && p.pkt_type !== "data") return false;
+        }
+        if (search) {
+            const hay = [p.adv_address, p.adv_type_name, p.adv_name, p.manufacturer, p.payload_hex]
+                .filter(Boolean).join(" ").toLowerCase();
+            if (!hay.includes(search)) return false;
+        }
+        return true;
+    });
+
+    const tb = $("snf-log-body");
+    if (!tb) return;
+
+    const slice = snifferFiltered.slice(-SNF_MAX_LOG);
+    if (!slice.length) {
+        tb.innerHTML = `<tr class="snf-empty-row"><td colspan="7">No matching packets.</td></tr>`;
+        return;
+    }
+
+    tb.innerHTML = slice.map((p, i) => _snfRowHTML(p, snifferFiltered.length - slice.length + i)).join("");
+}
+
+function _snfAppendRow(pkt) {
+    const typeFilter = $("snf-type-filter")?.value || "all";
+    const search     = ($("snf-search")?.value || "").toLowerCase();
+
+    // Check filter
+    if (typeFilter !== "all") {
+        if (typeFilter === "smp"         && !_snfIsSMP(pkt))        return;
+        if (typeFilter === "connect_ind" && pkt.pkt_type !== "connect_ind") return;
+        if (typeFilter === "adv"         && pkt.pkt_type !== "adv" && pkt.pkt_type !== "scan_rsp") return;
+        if (typeFilter === "data"        && pkt.pkt_type !== "data") return;
+    }
+    if (search) {
+        const hay = [pkt.adv_address, pkt.adv_type_name, pkt.adv_name, pkt.manufacturer, pkt.payload_hex]
+            .filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(search)) return;
+    }
+
+    const tb = $("snf-log-body");
+    if (!tb) return;
+
+    // Remove "no packets" row
+    const emptyRow = tb.querySelector(".snf-empty-row");
+    if (emptyRow) emptyRow.remove();
+
+    const idx  = snifferFiltered.length;
+    snifferFiltered.push(pkt);
+
+    const tr   = document.createElement("tr");
+    tr.className = _snfRowClass(pkt);
+    tr.innerHTML = _snfRowInnerHTML(pkt, idx);
+    tr.addEventListener("click", () => _snfShowDetail(pkt));
+    tb.appendChild(tr);
+
+    // Prune to SNF_MAX_LOG rows
+    while (tb.rows.length > SNF_MAX_LOG) tb.deleteRow(0);
+
+    // Auto-scroll
+    if ($("snf-autoscroll")?.checked) {
+        const wrap = tb.closest(".snf-log-wrap");
+        if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    }
+}
+
+/* ── Row builders ──────────────────────────────────────────── */
+function _snfRowHTML(pkt, idx) {
+    return `<tr class="${_snfRowClass(pkt)}" onclick="_snfShowDetail(snifferFiltered[${idx}])">${_snfRowInnerHTML(pkt, idx)}</tr>`;
+}
+
+function _snfRowInnerHTML(pkt, idx) {
+    const t   = new Date(pkt.ts * 1000);
+    const ts  = t.toTimeString().slice(0, 8) + "." + String(t.getMilliseconds()).padStart(3, "0");
+    const ch  = pkt.channel ?? "?";
+    const pdu = _snfPDUBadge(pkt);
+    const mac = pkt.adv_address || (pkt.access_address ? pkt.access_address : "—");
+    const rssi = pkt.rssi ? `${pkt.rssi} dBm` : "—";
+    const len  = pkt.payload_len ?? pkt.data_length ?? "—";
+    const info = _snfRowInfo(pkt);
+    return `<td>${ts}</td><td>${ch}</td><td>${pdu}</td><td style="font-family:var(--font-mono)">${mac}</td><td>${rssi}</td><td>${len}</td><td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-sans);color:var(--tx-2)">${info}</td>`;
+}
+
+function _snfRowClass(pkt) {
+    if (pkt.pkt_type === "connect_ind") return "snf-row--connect";
+    if (_snfIsSMP(pkt))                 return "snf-row--smp";
+    if (pkt.pkt_type === "data")        return "snf-row--data";
+    return "snf-row--adv";
+}
+
+function _snfPDUBadge(pkt) {
+    const name = pkt.adv_type_name || pkt.pkt_type || "?";
+    let cls = "snf-pdu--adv";
+    if (pkt.pkt_type === "connect_ind" || name === "CONNECT_IND") cls = "snf-pdu--conn";
+    else if (pkt.pkt_type === "scan_rsp" || name === "SCAN_RSP")  cls = "snf-pdu--scan";
+    else if (_snfIsSMP(pkt))                                       cls = "snf-pdu--smp";
+    else if (pkt.pkt_type === "data")                              cls = "snf-pdu--data";
+    return `<span class="snf-pdu ${cls}">${name.replace("_", " ")}</span>`;
+}
+
+function _snfRowInfo(pkt) {
+    if (pkt.adv_name)      return pkt.adv_name;
+    if (pkt.manufacturer)  return pkt.manufacturer;
+    if (pkt.conn_aa)       return `AA:${pkt.conn_aa}  hop:${pkt.hop_increment}  crc:${pkt.crc_init}`;
+    if (pkt.pkt_type === "data" && pkt.llid !== undefined) {
+        const llid_names = {1: "L2CAP cont", 2: "L2CAP start", 3: "LLCP"};
+        return llid_names[pkt.llid] || `LLID ${pkt.llid}`;
+    }
+    return "";
+}
+
+function _snfIsSMP(pkt) {
+    // Heuristic: data PDU with payload containing L2CAP CID 0x0006
+    if (pkt.pkt_type !== "data") return false;
+    const hex = pkt.payload_hex || "";
+    // L2CAP CID 0x0006 appears as "0600" bytes 4-6 in the payload after 2-byte LL header
+    return hex.length >= 12 && hex.slice(8, 12).toLowerCase() === "0600";
+}
+
+/* ── Connection list ───────────────────────────────────────── */
+function _snfRenderConnections() {
+    const el = $("snf-conn-list");
+    if (!el) return;
+    if (!snifferConnections.length) {
+        el.innerHTML = `<div class="snf-empty">No connections captured yet.</div>`;
+        return;
+    }
+    el.innerHTML = snifferConnections.slice().reverse().map(c => `
+        <div class="snf-conn-item">
+            <div class="snf-conn-aa">${c.access_address}</div>
+            <div class="snf-conn-macs">
+                <span style="color:var(--accent)">${c.central_mac}</span>
+                <span style="color:var(--tx-3)"> → </span>
+                <span>${c.peripheral_mac}</span>
+            </div>
+            <div class="snf-conn-meta">
+                <span>hop+${c.hop_increment}</span>
+                <span>CRC ${c.crc_init}</span>
+                <span>${c.packet_count} pkts</span>
+                ${c.duration_s ? `<span>${c.duration_s}s</span>` : ""}
+            </div>
+        </div>
+    `).join("");
+    const cnt = $("snf-conn-count");
+    if (cnt) cnt.textContent = snifferConnections.length;
+}
+
+/* ── Pairing list ──────────────────────────────────────────── */
+function _snfRenderPairings() {
+    const el = $("snf-pair-list");
+    if (!el) return;
+    if (!snifferPairings.length) {
+        el.innerHTML = `<div class="snf-empty">No pairing sessions captured.</div>`;
+        return;
+    }
+
+    el.innerHTML = snifferPairings.slice().reverse().map(s => {
+        const isLESC     = s.pairing_type === "lesc";
+        const isCrackable = s.crackable;
+        const badgeCls   = isCrackable ? "snf-pair-type-badge--crackable"
+                         : isLESC      ? "snf-pair-type-badge--lesc"
+                         :               "snf-pair-type-badge--legacy";
+        const badgeTxt   = isCrackable ? "⚡ CRACKABLE"
+                         : isLESC      ? "✓ LESC / ECDH"
+                         :               "LEGACY";
+        const cardCls    = isCrackable ? "snf-pair-item--crackable"
+                         : isLESC      ? "snf-pair-item--lesc"
+                         :               "";
+
+        const pktsHtml = (s.packets || []).map(p =>
+            `<div class="snf-pair-pkt-row">
+                <span class="snf-pair-pkt-cmd">${p.name}</span>
+                <span style="color:var(--accent)">${p.hex ? p.hex.slice(0, 24) + (p.hex.length > 24 ? "…" : "") : ""}</span>
+            </div>`
+        ).join("");
+
+        return `
+        <div class="snf-pair-item ${cardCls}">
+            <span class="snf-pair-type-badge ${badgeCls}">${badgeTxt}</span>
+            <div class="snf-pair-macs">${s.central_mac} → ${s.peripheral_mac}</div>
+            <div class="snf-pair-meta">
+                <span>method: ${s.auth_method}</span>
+                ${s.mitm_protected ? `<span style="color:var(--green)">MITM ✓</span>` : `<span style="color:var(--red)">No MITM</span>`}
+                ${s.bonding ? `<span>Bonding</span>` : ""}
+                <span>${s.packet_count} SMP pkts</span>
+            </div>
+            ${pktsHtml ? `<div class="snf-pair-pkts">${pktsHtml}</div>` : ""}
+            ${isCrackable ? `<button class="snf-crack-btn" onclick="_snfSetCrackTarget('${s.session_id}')">⚡ Run Crackle</button>` : ""}
+        </div>`;
+    }).join("");
+
+    const cnt = $("snf-pair-count");
+    if (cnt) cnt.textContent = snifferPairings.length;
+}
+
+function _snfSetCrackTarget(session_id) {
+    _snfPendingCrackleSession = snifferPairings.find(p => p.session_id === session_id) || null;
+    const card = $("snf-crackle-card");
+    if (card) {
+        card.style.display = "";
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+}
+
+/* ── GATT result rendering ─────────────────────────────────── */
+function _snfRenderGATTResult(result) {
+    const btn = $("snf-gatt-btn");
+    const st  = $("snf-gatt-status");
+    const out = $("snf-gatt-result");
+
+    if (btn) btn.disabled = false;
+
+    if (result.error) {
+        if (st)  { st.textContent = "Error: " + result.error; st.style.color = "var(--red)"; }
+        if (out) out.innerHTML = "";
+        return;
+    }
+
+    if (st) {
+        st.textContent = `${result.name || result.mac} — ${(result.services||[]).length} services — ${result.duration_ms}ms`;
+        st.style.color = "var(--green)";
+    }
+
+    if (!out) return;
+
+    const services = result.services || [];
+    out.innerHTML = services.map(svc => {
+        const chars = (svc.characteristics || []).map(ch => {
+            const propsHtml = (ch.properties || []).map(p =>
+                `<span class="snf-gatt-prop">${p}</span>`
+            ).join("");
+
+            const valHtml = ch.value_text
+                ? `<div class="snf-gatt-val snf-gatt-val-text">"${_escHtml(ch.value_text)}"</div>`
+                : ch.value_decoded
+                ? `<div class="snf-gatt-val">${_escHtml(JSON.stringify(ch.value_decoded))}</div>`
+                : ch.value_hex
+                ? `<div class="snf-gatt-val">${ch.value_hex}</div>`
+                : ch.error
+                ? `<div class="snf-gatt-err">${_escHtml(ch.error)}</div>`
+                : "";
+
+            const descsHtml = (ch.descriptors || []).filter(d => d.value_hex).map(d =>
+                `<div class="snf-gatt-desc">↳ ${d.name}: ${d.value_hex}</div>`
+            ).join("");
+
+            return `
+            <div class="snf-gatt-char">
+                <div class="snf-gatt-char-hd">
+                    <span class="snf-gatt-char-name">${_escHtml(ch.name)}</span>
+                    <span class="snf-gatt-char-uuid">${ch.short_uuid || ch.uuid}</span>
+                    <div class="snf-gatt-char-props">${propsHtml}</div>
+                </div>
+                ${valHtml}${descsHtml}
+            </div>`;
+        }).join("");
+
+        return `
+        <div class="snf-gatt-svc">
+            <div class="snf-gatt-svc-hd">
+                <span>${_escHtml(svc.name)}</span>
+                <span class="snf-gatt-svc-uuid">${svc.short_uuid || svc.uuid}</span>
+            </div>
+            ${chars}
+        </div>`;
+    }).join("");
+}
+
+/* ── Crackle result rendering ──────────────────────────────── */
+function _snfRenderCrackleResult(result) {
+    const btn = $("snf-crackle-btn");
+    const res = $("snf-crackle-result");
+    if (btn) btn.disabled = false;
+    if (!res) return;
+
+    if (result.success) {
+        const lines = [
+            `✅ CRACKED`,
+            `TK  = ${result.tk_hex || result.tk}`,
+            result.stk_hex  ? `STK = ${result.stk_hex}` : null,
+            result.ltk_hex  ? `LTK = ${result.ltk_hex}` : null,
+            `Method: ${result.method}`,
+            `Time:   ${result.duration_ms}ms`,
+            result.crackable_note ? `\n${result.crackable_note}` : null,
+            result.decrypted_pcap_path ? `\nDecrypted PCAP:\n${result.decrypted_pcap_path}` : null,
+        ].filter(Boolean).join("\n");
+        res.textContent  = lines;
+        res.className    = "snf-crackle-result snf-crackle-success";
+    } else {
+        const lines = [
+            `❌ ${result.error || "Not cracked"}`,
+            "",
+            ...(result.log_lines || []),
+        ].join("\n");
+        res.textContent = lines;
+        res.className   = "snf-crackle-result snf-crackle-fail";
+    }
+}
+
+/* ── Packet detail drawer ──────────────────────────────────── */
+function _snfShowDetail(pkt) {
+    if (!pkt) return;
+    const drawer = $("snf-detail-drawer");
+    const body   = $("snf-detail-body");
+    if (!drawer || !body) return;
+
+    const fields = [
+        ["Type",       pkt.adv_type_name || pkt.pkt_type],
+        ["Address",    pkt.adv_address],
+        ["Channel",    pkt.channel],
+        ["RSSI",       pkt.rssi ? pkt.rssi + " dBm" : null],
+        ["Access AA",  pkt.access_address],
+        ["Payload len",pkt.payload_len ?? pkt.data_length],
+        ["Name",       pkt.adv_name],
+        ["Manufacturer", pkt.manufacturer],
+        ["Conn AA",    pkt.conn_aa],
+        ["Hop incr",   pkt.hop_increment],
+        ["CRC init",   pkt.crc_init],
+        ["LLID",       pkt.llid],
+        ["Payload",    pkt.payload_hex ? (pkt.payload_hex.match(/.{1,2}/g)||[]).join(" ") : null],
+    ].filter(([, v]) => v !== null && v !== undefined);
+
+    body.innerHTML = fields.map(([label, val]) => `
+        <div class="snf-detail-field">
+            <span class="snf-detail-label">${label}</span>
+            <span class="snf-detail-value">${_escHtml(String(val))}</span>
+        </div>
+    `).join("");
+
+    drawer.style.display = "flex";
+}
+
+/* ── Internal helpers ──────────────────────────────────────── */
+function _snfUpdateCounters() {
+    const p = $("snf-cnt-pkts");
+    const c = $("snf-cnt-conns");
+    const s = $("snf-cnt-pairs");
+    if (p) p.textContent = snifferPackets.length;
+    if (c) c.textContent = snifferConnections.length;
+    if (s) s.textContent = snifferPairings.length;
+}
+
+function _snfUpdateControlState(state) {
+    const btn    = $("snf-start-btn");
+    const lbl    = $("snf-btn-label");
+    const icon   = $("snf-btn-icon");
+    const st     = $("sniffer-status-text");
+    const badge  = $("snf-hw-badge");
+    const navBdg = $("nav-sniffer-badge");
+    const expBtn = $("snf-export-btn");
+
+    snifferRunning = (state === "SCANNING" || state === "CONNECTED");
+
+    if (btn) {
+        btn.classList.toggle("btn-danger", snifferRunning);
+        btn.classList.toggle("btn-primary", !snifferRunning);
+    }
+    if (lbl)  lbl.textContent  = snifferRunning ? "Stop Capture" : "Start Capture";
+    if (icon) icon.innerHTML   = snifferRunning
+        ? `<rect x="4" y="4" width="16" height="16" fill="currentColor" rx="2"/>`
+        : `<polygon points="5,3 19,12 5,21" fill="currentColor"/>`;
+
+    if (st) {
+        const stateLabels = {
+            SCANNING: "Scanning — monitoring advertising channels",
+            CONNECTED: "Following connection — capturing data PDUs",
+            IDLE: "Idle — press Start to capture",
+        };
+        st.textContent  = stateLabels[state] || state;
+        st.style.color  = snifferRunning ? "var(--green)" : "";
+    }
+
+    if (badge) {
+        badge.textContent = snifferSimulated ? "SIM" : "LIVE";
+        badge.className   = "snf-badge " + (snifferRunning ? (snifferSimulated ? "snf-badge--active" : "snf-badge--live") : "");
+    }
+    if (navBdg) {
+        navBdg.style.display  = snifferRunning ? "" : "none";
+        navBdg.style.color    = "var(--green)";
+    }
+    if (expBtn) expBtn.disabled = !snifferRunning && snifferPackets.length === 0;
+}
+
+function _escHtml(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
 /* ── Initial fetch ─────────────────────────────────────────── */
 (async function init() {
     try {
