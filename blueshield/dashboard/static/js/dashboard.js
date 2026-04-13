@@ -161,7 +161,7 @@ function switchTab(tab) {
     document.querySelectorAll(".nav-item[data-tab]").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".tab-pane").forEach(p => p.classList.toggle("active", p.id === "tab-" + tab));
     if (tab === "radar") startRadar(); else stopRadar();
-    if (tab === "analytics") renderAnalytics();
+    if (tab === "analytics") requestAnimationFrame(() => renderAnalytics());
     if (tab === "graph") renderConversationGraph();
     if (tab === "following") renderFollowingGrid();
     if (tab === "shadows") renderShadowGrid();
@@ -1078,9 +1078,14 @@ function renderAnalytics() {
     if (!canvas || !a.daily_chart) return;
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
-    const cw = canvas.clientWidth || 700;
+    const cw = Math.min(
+        canvas.parentElement?.clientWidth || 9999,
+        canvas.parentElement?.parentElement?.clientWidth || 9999,
+        window.innerWidth
+    ) - 32;
     canvas.width = cw * dpr;
     canvas.height = 150 * dpr;
+    canvas.style.width = cw + "px";
     canvas.style.height = "150px";
     ctx.scale(dpr, dpr);
 
@@ -1484,7 +1489,10 @@ function renderHealthTab(d) {
     const container = $("health-alerts");
     if (container) {
         if (!alerts.length) {
-            container.innerHTML = `<div class="health-alert-item ok">✅ All systems nominal — Pi 3 is running healthy.</div>`;
+            const onLinux = d && d.cpu_temp !== null;
+            container.innerHTML = onLinux
+                ? `<div class="health-alert-item ok">✅ All systems nominal — Pi 3 is running healthy.</div>`
+                : `<div class="health-alert-item warn">⚠️ Hardware metrics unavailable — connect to Raspberry Pi to see live stats.</div>`;
         } else {
             container.innerHTML = alerts.map(a => `<div class="health-alert-item ${a.cls}">${a.msg}</div>`).join("");
         }
