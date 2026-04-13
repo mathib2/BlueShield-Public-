@@ -112,6 +112,8 @@ socket.on("device_update", data => {
     if (data.environment) envData = data.environment;
     if (data.trails) trailData = data.trails;
     updateAll();
+    /* keep jammer picker fresh when jammer tab is visible */
+    if (document.getElementById("tab-jammer")?.classList.contains("active")) renderJammerPicker();
 });
 socket.on("advanced_mode", data => {
     advancedMode = data.enabled;
@@ -162,6 +164,7 @@ function switchTab(tab) {
     document.querySelectorAll(".tab-pane").forEach(p => p.classList.toggle("active", p.id === "tab-" + tab));
     if (tab === "radar") startRadar(); else stopRadar();
     if (tab === "analytics") requestAnimationFrame(() => renderAnalytics());
+    if (tab === "jammer") renderJammerPicker();
     if (tab === "graph") renderConversationGraph();
     if (tab === "following") renderFollowingGrid();
     if (tab === "shadows") renderShadowGrid();
@@ -1160,38 +1163,166 @@ window.toggleAlertRule = async function(id, enabled) {
 };
 
 /* ── Jammer Controls ───────────────────────────────────────── */
+let _jamPrevPkts = 0;
+let _jamPrevTime = 0;
+let _jamStartTime = 0;
+let _jamDurTimer  = null;
+
 $("j-mode").addEventListener("change", e => {
     const needsTarget = ["targeted", "deauth"].includes(e.target.value);
     $("j-target-grp").style.display = needsTarget ? "" : "none";
 });
+
 $("btn-jam").addEventListener("click", async () => {
     if (jammerActive) {
         await fetch("/api/jammer/stop", { method: "POST" });
         addTimelineEvent("jam", "Jammer stopped");
     } else {
-        await fetch("/api/jammer/start", { method: "POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({ mode: $("j-mode").value, channel: parseInt($("j-channel").value), target: $("j-target")?.value || "" })
+        const mode = $("j-mode").value;
+        const ch   = parseInt($("j-channel").value);
+        const tgt  = $("j-target")?.value.trim() || "";
+        if (["targeted", "deauth"].includes(mode) && !tgt) {
+            $("j-target").focus();
+            $("j-target").style.borderColor = "var(--red)";
+            setTimeout(() => { $("j-target").style.borderColor = ""; }, 1500);
+            return;
+        }
+        await fetch("/api/jammer/start", { method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ mode, channel: ch, target: tgt })
         });
-        addTimelineEvent("jam", `Jammer started: ${$("j-mode").value} mode`);
+        addTimelineEvent("jam", `Jammer started: ${mode} mode`);
     }
 });
+
+/* Picker search filter */
+$("j-picker-search").addEventListener("input", () => renderJammerPicker());
+
+/* Channel bar click → sync select */
+document.querySelectorAll(".ch-strip .ch-bar").forEach(bar => {
+    bar.addEventListener("click", () => {
+        $("j-channel").value = bar.dataset.ch;
+    });
+});
+
+function selectJamTarget(addr, name) {
+    $("j-target").value = addr;
+    $("j-target-grp").style.display = "";
+    $("j-target-hint").textContent = name ? `→ ${name}` : "";
+    const mode = $("j-mode").value;
+    if (!["targeted", "deauth"].includes(mode)) {
+        $("j-mode").value = "targeted";
+    }
+    /* highlight selected row */
+    document.querySelectorAll(".jam-picker-item").forEach(el => {
+        el.classList.toggle("selected", el.dataset.addr === addr);
+    });
+}
+
+function renderJammerPicker() {
+    const el = $("jam-device-picker");
+    const q  = ($("j-picker-search")?.value || "").toLowerCase();
+    const devs = (currentDevices.length ? currentDevices : currentClustered);
+
+    if (!devs.length) {
+        el.innerHTML = '<div class="jam-picker-empty">No devices in scan — start scanning first.</div>';
+        return;
+    }
+
+    const filtered = devs.filter(d => {
+        const name = (d.name || d.display_name || "").toLowerCase();
+        const addr = (d.address || "").toLowerCase();
+        return !q || name.includes(q) || addr.includes(q);
+    });
+
+    if (!filtered.length) {
+        el.innerHTML = '<div class="jam-picker-empty">No devices match filter.</div>';
+        return;
+    }
+
+    /* sort by RSSI descending (strongest first) */
+    const sorted = [...filtered].sort((a,b) => (b.rssi||b.signal_strength||-100) - (a.rssi||a.signal_strength||-100));
+
+    el.innerHTML = sorted.map(d => {
+        const addr  = d.address || d.mac || "";
+        const name  = d.name || d.display_name || d.fingerprint_name || "Unknown";
+        const rssi  = d.rssi || d.signal_strength || -99;
+        const icon  = deviceIcon(d);
+        const rClass = rssi > -60 ? "rssi-strong" : rssi > -80 ? "rssi-med" : "rssi-weak";
+        const selected = ($("j-target")?.value === addr) ? " selected" : "";
+        return `<div class="jam-picker-item${selected}" data-addr="${addr}" onclick="selectJamTarget('${addr}','${name.replace(/'/g,"\\'")}')">
+            <span class="jam-picker-icon">${icon}</span>
+            <div class="jam-picker-info">
+                <div class="jam-picker-name">${name}</div>
+                <div class="jam-picker-mac">${addr}</div>
+            </div>
+            <span class="jam-picker-rssi ${rClass}">${rssi} dBm</span>
+        </div>`;
+    }).join("");
+}
+
+function deviceIcon(d) {
+    const type = (d.device_type || d.ai_classification?.label || "").toLowerCase();
+    if (type.includes("phone"))      return "📱";
+    if (type.includes("headphone") || type.includes("earbud") || type.includes("audio")) return "🎧";
+    if (type.includes("watch"))      return "⌚";
+    if (type.includes("laptop") || type.includes("computer")) return "💻";
+    if (type.includes("tracker"))    return "🚨";
+    if (type.includes("speaker"))    return "🔊";
+    if (type.includes("keyboard"))   return "⌨️";
+    if (type.includes("mouse"))      return "🖱️";
+    return "📡";
+}
 
 function updateJammer(status) {
     jammerActive = status.is_jamming || false;
     const sess = status.active_session || {};
-    const btn = $("btn-jam");
-    btn.textContent = jammerActive ? "Stop Jammer" : "Start Jammer";
+    const btn  = $("btn-jam");
+
+    btn.textContent = jammerActive ? "⏹ Stop Jammer" : "▶ Start Jammer";
     btn.classList.toggle("active", jammerActive);
     $("jam-ind").classList.toggle("on", jammerActive);
-    $("jam-ind-txt").textContent = jammerActive ? "ACTIVE" : "Inactive";
-    $("jl-pkts").textContent = sess.packets_sent || 0;
+    $("jam-ind-txt").textContent = jammerActive ? "● JAMMING ACTIVE" : "Inactive";
+
+    /* packets/sec */
+    const pkts = sess.packets_sent || 0;
+    const now  = Date.now();
+    if (jammerActive && _jamPrevTime) {
+        const dt  = (now - _jamPrevTime) / 1000;
+        const pps = dt > 0 ? Math.round((pkts - _jamPrevPkts) / dt) : 0;
+        $("jl-pps").textContent = pps;
+        const ppsLabel = $("jam-pps-label");
+        if (ppsLabel) { ppsLabel.textContent = `${pps} pkts/s`; ppsLabel.style.display = ""; }
+    } else if (!jammerActive) {
+        $("jl-pps").textContent = "0";
+        const ppsLabel = $("jam-pps-label");
+        if (ppsLabel) ppsLabel.style.display = "none";
+    }
+    _jamPrevPkts = pkts;
+    _jamPrevTime = now;
+
+    /* duration counter */
+    if (jammerActive && !_jamDurTimer) {
+        _jamStartTime = now;
+        _jamDurTimer = setInterval(() => {
+            const s = Math.floor((Date.now() - _jamStartTime) / 1000);
+            const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+            $("jl-dur").textContent = h ? `${h}h${m}m` : m ? `${m}m${sec}s` : `${sec}s`;
+        }, 1000);
+    } else if (!jammerActive && _jamDurTimer) {
+        clearInterval(_jamDurTimer);
+        _jamDurTimer = null;
+        $("jl-dur").textContent = "0s";
+    }
+
+    $("jl-pkts").textContent = pkts.toLocaleString();
     $("jl-mode").textContent = sess.mode || "--";
-    $("jl-ch").textContent = sess.channel || "--";
-    $("jl-be").textContent = status.backend || "--";
+    $("jl-ch").textContent   = sess.channel || "--";
+    $("jl-be").textContent   = status.backend || "--";
     $("nav-jam-badge").style.display = jammerActive ? "" : "none";
     $("pill-scan").classList.toggle("jamming", jammerActive);
 
-    document.querySelectorAll(".ch-bar").forEach(bar => {
+    document.querySelectorAll(".ch-strip .ch-bar").forEach(bar => {
         bar.classList.toggle("active", jammerActive && bar.dataset.ch == sess.channel);
     });
     $("sb-jam").textContent = jammerActive ? `Jammer: ${sess.mode}` : "Jammer: Off";
