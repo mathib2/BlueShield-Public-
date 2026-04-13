@@ -284,11 +284,35 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
 .ac-label{font-size:.68rem;color:var(--tx-3);margin-top:2px}
 
 /* ── Jammer Tab ────────────────────────── */
-.jam-layout{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px;overflow-y:auto;flex:1}
-.jam-card{background:var(--bg-2);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:var(--sh)}
+.jam-layout{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:10px;overflow-y:auto;flex:1}
+.jam-card{background:var(--bg-2);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:var(--sh);display:flex;flex-direction:column}
 .jam-wide{grid-column:1/-1}
-.jam-card-hd{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-3);font-size:.72rem;font-weight:600;color:var(--tx-2);text-transform:uppercase;letter-spacing:.5px}
-.jam-card-bd{padding:12px}
+.jam-card-hd{padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-3);font-size:.78rem;font-weight:600;color:var(--tx-1)}
+.jam-card-bd{padding:12px;flex:1;overflow-y:auto}
+.field{margin-bottom:8px}
+/* device picker */
+.jam-picker-search{padding:0}
+.jam-picker-list{max-height:320px;overflow-y:auto}
+.jam-picker-empty{padding:24px 12px;text-align:center;color:var(--tx-3);font-size:.75rem;font-style:italic}
+.jam-picker-item{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);transition:.12s;font-size:.78rem}
+.jam-picker-item:hover{background:var(--bg-hover)}
+.jam-picker-item.selected{background:var(--orange-bg);border-left:3px solid var(--orange)}
+.jam-picker-icon{font-size:1.1rem;min-width:24px;text-align:center}
+.jam-picker-info{flex:1;min-width:0}
+.jam-picker-name{font-weight:600;color:var(--tx-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jam-picker-mac{font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--tx-3)}
+.jam-picker-rssi{font-family:'JetBrains Mono',monospace;font-size:.72rem;font-weight:700}
+.jam-picker-rssi.rssi-strong{color:var(--green)}
+.jam-picker-rssi.rssi-med{color:var(--orange)}
+.jam-picker-rssi.rssi-weak{color:var(--tx-3)}
+.jam-target-hint{font-size:.7rem;color:var(--cyan);margin-top:3px;font-style:italic}
+.ch-strip{display:flex;gap:6px;margin:8px 0}
+.ch-strip .ch-bar{flex:1;padding:8px 4px;text-align:center;cursor:pointer;background:var(--bg-3);border:1px solid var(--border);border-radius:6px;transition:.12s}
+.ch-strip .ch-bar span{display:block;font-weight:700;color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:.9rem}
+.ch-strip .ch-bar small{display:block;color:var(--tx-3);font-size:.6rem;margin-top:1px}
+.ch-strip .ch-bar:hover{border-color:var(--accent)}
+.ch-strip .ch-bar.active{border-color:var(--orange);background:var(--orange-bg)}
+.ch-strip .ch-bar.active span{color:var(--orange)}
 .field{margin-bottom:8px}
 .field label{display:block;font-size:.68rem;color:var(--tx-3);text-transform:uppercase;letter-spacing:.3px;margin-bottom:3px;font-weight:500}
 .field select,.input{width:100%;padding:6px 8px;background:var(--bg-3);color:var(--tx-1);border:1px solid var(--border);border-radius:5px;font-size:.78rem;outline:none;font-family:inherit;transition:border-color .15s}
@@ -298,18 +322,13 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
 .btn-jam-big.active{border-color:var(--red);color:var(--red);background:var(--red-bg);animation:pulse-b 1.5s infinite}
 @keyframes pulse-b{50%{box-shadow:0 0 12px var(--red-bg)}}
 .jam-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.js{background:var(--bg-3);border-radius:6px;padding:10px;text-align:center}
-.js-v{font-family:'JetBrains Mono',monospace;font-size:1rem;font-weight:700;color:var(--tx-1)}
+.js{background:var(--bg-3);border-radius:6px;padding:10px;text-align:center;border:1px solid var(--border)}
+.js-v{font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700;color:var(--accent)}
 .js-l{font-size:.6rem;color:var(--tx-3);text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
-.jam-ind{display:flex;align-items:center;gap:8px;justify-content:center;margin-top:10px;padding:8px;background:var(--bg-3);border-radius:6px;font-size:.78rem;color:var(--tx-2)}
-.jam-dot{width:10px;height:10px;border-radius:50%;background:var(--tx-3);transition:.3s}
-.jam-ind.on .jam-dot{background:var(--red);box-shadow:0 0 8px var(--red);animation:blink .8s infinite}
-.ch-strip{display:flex;gap:8px;justify-content:center;margin:12px 0}
-.ch-bar{flex:1;max-width:160px;background:var(--bg-3);border:2px solid var(--border);border-radius:8px;padding:16px 8px;text-align:center;transition:.2s}
-.ch-bar span{display:block;font-family:'JetBrains Mono',monospace;font-size:1.2rem;font-weight:700;color:var(--tx-1)}
-.ch-bar small{font-size:.65rem;color:var(--tx-3)}
-.ch-bar.active{border-color:var(--red);background:var(--red-bg)}
-.ch-bar.active span{color:var(--red)}
+.jam-ind{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg-3);border-radius:6px;font-size:.82rem;font-weight:600;color:var(--tx-2);border:1px solid var(--border);transition:.3s}
+.jam-ind.on{background:rgba(248,81,73,.08);border-color:var(--red);color:var(--red)}
+.jam-dot{width:10px;height:10px;border-radius:50%;background:var(--tx-3);transition:.3s;flex-shrink:0}
+.jam-ind.on .jam-dot{background:var(--red);box-shadow:0 0 10px var(--red);animation:blink .6s infinite}
 .jam-warn{margin-top:10px;padding:8px;font-size:.7rem;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 30%,transparent);border-radius:5px;background:var(--red-bg);text-align:center;font-weight:500}
 
 /* ── Trackers Tab ──────────────────────── */
@@ -574,7 +593,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
     .sidebar{width:52px;min-width:52px}
     .sidebar .nav-item span,.sidebar .nav-label,.sidebar .nav-badge,.sidebar .sidebar-footer{display:none}
     .signal-grid{grid-template-columns:1fr}
-    .jam-layout{grid-template-columns:1fr}
+    .jam-layout{grid-template-columns:1fr 1fr}
     .cfg-grid{grid-template-columns:1fr}
     .analytics-grid{grid-template-columns:1fr 1fr}
     .tracker-grid{grid-template-columns:1fr}
@@ -706,6 +725,56 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg-0);color:var(-
 .health-alert-item.warn{background:var(--orange-bg);border:1px solid var(--orange);color:var(--orange)}
 .health-alert-item.crit{background:var(--red-bg);border:1px solid var(--red);color:var(--red)}
 .health-alert-item.ok{background:var(--green-bg);border:1px solid var(--green);color:var(--green)}
+
+/* ── UI Polish v5.4 ────────────────────── */
+
+/* Gradient accent top border on key cards */
+.jam-card,.sig-panel,.analytics-card,.tracker-card,.follow-card,.shadow-card,.ls-card,.health-card{
+    position:relative;
+}
+.jam-card::before,.sig-panel::before,.analytics-card.analytics-wide::before{
+    content:"";position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,var(--accent),var(--cyan),var(--purple));
+    border-radius:8px 8px 0 0;
+}
+.jam-card.jammer-active::before{
+    background:linear-gradient(90deg,var(--red),var(--orange));
+    animation:gradient-shift 2s linear infinite;
+}
+@keyframes gradient-shift{
+    0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}
+}
+
+/* Better topbar branding */
+.brand-name{font-weight:800;letter-spacing:-.3px}
+.brand-ver{font-size:.62rem;letter-spacing:.3px;font-weight:600}
+
+/* Jammer active glow */
+.jam-ind.on{animation:jam-glow 1.5s ease-in-out infinite alternate}
+@keyframes jam-glow{from{box-shadow:0 0 4px rgba(248,81,73,.2)}to{box-shadow:0 0 14px rgba(248,81,73,.5)}}
+
+/* Improved select / input focus ring */
+.input:focus,.tb-select:focus{
+    box-shadow:0 0 0 2px rgba(88,166,255,.2);
+}
+
+/* Packets/sec emphasis */
+#jl-pps{color:var(--orange)}
+
+/* Device table row hover — smooth accent underline */
+.data-table tbody tr:hover td:first-child{
+    border-left:2px solid var(--accent);
+}
+
+/* Nav active item stronger left bar */
+.nav-item.active{
+    border-left-width:3px;
+    font-weight:600;
+}
+
+/* Better scrollbar */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:var(--border-b);border-radius:2px}
 
 /* ── Small phones ──────────────────────── */
 @media(max-width:400px){

@@ -314,34 +314,79 @@
 
             <!-- JAMMER TAB -->
             <section class="tab-pane" id="tab-jammer">
-                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Jammer Control Panel</h2></div></div>
+                <div class="tab-toolbar">
+                    <div class="tb-left"><h2 class="tab-title">Jammer Control Panel</h2></div>
+                    <div class="tb-right"><span class="tb-info" id="jam-pps-label" style="display:none">0 pkts/s</span></div>
+                </div>
                 <div class="jam-layout">
+                    <!-- Left: Config -->
                     <div class="jam-card">
-                        <div class="jam-card-hd">Configuration</div>
+                        <div class="jam-card-hd">⚙️ Configuration</div>
                         <div class="jam-card-bd">
-                            <div class="field"><label>Mode</label><select id="j-mode"><option value="sweep">Sweep (All Channels)</option><option value="continuous">Continuous (Single Ch)</option><option value="reactive">Reactive (Smart Duty Cycle)</option><option value="targeted">Targeted (Address)</option><option value="flood">Flood (Max Throughput)</option><option value="deauth">Deauth (Connection Disrupt)</option></select></div>
-                            <div class="field"><label>Channel</label><select id="j-channel"><option value="37">Ch 37 (2402 MHz)</option><option value="38">Ch 38 (2426 MHz)</option><option value="39" selected>Ch 39 (2480 MHz)</option></select></div>
-                            <div class="field" id="j-target-grp" style="display:none"><label>Target</label><input type="text" id="j-target" class="input" placeholder="AA:BB:CC:DD:EE:FF"></div>
-                            <button id="btn-jam" class="btn btn-jam-big">Start Jammer</button>
+                            <div class="field">
+                                <label>Mode</label>
+                                <select id="j-mode" class="input">
+                                    <option value="sweep">Sweep — All Channels</option>
+                                    <option value="continuous">Continuous — Single Channel</option>
+                                    <option value="reactive">Reactive — Smart Duty Cycle</option>
+                                    <option value="targeted">Targeted — Specific Address</option>
+                                    <option value="flood">Flood — Max Throughput</option>
+                                    <option value="deauth">Deauth — Connection Disrupt</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>Channel</label>
+                                <select id="j-channel" class="input">
+                                    <option value="37">Ch 37 — 2402 MHz</option>
+                                    <option value="38">Ch 38 — 2426 MHz</option>
+                                    <option value="39" selected>Ch 39 — 2480 MHz</option>
+                                    <option value="0">All Channels</option>
+                                </select>
+                            </div>
+                            <div class="field" id="j-target-grp" style="display:none">
+                                <label>Target MAC</label>
+                                <input type="text" id="j-target" class="input" placeholder="AA:BB:CC:DD:EE:FF">
+                                <div class="jam-target-hint" id="j-target-hint"></div>
+                            </div>
+                            <div class="ch-strip">
+                                <div class="ch-bar" data-ch="37"><span>37</span><small>2402</small></div>
+                                <div class="ch-bar" data-ch="38"><span>38</span><small>2426</small></div>
+                                <div class="ch-bar" data-ch="39"><span>39</span><small>2480</small></div>
+                            </div>
+                            <button id="btn-jam" class="btn btn-jam-big">▶ Start Jammer</button>
+                            <div class="jam-warn">⚠️ Authorized testing only — FCC §15.5</div>
                         </div>
                     </div>
+                    <!-- Middle: Status -->
                     <div class="jam-card">
-                        <div class="jam-card-hd">Live Status</div>
+                        <div class="jam-card-hd">📡 Live Status</div>
                         <div class="jam-card-bd">
+                            <div class="jam-ind" id="jam-ind" style="margin-bottom:12px"><div class="jam-dot"></div><span id="jam-ind-txt">Inactive</span></div>
                             <div class="jam-stats">
-                                <div class="js"><div class="js-v" id="jl-pkts">0</div><div class="js-l">Packets</div></div>
+                                <div class="js"><div class="js-v" id="jl-pkts">0</div><div class="js-l">Packets Sent</div></div>
+                                <div class="js"><div class="js-v" id="jl-pps">0</div><div class="js-l">Pkts / sec</div></div>
                                 <div class="js"><div class="js-v" id="jl-mode">--</div><div class="js-l">Mode</div></div>
                                 <div class="js"><div class="js-v" id="jl-ch">--</div><div class="js-l">Channel</div></div>
-                                <div class="js"><div class="js-v" id="jl-be">--</div><div class="js-l">Backend</div></div>
                             </div>
-                            <div class="jam-ind" id="jam-ind"><div class="jam-dot"></div><span id="jam-ind-txt">Inactive</span></div>
+                            <div class="jam-stats" style="margin-top:8px">
+                                <div class="js"><div class="js-v" id="jl-be">--</div><div class="js-l">Backend</div></div>
+                                <div class="js"><div class="js-v" id="jl-dur">0s</div><div class="js-l">Duration</div></div>
+                            </div>
                         </div>
                     </div>
-                    <div class="jam-card jam-wide">
-                        <div class="jam-card-hd">BLE Advertising Channels</div>
-                        <div class="jam-card-bd">
-                            <div class="ch-strip"><div class="ch-bar" data-ch="37"><span>37</span><small>2402 MHz</small></div><div class="ch-bar" data-ch="38"><span>38</span><small>2426 MHz</small></div><div class="ch-bar" data-ch="39"><span>39</span><small>2480 MHz</small></div></div>
-                            <div class="jam-warn">Research and authorized testing only. FCC regulated.</div>
+                    <!-- Right: Device Picker -->
+                    <div class="jam-card">
+                        <div class="jam-card-hd" style="display:flex;align-items:center;justify-content:space-between">
+                            <span>🎯 Target Device Picker</span>
+                            <button class="btn btn-ghost" style="font-size:.7rem;padding:2px 8px" onclick="renderJammerPicker()">↻ Refresh</button>
+                        </div>
+                        <div class="jam-card-bd" style="padding:0">
+                            <div class="jam-picker-search">
+                                <input type="text" id="j-picker-search" class="input" placeholder="Filter by name or MAC…" style="border-radius:0;border:none;border-bottom:1px solid var(--border)">
+                            </div>
+                            <div id="jam-device-picker" class="jam-picker-list">
+                                <div class="jam-picker-empty">No devices in scan — start scanning first.</div>
+                            </div>
                         </div>
                     </div>
                 </div>
