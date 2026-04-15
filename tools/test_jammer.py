@@ -5,7 +5,7 @@ from blueshield.jammer.bt_jammer import BluetoothJammer, JamMode
 
 config = {
     "interface": "hci0",
-    "jammer_secondary_interface": "hci1",
+    "jammer_secondary_interface": "hci3",
     "jam_enabled": True,
     "jam_power": -20,
 }
