@@ -6,6 +6,13 @@ bluetooth-numbers>=1.0.0  # Bluetooth SIG company/service ID resolution
 # Web Dashboard
 flask>=3.0.0
 flask-socketio>=5.3.0
+eventlet>=0.36.0       # Async socket backend for Flask-SocketIO
+
+# BLE Sniffer (nRF52840 dongle)
+pyserial>=3.5          # Serial communication with nRF52 sniffer
+
+# Network / packet analysis
+scapy>=2.5.0           # Packet crafting and analysis
 
 # Linux/Raspberry Pi only (uncomment on RPi)
 # pybluez2>=0.46        # Classic Bluetooth scanning

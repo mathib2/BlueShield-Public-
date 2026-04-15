@@ -18,11 +18,14 @@ DEFAULT_CONFIG = {
     "alert_threshold": 3,         # unknown devices before alert
     "known_devices_file": str(CONFIG_DIR / "known_devices.json"),
     "log_file": str(LOG_DIR / "blueshield.json"),
-    "interface": "hci2",              # scanner adapter (Feasycom BP119 — USB, BT5.4)
-    "jammer_interface": "hci1",       # dedicated jammer adapter (Hakimonoe BT548 — USB, BT5.3)
+    "interface": "hci2",              # scanner adapter (Pi onboard Broadcom BT4.1)
+    "jammer_interface": "hci0",       # primary jammer (Realtek BT5.1 USB)
+    "jammer_secondary_interface": "hci1",  # secondary jammer (Realtek BT5.1 USB) — dual-adapter
     "long_range_interface": "hci3",   # nRF52840 Zephyr HCI — Coded PHY long range
     "sniffle_port": "/dev/ttyACM0",   # nRF52840 #1 Sniffle serial port
+    "nrf_sniffer_port": "/dev/ttyACM1",  # nRF52840 #2 BLE sniffer serial port
     "sniffle_enabled": False,         # enable Sniffle packet capture
+    "nrf_sniffer_enabled": True,      # enable nRF52 BLE sniffer
     "dashboard_refresh": 2,           # dashboard refresh rate (seconds)
     "jam_enabled": False,             # jamming disabled by default (research only)
     "jam_channel": 39,                # BLE advertising channel (37, 38, 39)
