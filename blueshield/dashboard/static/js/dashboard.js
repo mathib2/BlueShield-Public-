@@ -14,6 +14,51 @@
 const $ = id => document.getElementById(id);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+/* ── SVG Icon Map — replaces emojis with professional stroke icons ── */
+const _s = (d, w=16) => `<svg viewBox="0 0 24 24" width="${w}" height="${w}" fill="none" stroke="currentColor" stroke-width="2">${d}</svg>`;
+const ICO = {
+    phone:    _s('<rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>'),
+    audio:    _s('<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>'),
+    input:    _s('<path d="M12 2a6 6 0 0 0-6 6v8a6 6 0 0 0 12 0V8a6 6 0 0 0-6-6z"/><line x1="12" y1="6" x2="12" y2="10"/>'),
+    watch:    _s('<circle cx="12" cy="12" r="7"/><polyline points="12 9 12 12 13.5 13.5"/><path d="M16.51 17.35l-.35 3.83a2 2 0 0 1-2 1.82H9.83a2 2 0 0 1-2-1.82l-.35-3.83m.01-10.7l.35-3.83A2 2 0 0 1 9.83 1h4.35a2 2 0 0 1 2 1.82l.35 3.83"/>'),
+    computer: _s('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>'),
+    tv:       _s('<rect x="2" y="7" width="20" height="15" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/>'),
+    tracker:  _s('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'),
+    health:   _s('<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>'),
+    gaming:   _s('<line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="15" y1="13" x2="15.01" y2="13"/><line x1="18" y1="11" x2="18.01" y2="11"/><rect x="2" y="6" width="20" height="12" rx="2"/>'),
+    iot:      _s('<path d="M9 18h6M10 22h4M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"/>'),
+    apple:    _s('<path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 5-4 5-8.5C21 9 18.22 6 15.5 6c-1.5 0-2.72.72-3.5.72S10 6 8.5 6C5.78 6 3 9 3 13.5 3 18 5 22 8 22c1.25 0 2.5-1.06 4-1.06z"/><path d="M12 2c1 .5 2 2 2 3.5S13 8 12 8"/>'),
+    signal:   _s('<path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>'),
+    unknown:  _s('<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+    radio:    _s('<circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/>'),
+    bell:     _s('<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>'),
+    pkg:      _s('<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>'),
+    cpu:      _s('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>'),
+    alert:    _s('<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>'),
+    shield:   _s('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'),
+    shieldOk: _s('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>'),
+    moon:     _s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
+    ghost:    _s('<path d="M12 2C7 2 3 6 3 11v9l3-3 3 3 3-3 3 3 3-3 3 3v-9c0-5-4-9-9-9z"/><circle cx="9" cy="10" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/>'),
+    eye:      _s('<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'),
+    siren:    _s('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
+    book:     _s('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'),
+    keyboard: _s('<rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="8" y1="12" x2="8.01" y2="12"/><line x1="12" y1="12" x2="12.01" y2="12"/><line x1="16" y1="12" x2="16.01" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/>'),
+    speaker:  _s('<rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><circle cx="12" cy="14" r="4"/><line x1="12" y1="6" x2="12.01" y2="6"/>'),
+    // Weather icons
+    sun:      _s('<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'),
+    cloud:    _s('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>'),
+    waves:    _s('<path d="M2 6c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M2 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M2 18c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/>'),
+    activity: _s('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
+    trendDn:  _s('<polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/>'),
+    trendUp:  _s('<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>'),
+    thermo:   _s('<path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/>'),
+    battery:  _s('<rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="13" x2="23" y2="11"/>'),
+    zap:      _s('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
+    disk:     _s('<line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'),
+    clock:    _s('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+    pin:      _s('<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>'),
+};
+
 /* ── State ─────────────────────────────────────────────────── */
 let currentDevices   = [];
 let currentClustered = [];
@@ -291,7 +336,7 @@ function renderClusteredRow(d) {
     const eco = d.ecosystem ? `<span class="eco-badge eco-${d.ecosystem || 'other'}">${d.ecosystem}</span>` : "";
 
     return `<tr class="${rowCls} ${sel} ${followCls}" onclick="selectDevice('${id}')">
-        <td>${d.category_icon || "❓"}</td>
+        <td>${d.category_icon || ICO.unknown}</td>
         <td><strong>${escHtml(d.best_name || "Unknown")}</strong> ${eco}<br><span class="mono" style="font-size:.62rem;color:var(--tx-3)">${id}</span></td>
         <td><span class="cat-pill">${d.category_icon || "?"} ${d.category || "?"}</span></td>
         <td>${riskBadge}</td>
@@ -313,7 +358,7 @@ function renderRawRow(d) {
     const sel = selectedDeviceId === addr ? "selected" : "";
 
     return `<tr class="${rowCls} ${sel}" onclick="selectDevice('${addr}')">
-        <td>${d.category_icon || "❓"}</td>
+        <td>${d.category_icon || ICO.unknown}</td>
         <td><span class="mono">${addr}</span></td>
         <td>${escHtml(d.name || "Unknown")}</td>
         <td><span class="cat-pill">${d.category_icon || "?"} ${d.category || "?"}</span></td>
@@ -366,7 +411,7 @@ function renderDetailPanel() {
     if (cls && cls.top) {
         const confPct = Math.round(cls.top.confidence * 100);
         const confCls = confPct >= 60 ? "aif-conf-high" : confPct >= 30 ? "aif-conf-med" : "aif-conf-low";
-        html += `<div class="detail-section"><div class="detail-section-title">🧠 AI Classification</div>`;
+        html += `<div class="detail-section"><div class="detail-section-title">${ICO.cpu} AI Classification</div>`;
         html += `<div class="ai-class-card">`;
         html += `<div class="ai-class-top"><span class="ai-class-icon">${cls.top.icon}</span><span class="ai-class-label">${escHtml(cls.top.label)}</span><span class="ai-class-conf ${confCls}">${confPct}%</span></div>`;
         html += `<div class="ai-class-desc">${escHtml(cls.top.description)}</div>`;
@@ -413,7 +458,7 @@ function renderDetailPanel() {
 
     // Tracker Status
     if (d.tracker_suspect) {
-        html += `<div class="detail-section"><div class="detail-section-title" style="color:var(--red)">⚠ Tracker Suspect</div>`;
+        html += `<div class="detail-section"><div class="detail-section-title" style="color:var(--red)">${ICO.alert} Tracker Suspect</div>`;
         html += detailRow("Type", d.tracker_type || "Unknown");
         html += detailRow("Confidence", `${Math.round((d.tracker_confidence || 0) * 100)}%`);
         html += `</div>`;
@@ -455,9 +500,9 @@ function renderDetailPanel() {
     const fpId = d.fingerprint_id || "";
     html += `<div class="detail-section"><div class="detail-section-title">Quick Actions</div>`;
     html += `<div class="quick-actions">`;
-    html += `<button class="qa-btn qa-track" onclick="switchTab('radar')">📡 Radar</button>`;
-    html += `<button class="qa-btn qa-alert" onclick="watchDevice('${fpId}')">🔔 Watch</button>`;
-    html += `<button class="qa-btn qa-export" onclick="exportPackets('${fpId}')">📦 Packets</button>`;
+    html += `<button class="qa-btn qa-track" onclick="switchTab('radar')">${ICO.radio} Radar</button>`;
+    html += `<button class="qa-btn qa-alert" onclick="watchDevice('${fpId}')">${ICO.bell} Watch</button>`;
+    html += `<button class="qa-btn qa-export" onclick="exportPackets('${fpId}')">${ICO.pkg} Packets</button>`;
     html += `</div>`;
     if (d.is_known) {
         html += `<button class="btn-untrust" onclick="untrustDevice('${fpId}')">Remove Trust</button>`;
@@ -583,9 +628,9 @@ function renderCategoryPanel() {
     const cats = clusterSummary.categories || {};
     const el = $("cat-full");
     if (!Object.keys(cats).length) { el.innerHTML = '<div class="empty-msg">No data</div>'; return; }
-    const icons = { phone:"📱", audio:"🎧", input:"🖱️", watch:"⌚", computer:"💻", tv:"📺", tracker:"📍", health:"❤️", gaming:"🎮", iot:"💡", apple:"🍎", nearby:"📶", unknown:"❓" };
+    const icons = { phone:ICO.phone, audio:ICO.audio, input:ICO.input, watch:ICO.watch, computer:ICO.computer, tv:ICO.tv, tracker:ICO.tracker, health:ICO.health, gaming:ICO.gaming, iot:ICO.iot, apple:ICO.apple, nearby:ICO.signal, unknown:ICO.unknown };
     el.innerHTML = Object.entries(cats).sort((a,b) => b[1]-a[1]).map(([cat, cnt]) =>
-        `<div class="cat-row"><span class="cat-icon">${icons[cat] || "❓"}</span><span class="cat-name">${cat}</span><span class="cat-count">${cnt}</span></div>`
+        `<div class="cat-row"><span class="cat-icon">${icons[cat] || ICO.unknown}</span><span class="cat-name">${cat}</span><span class="cat-count">${cnt}</span></div>`
     ).join("");
 }
 
@@ -791,7 +836,7 @@ function renderTrackerGrid() {
         grid.innerHTML = "";
         badge.style.display = "none";
         topBadge.textContent = "0";
-        statusCard.innerHTML = `<div class="tracker-status-card"><div class="tsc-icon">🛡️</div><div class="tsc-info"><div class="tsc-title">Environment Clear</div><div class="tsc-desc">No suspected trackers detected nearby.</div></div></div>`;
+        statusCard.innerHTML = `<div class="tracker-status-card"><div class="tsc-icon">${ICO.shieldOk}</div><div class="tsc-info"><div class="tsc-title">Environment Clear</div><div class="tsc-desc">No suspected trackers detected nearby.</div></div></div>`;
         return;
     }
 
@@ -799,11 +844,11 @@ function renderTrackerGrid() {
     badge.textContent = trackerSuspects.length;
     topBadge.textContent = trackerSuspects.length;
 
-    statusCard.innerHTML = `<div class="tracker-status-card alert"><div class="tsc-icon">⚠️</div><div class="tsc-info"><div class="tsc-title">${trackerSuspects.length} Suspected Tracker(s)</div><div class="tsc-desc">Potential tracking devices detected in your vicinity.</div></div></div>`;
+    statusCard.innerHTML = `<div class="tracker-status-card alert"><div class="tsc-icon">${ICO.alert}</div><div class="tsc-info"><div class="tsc-title">${trackerSuspects.length} Suspected Tracker(s)</div><div class="tsc-desc">Potential tracking devices detected in your vicinity.</div></div></div>`;
 
     grid.innerHTML = trackerSuspects.map(t => {
         const cls = t.confidence > 0.7 ? "tracker-high" : "tracker-med";
-        const icon = t.tracker_type.includes("airtag") ? "🍎📍" : t.tracker_type.includes("smarttag") ? "📱📍" : "📍";
+        const icon = t.tracker_type.includes("airtag") ? ICO.apple : t.tracker_type.includes("smarttag") ? ICO.phone : ICO.tracker;
         return `<div class="tracker-card ${cls}">
             <div class="tc-icon">${icon}</div>
             <div class="tc-info">
@@ -829,7 +874,7 @@ function renderFollowingGrid() {
         grid.innerHTML = "";
         badge.style.display = "none";
         if (topBadge) topBadge.textContent = "0";
-        if (overview) overview.innerHTML = `<div class="follow-status-card"><div class="fsc-icon">🛡️</div><div class="fsc-info"><div class="fsc-title">All Clear</div><div class="fsc-desc">No devices appear to be following you.</div></div></div>`;
+        if (overview) overview.innerHTML = `<div class="follow-status-card"><div class="fsc-icon">${ICO.shieldOk}</div><div class="fsc-info"><div class="fsc-title">All Clear</div><div class="fsc-desc">No devices appear to be following you.</div></div></div>`;
         return;
     }
 
@@ -838,11 +883,11 @@ function renderFollowingGrid() {
     if (topBadge) topBadge.textContent = followingAlerts.length;
 
     const threat = followingAlerts.some(f => f.threat_level === "following");
-    if (overview) overview.innerHTML = `<div class="follow-status-card${threat ? " alert" : ""}"><div class="fsc-icon">${threat ? "⚠️" : "👁️"}</div><div class="fsc-info"><div class="fsc-title">${followingAlerts.length} Device(s) of Interest</div><div class="fsc-desc">${threat ? "One or more devices may be following you!" : "Monitoring suspicious patterns."}</div></div></div>`;
+    if (overview) overview.innerHTML = `<div class="follow-status-card${threat ? " alert" : ""}"><div class="fsc-icon">${threat ? ICO.alert : ICO.eye}</div><div class="fsc-info"><div class="fsc-title">${followingAlerts.length} Device(s) of Interest</div><div class="fsc-desc">${threat ? "One or more devices may be following you!" : "Monitoring suspicious patterns."}</div></div></div>`;
 
     grid.innerHTML = followingAlerts.map(f => {
         const threatCls = f.threat_level === "following" ? "threat-following" : f.threat_level === "suspicious" ? "threat-suspicious" : "threat-monitoring";
-        const icon = f.threat_level === "following" ? "🚨" : f.threat_level === "suspicious" ? "👁️" : "📡";
+        const icon = f.threat_level === "following" ? ICO.siren : f.threat_level === "suspicious" ? ICO.eye : ICO.radio;
         const conf = Math.round((f.confidence || 0) * 100);
         return `<div class="follow-card ${threatCls}">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
@@ -875,7 +920,7 @@ function renderShadowGrid() {
         grid.innerHTML = "";
         badge.style.display = "none";
         if (topBadge) topBadge.textContent = "0";
-        if (overview) overview.innerHTML = `<div class="shadow-status-card"><div class="shsc-icon">🌙</div><div class="shsc-info"><div class="shsc-title">No Shadows Detected</div><div class="shsc-desc">No devices exhibiting stealth behavior.</div></div></div>`;
+        if (overview) overview.innerHTML = `<div class="shadow-status-card"><div class="shsc-icon">${ICO.moon}</div><div class="shsc-info"><div class="shsc-title">No Shadows Detected</div><div class="shsc-desc">No devices exhibiting stealth behavior.</div></div></div>`;
         return;
     }
 
@@ -884,14 +929,14 @@ function renderShadowGrid() {
     if (topBadge) topBadge.textContent = shadowDevices.length;
 
     const high = shadowDevices.filter(s => (s.stealth_score || 0) > 0.7).length;
-    if (overview) overview.innerHTML = `<div class="shadow-status-card${high ? " alert" : ""}"><div class="shsc-icon">${high ? "👻" : "🌙"}</div><div class="shsc-info"><div class="shsc-title">${shadowDevices.length} Shadow Device(s)</div><div class="shsc-desc">${high ? high + " high-stealth device(s) detected!" : "Monitoring devices with intermittent visibility."}</div></div></div>`;
+    if (overview) overview.innerHTML = `<div class="shadow-status-card${high ? " alert" : ""}"><div class="shsc-icon">${high ? ICO.ghost : ICO.moon}</div><div class="shsc-info"><div class="shsc-title">${shadowDevices.length} Shadow Device(s)</div><div class="shsc-desc">${high ? high + " high-stealth device(s) detected!" : "Monitoring devices with intermittent visibility."}</div></div></div>`;
 
     grid.innerHTML = shadowDevices.map(s => {
         const score = Math.round((s.stealth_score || 0) * 100);
         const cls = score > 70 ? "shadow-high" : "shadow-med";
         return `<div class="shadow-card ${cls}">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-                <span style="font-size:1.4rem">👻</span>
+                <span style="font-size:1.4rem">${ICO.ghost}</span>
                 <div>
                     <div style="font-weight:700;color:var(--tx-1);font-size:.88rem">${escHtml(s.device_name || s.device_id || "Unknown")}</div>
                     <div style="font-size:.72rem;color:var(--purple);text-transform:uppercase">Stealth Score: ${score}%</div>
@@ -955,7 +1000,7 @@ function renderConversationGraph() {
             category: d.category || "unknown",
             risk: d.risk_level || "low",
             rssi: d.avg_rssi || -100,
-            icon: d.category_icon || "📡",
+            icon: d.category_icon || ICO.radio,
         };
     });
 
@@ -1006,7 +1051,7 @@ function renderConversationGraph() {
         ctx.font = "16px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(n.icon || "📡", n.x, n.y);
+        ctx.fillText("●", n.x, n.y);
 
         ctx.fillStyle = txFaint;
         ctx.font = "9px 'JetBrains Mono'";
@@ -1052,7 +1097,7 @@ function renderLifeStorySection(story) {
     if (!story || !story.events || !story.events.length) return "";
     const events = story.events.slice(-20); // Show last 20 events
     return `<div class="detail-section">
-        <div class="detail-section-title" style="color:var(--cyan);font-weight:600;font-size:.78rem">📖 Device Life Story</div>
+        <div class="detail-section-title" style="color:var(--cyan);font-weight:600;font-size:.78rem">${ICO.book} Device Life Story</div>
         <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;color:var(--tx-2);max-height:200px;overflow-y:auto">
             ${events.map(e => {
                 const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "";
@@ -1263,15 +1308,15 @@ function renderJammerPicker() {
 
 function deviceIcon(d) {
     const type = (d.device_type || d.ai_classification?.label || "").toLowerCase();
-    if (type.includes("phone"))      return "📱";
-    if (type.includes("headphone") || type.includes("earbud") || type.includes("audio")) return "🎧";
-    if (type.includes("watch"))      return "⌚";
-    if (type.includes("laptop") || type.includes("computer")) return "💻";
-    if (type.includes("tracker"))    return "🚨";
-    if (type.includes("speaker"))    return "🔊";
-    if (type.includes("keyboard"))   return "⌨️";
-    if (type.includes("mouse"))      return "🖱️";
-    return "📡";
+    if (type.includes("phone"))      return ICO.phone;
+    if (type.includes("headphone") || type.includes("earbud") || type.includes("audio")) return ICO.audio;
+    if (type.includes("watch"))      return ICO.watch;
+    if (type.includes("laptop") || type.includes("computer")) return ICO.computer;
+    if (type.includes("tracker"))    return ICO.siren;
+    if (type.includes("speaker"))    return ICO.speaker;
+    if (type.includes("keyboard"))   return ICO.keyboard;
+    if (type.includes("mouse"))      return ICO.input;
+    return ICO.radio;
 }
 
 function updateJammer(status) {
@@ -1429,13 +1474,13 @@ function renderWeatherPanel() {
     const w = weatherData;
     if (!w) return;
     if ($("lw-density")) $("lw-density").textContent = w.density || "Clear";
-    if ($("lw-density-icon")) $("lw-density-icon").textContent = w.density_icon || "☀️";
+    if ($("lw-density-icon")) $("lw-density-icon").innerHTML = ICO.sun;
     if ($("lw-turb")) $("lw-turb").textContent = w.turbulence || "Calm";
-    if ($("lw-turb-icon")) $("lw-turb-icon").textContent = w.turbulence_icon || "🌊";
+    if ($("lw-turb-icon")) $("lw-turb-icon").innerHTML = ICO.waves;
     if ($("lw-wind")) $("lw-wind").textContent = w.wind || "Stable";
-    if ($("lw-wind-icon")) $("lw-wind-icon").textContent = w.wind_icon || "🧘";
+    if ($("lw-wind-icon")) $("lw-wind-icon").innerHTML = ICO.activity;
     if ($("lw-forecast")) $("lw-forecast").textContent = w.forecast || "Quiet";
-    if ($("lw-forecast-icon")) $("lw-forecast-icon").textContent = w.forecast_icon || "📉";
+    if ($("lw-forecast-icon")) $("lw-forecast-icon").innerHTML = ICO.trendDn;
 }
 
 function renderLiveStats() {
@@ -1488,7 +1533,7 @@ if ($("tt-slider")) {
         const idx = parseInt(e.target.value);
         if (idx >= scanSnapshots.length - 1) {
             timeTravelMode = false;
-            $("tt-live-btn").textContent = "🔴 LIVE";
+            $("tt-live-btn").innerHTML = '<span class="live-dot"></span> LIVE';
             $("tt-live-btn").style.color = "";
             $("tt-info").textContent = "Live mode — showing real-time data";
             return;
@@ -1512,7 +1557,7 @@ if ($("tt-live-btn")) {
         timeTravelMode = false;
         const slider = $("tt-slider");
         if (slider && scanSnapshots.length) slider.value = scanSnapshots.length - 1;
-        $("tt-live-btn").textContent = "🔴 LIVE";
+        $("tt-live-btn").innerHTML = '<span class="live-dot"></span> LIVE';
         $("tt-live-btn").style.color = "";
         $("tt-info").textContent = "Live mode — showing real-time data";
         renderLiveDemo();
@@ -1546,8 +1591,8 @@ function renderHealthTab(d) {
         $("hs-temp").textContent = t > 80 ? "CRITICAL — throttling!" : t > 65 ? "Warm — check cooling" : "Normal";
         const hcard = $("hc-temp");
         if (hcard) { hcard.classList.toggle("crit", t > 80); hcard.classList.toggle("warn", t > 65 && t <= 80); }
-        if (t > 80) alerts.push({ cls: "crit", msg: `🌡️ CPU temp ${t}°C — Pi is throttling! Add a heatsink/fan.` });
-        else if (t > 65) alerts.push({ cls: "warn", msg: `🌡️ CPU temp ${t}°C — Running warm. Consider a heatsink.` });
+        if (t > 80) alerts.push({ cls: "crit", msg: `CPU temp ${t}°C — Pi is throttling! Add a heatsink/fan.` });
+        else if (t > 65) alerts.push({ cls: "warn", msg: `CPU temp ${t}°C — Running warm. Consider a heatsink.` });
     } else {
         $("hv-temp").textContent = "N/A";
         $("hs-temp").textContent = "Not available (non-Linux)";
@@ -1560,7 +1605,7 @@ function renderHealthTab(d) {
         $("hb-cpu").style.width = c + "%";
         $("hb-cpu").style.background = c > 85 ? "var(--red)" : c > 60 ? "var(--orange)" : "var(--green)";
         $("hs-cpu").textContent = c > 85 ? "Very high load" : c > 60 ? "Moderate load" : "Normal";
-        if (c > 90) alerts.push({ cls: "warn", msg: `⚡ CPU usage ${c}% — Pi 3 is under heavy load.` });
+        if (c > 90) alerts.push({ cls: "warn", msg: `CPU usage ${c}% — Pi 3 is under heavy load.` });
     } else {
         $("hv-cpu").textContent = "N/A";
     }
@@ -1572,7 +1617,7 @@ function renderHealthTab(d) {
         $("hb-ram").style.width = r + "%";
         $("hb-ram").style.background = r > 85 ? "var(--red)" : r > 65 ? "var(--orange)" : "var(--green)";
         $("hs-ram").textContent = `${r}% used`;
-        if (r > 85) alerts.push({ cls: "warn", msg: `🧠 RAM ${r}% used — Pi 3 only has 1GB. Consider reducing scan load.` });
+        if (r > 85) alerts.push({ cls: "warn", msg: `RAM ${r}% used — Pi 3 only has 1GB. Consider reducing scan load.` });
     } else {
         $("hv-ram").textContent = "N/A";
     }
@@ -1581,12 +1626,12 @@ function renderHealthTab(d) {
     if (d.undervoltage !== undefined) {
         const uv = d.undervoltage;
         const th = d.throttled;
-        $("hv-volt").textContent = uv ? "⚠️ UNDER-VOLTAGE" : th ? "⚠️ THROTTLED" : "✅ Good";
+        $("hv-volt").textContent = uv ? "UNDER-VOLTAGE" : th ? "THROTTLED" : "Good";
         $("hs-volt").textContent = uv ? "Use 5V 2.5A PSU" : th ? "Check power supply" : "Power OK";
         const hcard = $("hc-volt");
         if (hcard) { hcard.classList.toggle("crit", uv); hcard.classList.toggle("warn", th && !uv); }
-        if (uv) alerts.push({ cls: "crit", msg: "🔋 Undervoltage detected! Use an official 5V 2.5A Raspberry Pi PSU. This causes USB instability and scan failures." });
-        else if (th) alerts.push({ cls: "warn", msg: "🔋 Pi is throttling due to power. Check your power supply." });
+        if (uv) alerts.push({ cls: "crit", msg: "Undervoltage detected! Use an official 5V 2.5A Raspberry Pi PSU. This causes USB instability and scan failures." });
+        else if (th) alerts.push({ cls: "warn", msg: "Pi is throttling due to power. Check your power supply." });
     } else {
         $("hv-volt").textContent = "N/A";
         $("hs-volt").textContent = "vcgencmd not available";
@@ -1599,7 +1644,7 @@ function renderHealthTab(d) {
         $("hb-disk").style.width = pct + "%";
         $("hb-disk").style.background = pct > 90 ? "var(--red)" : pct > 75 ? "var(--orange)" : "var(--accent)";
         $("hs-disk").textContent = `${pct}% used`;
-        if (pct > 90) alerts.push({ cls: "warn", msg: `💾 Disk ${pct}% full — clear old logs soon.` });
+        if (pct > 90) alerts.push({ cls: "warn", msg: `Disk ${pct}% full — clear old logs soon.` });
     }
 
     // Uptime + IP
@@ -1612,6 +1657,43 @@ function renderHealthTab(d) {
         $("hs-ip").textContent = `IP: ${d.ip_address}`;
     }
 
+    // BLE Adapter inventory
+    const adGrid = $("bt-adapter-grid");
+    if (adGrid && d.bt_adapters) {
+        const roleMap = {
+            "hci0": "Primary Jammer",
+            "hci1": "Secondary Jammer",
+            "hci2": "Scanner",
+        };
+        adGrid.innerHTML = d.bt_adapters.map(a => {
+            const role = roleMap[a.name] || a.name;
+            const statusDot = a.up ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--red)">●</span>';
+            return `<div class="bt-adapter-card">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                    ${statusDot}
+                    <span style="font-weight:600;font-size:.76rem;color:var(--tx-1)">${a.name}</span>
+                    <span style="font-size:.64rem;color:var(--tx-3);margin-left:auto">${role}</span>
+                </div>
+                <div style="font-family:var(--font-mono);font-size:.66rem;color:var(--cyan)">${a.address || "N/A"}</div>
+                <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">${a.type || "Unknown"}</div>
+            </div>`;
+        }).join("");
+        // Add nRF sniffer card if present
+        if (d.nrf_sniffer) {
+            const nrf = d.nrf_sniffer;
+            const nrfDot = nrf.running ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--tx-3)">●</span>';
+            adGrid.innerHTML += `<div class="bt-adapter-card">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                    ${nrfDot}
+                    <span style="font-weight:600;font-size:.76rem;color:var(--tx-1)">nRF52840</span>
+                    <span style="font-size:.64rem;color:var(--tx-3);margin-left:auto">BLE Sniffer</span>
+                </div>
+                <div style="font-family:var(--font-mono);font-size:.66rem;color:var(--cyan)">${nrf.port}</div>
+                <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">${nrf.simulated ? "Simulated" : "Hardware"} — ${nrf.running ? "Scanning" : "Idle"}</div>
+            </div>`;
+        }
+    }
+
     // Health badge on nav
     const badge = $("nav-health-badge");
     if (badge) badge.style.display = alerts.filter(a => a.cls === "crit").length ? "" : "none";
@@ -1622,8 +1704,8 @@ function renderHealthTab(d) {
         if (!alerts.length) {
             const onLinux = d && d.cpu_temp !== null;
             container.innerHTML = onLinux
-                ? `<div class="health-alert-item ok">✅ All systems nominal — Pi 3 is running healthy.</div>`
-                : `<div class="health-alert-item warn">⚠️ Hardware metrics unavailable — connect to Raspberry Pi to see live stats.</div>`;
+                ? `<div class="health-alert-item ok">All systems nominal — Pi 3 is running healthy.</div>`
+                : `<div class="health-alert-item warn">Hardware metrics unavailable — connect to Raspberry Pi to see live stats.</div>`;
         } else {
             container.innerHTML = alerts.map(a => `<div class="health-alert-item ${a.cls}">${a.msg}</div>`).join("");
         }
@@ -1752,6 +1834,44 @@ async function snifferToggle() {
         });
     }
 }
+
+/* ── nRF52840 Sniffer Toggle ───────────────────────────────── */
+let _nrfRunning = false;
+async function nrfSnifferToggle() {
+    const endpoint = _nrfRunning ? "/api/nrf-sniffer/stop" : "/api/nrf-sniffer/start";
+    try {
+        const res = await fetch(endpoint, { method: "POST" });
+        const data = await res.json();
+        if (data.status === "started" || data.status === "already_running") {
+            _nrfRunning = true;
+        } else {
+            _nrfRunning = false;
+        }
+        _nrfUpdateBadge();
+    } catch (e) {
+        console.error("nRF sniffer toggle error:", e);
+    }
+}
+function _nrfUpdateBadge() {
+    const badge = $("nrf-badge");
+    const label = $("nrf-btn-label");
+    if (badge) {
+        badge.textContent = _nrfRunning ? "nRF ON" : "nRF OFF";
+        badge.style.background = _nrfRunning ? "rgba(34,211,238,0.18)" : "rgba(255,255,255,0.06)";
+        badge.style.color = _nrfRunning ? "var(--cyan)" : "var(--tx-3)";
+    }
+    if (label) label.textContent = _nrfRunning ? "nRF Stop" : "nRF Start";
+}
+// Poll nRF status every 5s
+setInterval(async () => {
+    try {
+        const res = await fetch("/api/nrf-sniffer/status");
+        if (!res.ok) return;
+        const data = await res.json();
+        _nrfRunning = data.running;
+        _nrfUpdateBadge();
+    } catch (e) { /* ignore */ }
+}, 5000);
 
 function snifferClearLog() {
     snifferPackets   = [];
@@ -1991,7 +2111,7 @@ function _snfRenderPairings() {
         const badgeCls   = isCrackable ? "snf-pair-type-badge--crackable"
                          : isLESC      ? "snf-pair-type-badge--lesc"
                          :               "snf-pair-type-badge--legacy";
-        const badgeTxt   = isCrackable ? "⚡ CRACKABLE"
+        const badgeTxt   = isCrackable ? "CRACKABLE"
                          : isLESC      ? "✓ LESC / ECDH"
                          :               "LEGACY";
         const cardCls    = isCrackable ? "snf-pair-item--crackable"
@@ -2016,7 +2136,7 @@ function _snfRenderPairings() {
                 <span>${s.packet_count} SMP pkts</span>
             </div>
             ${pktsHtml ? `<div class="snf-pair-pkts">${pktsHtml}</div>` : ""}
-            ${isCrackable ? `<button class="snf-crack-btn" onclick="_snfSetCrackTarget('${s.session_id}')">⚡ Run Crackle</button>` : ""}
+            ${isCrackable ? `<button class="snf-crack-btn" onclick="_snfSetCrackTarget('${s.session_id}')">Run Crackle</button>` : ""}
         </div>`;
     }).join("");
 
@@ -2106,7 +2226,7 @@ function _snfRenderCrackleResult(result) {
 
     if (result.success) {
         const lines = [
-            `✅ CRACKED`,
+            `CRACKED`,
             `TK  = ${result.tk_hex || result.tk}`,
             result.stk_hex  ? `STK = ${result.stk_hex}` : null,
             result.ltk_hex  ? `LTK = ${result.ltk_hex}` : null,
@@ -2119,7 +2239,7 @@ function _snfRenderCrackleResult(result) {
         res.className    = "snf-crackle-result snf-crackle-success";
     } else {
         const lines = [
-            `❌ ${result.error || "Not cracked"}`,
+            `${result.error || "Not cracked"}`,
             "",
             ...(result.log_lines || []),
         ].join("\n");

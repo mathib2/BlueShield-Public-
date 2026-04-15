@@ -41,6 +41,7 @@ from blueshield.sniffer.sniffle_engine import make_sniffer, BLEPacket, Connectio
 from blueshield.sniffer.gatt_inspector import make_gatt_inspector
 from blueshield.sniffer.crackle_runner import CrackleRunner
 from blueshield.sniffer.pairing_detector import PairingEvent
+from blueshield.sniffer.nrf_sniffer import make_nrf_sniffer
 
 
 # ── App Setup ────────────────────────────────────────────────────────────────
@@ -103,7 +104,9 @@ _scan_lock = threading.Lock()
 sniffer_engine   = None
 gatt_inspector   = None
 crackle_runner   = None
-_sniffer_sim     = False        # set to True when running with --sim
+nrf_sniffer      = None          # nRF52840 BLE sniffer instance
+_nrf_bridge_running = False      # controls the nRF→socketio bridge thread
+_sniffer_sim     = False         # set to True when running with --sim
 
 # Configurable alert rules
 alert_rules = [
@@ -894,6 +897,39 @@ def api_system():
         s.close()
     except Exception:
         pass
+    # BLE adapter inventory
+    try:
+        hci_out = subprocess.run(
+            ["hciconfig", "-a"], capture_output=True, text=True, timeout=3
+        )
+        if hci_out.returncode == 0:
+            adapters = []
+            current = None
+            for line in hci_out.stdout.splitlines():
+                if line and not line[0].isspace() and ":" in line:
+                    if current:
+                        adapters.append(current)
+                    name = line.split(":")[0].strip()
+                    current = {"name": name, "address": "", "type": "", "up": "UP" in line}
+                elif current and "BD Address:" in line:
+                    parts = line.strip().split()
+                    idx = parts.index("Address:") + 1 if "Address:" in parts else -1
+                    if idx > 0 and idx < len(parts):
+                        current["address"] = parts[idx]
+                elif current and "Name:" in line:
+                    current["type"] = line.split("Name:")[1].strip().strip("'")
+            if current:
+                adapters.append(current)
+            info["bt_adapters"] = adapters
+    except Exception:
+        pass
+    # nRF sniffer status
+    if nrf_sniffer:
+        info["nrf_sniffer"] = {
+            "port": nrf_sniffer.port,
+            "running": getattr(nrf_sniffer, '_running', False),
+            "simulated": hasattr(nrf_sniffer, '_sim_loop'),
+        }
     return jsonify(info)
 
 
@@ -1366,6 +1402,168 @@ def _on_sniffer_error(msg: str):
     socketio.emit("sniffer_error", {"message": msg})
 
 
+# ── nRF Sniffer → Socket.IO bridge ──────────────────────────────────────────
+
+def _nrf_to_blepacket(pkt: dict) -> dict:
+    """Convert an nRF sniffer packet dict to the BLEPacket.to_dict() format
+    that the frontend sniffer UI expects."""
+    aa_str = pkt.get("access_address") or "0x8E89BED6"
+    try:
+        aa_int = int(aa_str, 16) if isinstance(aa_str, str) else (aa_str or 0x8E89BED6)
+    except (ValueError, TypeError):
+        aa_int = 0x8E89BED6
+
+    pdu_hex = pkt.get("pdu", "")
+    pdu_bytes = bytes.fromhex(pdu_hex) if pdu_hex else b""
+
+    pkt_type = pkt.get("type", "adv")
+    if pkt_type == "connect":
+        pkt_type = "connect_ind"
+
+    return {
+        "ts":              pkt.get("timestamp_us", 0) / 1_000_000,
+        "pkt_type":        pkt_type,
+        "channel":         pkt.get("channel", 0),
+        "rssi":            pkt.get("rssi", 0),
+        "access_address":  aa_str,
+        "adv_address":     pkt.get("adv_address"),
+        "adv_type":        pkt.get("adv_type"),
+        "adv_type_name":   pkt.get("adv_type_name"),
+        "payload_hex":     pdu_hex,
+        "payload_len":     len(pdu_bytes),
+        "conn_aa":         aa_str if pkt_type == "connect_ind" else None,
+        "hop_increment":   None,
+        "crc_init":        None,
+        "llid":            None,
+        "data_length":     len(pdu_bytes) if pkt_type == "data" else None,
+        "adv_name":        pkt.get("adv_name"),
+        "manufacturer":    None,
+        "source":          "nrf",
+    }
+
+
+def _nrf_bridge_loop():
+    """Poll the nRF sniffer for new packets and emit them as socketio events."""
+    global _nrf_bridge_running
+    while _nrf_bridge_running and nrf_sniffer:
+        try:
+            packets = nrf_sniffer.get_packets(clear=True)
+            for pkt in packets:
+                converted = _nrf_to_blepacket(pkt)
+                socketio.emit("sniffer_packet", converted)
+
+                # Emit connection events
+                if pkt.get("type") == "connect":
+                    conn_dict = {
+                        "session_id":     f"nrf-{pkt.get('pkt_counter', 0)}",
+                        "access_address": pkt.get("access_address"),
+                        "central_mac":    pkt.get("central_mac", "??:??:??:??:??:??"),
+                        "peripheral_mac": pkt.get("peripheral_mac", "??:??:??:??:??:??"),
+                        "start_ts":       time.time(),
+                        "end_ts":         None,
+                        "duration_s":     None,
+                        "hop_increment":  0,
+                        "crc_init":       "0x000000",
+                        "packet_count":   0,
+                        "data_bytes":     0,
+                    }
+                    socketio.emit("sniffer_connection", conn_dict)
+
+        except Exception as exc:
+            print(f"[nRF Bridge] Error: {exc}")
+
+        time.sleep(0.3)
+
+
+@app.route("/api/nrf-sniffer/status")
+@login_required
+def api_nrf_sniffer_status():
+    """Return the nRF52840 sniffer hardware status and stats."""
+    if nrf_sniffer is None:
+        return jsonify({"available": False, "reason": "nRF sniffer not initialized"})
+
+    is_sim = hasattr(nrf_sniffer, '_sim_loop')  # SimulatedNrfSniffer marker
+    devices = nrf_sniffer.get_devices()
+    connections = nrf_sniffer.get_connections()
+
+    return jsonify({
+        "available": True,
+        "simulated": is_sim,
+        "running": getattr(nrf_sniffer, '_running', False),
+        "port": nrf_sniffer.port,
+        "device_count": len(devices),
+        "connection_count": len(connections),
+        "devices": devices,
+        "connections": connections,
+        "bridge_active": _nrf_bridge_running,
+    })
+
+
+@app.route("/api/nrf-sniffer/start", methods=["POST"])
+@login_required
+def api_nrf_sniffer_start():
+    """Start the nRF52840 sniffer and the bridge to dashboard."""
+    global _nrf_bridge_running
+    if nrf_sniffer is None:
+        return jsonify({"error": "nRF sniffer not initialized"}), 400
+
+    if getattr(nrf_sniffer, '_running', False):
+        return jsonify({"status": "already_running"})
+
+    try:
+        nrf_sniffer.open()
+        nrf_sniffer.start_scan()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    # Start the bridge thread
+    if not _nrf_bridge_running:
+        _nrf_bridge_running = True
+        bridge_t = threading.Thread(target=_nrf_bridge_loop, daemon=True, name="NrfBridge")
+        bridge_t.start()
+
+    socketio.emit("sniffer_state", {"state": "SCANNING", "source": "nrf"})
+    return jsonify({"status": "started", "simulated": hasattr(nrf_sniffer, '_sim_loop')})
+
+
+@app.route("/api/nrf-sniffer/stop", methods=["POST"])
+@login_required
+def api_nrf_sniffer_stop():
+    """Stop the nRF52840 sniffer."""
+    global _nrf_bridge_running
+    if nrf_sniffer is None:
+        return jsonify({"error": "nRF sniffer not initialized"}), 400
+
+    _nrf_bridge_running = False
+    try:
+        nrf_sniffer.stop_scan()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    socketio.emit("sniffer_state", {"state": "IDLE", "source": "nrf"})
+    return jsonify({"status": "stopped"})
+
+
+@app.route("/api/nrf-sniffer/follow", methods=["POST"])
+@login_required
+def api_nrf_sniffer_follow():
+    """Follow a specific BLE device by MAC address."""
+    if nrf_sniffer is None:
+        return jsonify({"error": "nRF sniffer not initialized"}), 400
+
+    data = request.get_json(force=True, silent=True) or {}
+    mac = data.get("mac", "").strip().upper()
+    if not mac:
+        return jsonify({"error": "MAC address required"}), 400
+
+    try:
+        nrf_sniffer.follow_device(mac)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"status": "following", "target": mac})
+
+
 # ── Socket.IO Events ────────────────────────────────────────────────────────
 
 @socketio.on("connect")
@@ -1446,7 +1644,7 @@ def main():
     global scanner, jammer, logger, config, scan_interval, platform_info
     global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
     global following_detector, shadow_detector, env_fingerprint, life_story, conversation_graph, trail_tracker
-    global sniffer_engine, gatt_inspector, crackle_runner, _sniffer_sim
+    global sniffer_engine, gatt_inspector, crackle_runner, _sniffer_sim, nrf_sniffer, _nrf_bridge_running
 
     parser = argparse.ArgumentParser(description="BlueShield Web Dashboard")
     parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware)")
@@ -1530,11 +1728,24 @@ def main():
     print(f"[BlueShield] GATT inspector  : {'simulated' if args.sim else 'bleak'}")
     print(f"[BlueShield] Crackle runner  : {'binary: ' + crackle_runner._binary if crackle_runner.binary_available() else 'Python fallback'}")
 
+    # ── Initialise nRF52840 BLE sniffer ──────────────────────────────────────
+    nrf_port = config.get("nrf_sniffer_port", "/dev/ttyACM1")
+    nrf_enabled = config.get("nrf_sniffer_enabled", False)
+    if nrf_enabled or args.sim:
+        nrf_sniffer = make_nrf_sniffer(
+            sim=args.sim,
+            port=nrf_port,
+        )
+        nrf_type = "SIMULATED" if args.sim else "HARDWARE"
+        print(f"[BlueShield] nRF52 sniffer  : {nrf_type} → {nrf_port}")
+    else:
+        print(f"[BlueShield] nRF52 sniffer  : DISABLED (set nrf_sniffer_enabled=true in config)")
+
     # Start background scanning in a daemon thread
     scan_thread = threading.Thread(target=background_scan_loop, daemon=True)
     scan_thread.start()
 
-    print(f"[BlueShield] Dashboard v5.3 starting at http://localhost:{args.port}")
+    print(f"[BlueShield] Dashboard v5.6 starting at http://localhost:{args.port}")
     socketio.run(app, host=args.host, port=args.port, debug=False, allow_unsafe_werkzeug=True)
 
 
