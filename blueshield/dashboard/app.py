@@ -42,6 +42,7 @@ from blueshield.sniffer.gatt_inspector import make_gatt_inspector
 from blueshield.sniffer.crackle_runner import CrackleRunner
 from blueshield.sniffer.pairing_detector import PairingEvent
 from blueshield.sniffer.nrf_sniffer import make_nrf_sniffer
+from blueshield.core.device_correlator import DeviceCorrelator
 
 
 # ── App Setup ────────────────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ conversation_graph = None
 trail_tracker = None
 advanced_mode = False
 auto_scan = True
+device_correlator = DeviceCorrelator()
 scan_interval = 15  # must be > scan_duration (default 5s) to avoid InProgress errors
 _advanced_scan_counter = 0  # throttle heavy analysis — only run every 3rd scan on Pi 3
 rssi_filter = -100  # default: all devices
@@ -104,7 +106,8 @@ _scan_lock = threading.Lock()
 sniffer_engine   = None
 gatt_inspector   = None
 crackle_runner   = None
-nrf_sniffer      = None          # nRF52840 BLE sniffer instance
+nrf_sniffer      = None          # nRF52840 BLE sniffer instance #1 (/dev/ttyACM0)
+nrf_sniffer_2    = None          # nRF52840 BLE sniffer instance #2 (/dev/ttyACM1)
 _nrf_bridge_running = False      # controls the nRF→socketio bridge thread
 _sniffer_sim     = False         # set to True when running with --sim
 
@@ -505,6 +508,19 @@ def do_scan_and_emit():
             if len(scan_snapshots) > MAX_SNAPSHOTS:
                 scan_snapshots.pop(0)
 
+            # ── AI Device Correlation: deduplicate + track across MAC changes ──
+            try:
+                raw_devices = scanner.get_all_devices()
+                device_correlator.ingest_scan_results(raw_devices)
+                correlated_devices = device_correlator.get_unified_devices()
+                correlator_stats = device_correlator.get_stats()
+                following_correlated = device_correlator.get_following_devices()
+            except Exception as corr_exc:
+                print(f"[BlueShield] Correlator error: {corr_exc}")
+                correlated_devices = []
+                correlator_stats = {}
+                following_correlated = []
+
             socketio.emit("device_update", {
                 "summary": scanner.get_device_summary(),
                 "devices": scanner.get_all_devices(),
@@ -520,6 +536,9 @@ def do_scan_and_emit():
                 "shadows": shadow_devices,
                 "environment": env_anomalies,
                 "trails": trail_data,
+                "correlated_devices": correlated_devices,
+                "correlator_stats": correlator_stats,
+                "following_correlated": following_correlated,
             })
             return result
         except Exception as e:
@@ -923,14 +942,150 @@ def api_system():
             info["bt_adapters"] = adapters
     except Exception:
         pass
-    # nRF sniffer status
+    # nRF sniffer status (both dongles)
     if nrf_sniffer:
         info["nrf_sniffer"] = {
             "port": nrf_sniffer.port,
             "running": getattr(nrf_sniffer, '_running', False),
             "simulated": hasattr(nrf_sniffer, '_sim_loop'),
         }
+    if nrf_sniffer_2:
+        info["nrf_sniffer_2"] = {
+            "port": nrf_sniffer_2.port,
+            "running": getattr(nrf_sniffer_2, '_running', False),
+            "simulated": hasattr(nrf_sniffer_2, '_sim_loop'),
+        }
     return jsonify(info)
+
+
+@app.route("/api/usb-reset", methods=["POST"])
+@login_required
+def api_usb_reset():
+    """Reset the USB hub to recover crashed adapters, then re-detect and remap."""
+    global jammer
+    if platform_info.get("os") != "Linux":
+        return jsonify({"error": "USB reset only works on Linux"}), 400
+
+    import subprocess as sp
+
+    # Step 1: Stop jammer if running
+    if jammer and jammer.is_jamming:
+        try:
+            jammer.stop_jam()
+        except Exception:
+            pass
+
+    # Step 2: Reset USB hub
+    try:
+        sp.run(["bash", "-c", "echo 0 > /sys/bus/usb/devices/1-1/authorized"], timeout=5)
+        time.sleep(2)
+        sp.run(["bash", "-c", "echo 1 > /sys/bus/usb/devices/1-1/authorized"], timeout=5)
+        time.sleep(4)
+    except Exception as e:
+        return jsonify({"error": f"USB reset failed: {e}"}), 500
+
+    # Step 3: Bring all adapters UP
+    for i in range(4):
+        sp.run(["hciconfig", f"hci{i}", "up"], capture_output=True, timeout=5)
+    time.sleep(1)
+
+    # Step 4: Detect adapters by vendor
+    result = sp.run(["hciconfig", "-a"], capture_output=True, text=True, timeout=5)
+    detected = {}
+    current_name = None
+    for line in result.stdout.split("\n"):
+        if line and not line[0] in ("\t", " "):
+            current_name = line.split(":")[0]
+            detected[current_name] = {"up": False, "bus": "", "vendor": ""}
+        elif current_name:
+            if "UP RUNNING" in line:
+                detected[current_name]["up"] = True
+            if "Bus:" in line:
+                parts = line.strip().split()
+                if "Bus:" in parts:
+                    detected[current_name]["bus"] = parts[parts.index("Bus:") + 1]
+            if "Manufacturer:" in line:
+                detected[current_name]["vendor"] = line.split("Manufacturer:")[-1].strip()
+
+    # Step 5: Auto-map roles based on bus type
+    # UART = Pi's built-in Broadcom (scanner), USB = Realtek (jammers)
+    scanner_iface = None
+    jammer_ifaces = []
+    for name, info in sorted(detected.items()):
+        if not info["up"]:
+            continue
+        if info["bus"] == "UART":
+            scanner_iface = name
+        elif info["bus"] == "USB":
+            jammer_ifaces.append(name)
+
+    mapping = {
+        "scanner": scanner_iface or config.get("interface", "hci2"),
+        "jammer_primary": jammer_ifaces[0] if len(jammer_ifaces) >= 1 else config.get("jammer_interface", "hci0"),
+        "jammer_secondary": jammer_ifaces[1] if len(jammer_ifaces) >= 2 else None,
+        "adapters": detected,
+    }
+
+    # Step 6: Update config in memory
+    if scanner_iface:
+        config["interface"] = scanner_iface
+    if len(jammer_ifaces) >= 1:
+        config["jammer_interface"] = jammer_ifaces[0]
+    if len(jammer_ifaces) >= 2:
+        config["jammer_secondary_interface"] = jammer_ifaces[1]
+
+    # Step 7: Reinitialize jammer with new adapters
+    try:
+        jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
+        jammer = BluetoothJammer(jammer_cfg)
+    except Exception as e:
+        mapping["jammer_reinit_error"] = str(e)
+
+    # Step 8: Check nRF dongles
+    import os
+    nrf_status = []
+    for port in ["/dev/ttyACM0", "/dev/ttyACM1"]:
+        nrf_status.append({"port": port, "available": os.path.exists(port)})
+    mapping["nrf_dongles"] = nrf_status
+
+    print(f"[BlueShield] USB Reset: scanner={mapping['scanner']}, "
+          f"jammer1={mapping['jammer_primary']}, jammer2={mapping['jammer_secondary']}")
+
+    return jsonify({"status": "ok", "mapping": mapping})
+
+
+@app.route("/api/correlator/devices")
+@login_required
+def api_correlator_devices():
+    """Get AI-correlated deduplicated device list."""
+    return jsonify({
+        "devices": device_correlator.get_unified_devices(),
+        "stats": device_correlator.get_stats(),
+    })
+
+
+@app.route("/api/correlator/device/<mac>")
+@login_required
+def api_correlator_device(mac):
+    """Look up the cluster a specific MAC belongs to."""
+    cluster = device_correlator.get_cluster_for_mac(mac)
+    if cluster:
+        return jsonify(cluster)
+    return jsonify({"error": "MAC not found"}), 404
+
+
+@app.route("/api/correlator/following")
+@login_required
+def api_correlator_following():
+    """Get devices flagged as persistently following."""
+    return jsonify(device_correlator.get_following_devices())
+
+
+@app.route("/api/correlator/stats")
+@login_required
+def api_correlator_stats():
+    """Get AI model statistics."""
+    return jsonify(device_correlator.get_stats())
 
 
 @app.route("/api/ghost", methods=["POST"])
@@ -965,9 +1120,9 @@ def api_adapters():
         )
         current = None
         roles = {
-            config.get("interface", "hci0"): "Scanner (BP119)",
-            config.get("jammer_interface", "hci1"): "Jammer (BT548)",
-            config.get("long_range_interface", "hci2"): "Long Range (nRF52840)",
+            config.get("interface", "hci2"): "Scanner (Broadcom BT4.1)",
+            config.get("jammer_interface", "hci0"): "Primary Jammer (Realtek BT5.4)",
+            config.get("jammer_secondary_interface", "hci3"): "Secondary Jammer (Realtek BT5.3)",
         }
         for line in result.stdout.splitlines():
             if line and not line.startswith("\t") and not line.startswith(" "):
@@ -1443,19 +1598,33 @@ def _nrf_to_blepacket(pkt: dict) -> dict:
 
 
 def _nrf_bridge_loop():
-    """Poll the nRF sniffer for new packets and emit them as socketio events."""
+    """Poll both nRF sniffers for new packets and emit them as socketio events."""
     global _nrf_bridge_running
     while _nrf_bridge_running and nrf_sniffer:
         try:
-            packets = nrf_sniffer.get_packets(clear=True)
-            for pkt in packets:
+            # Collect packets from both sniffers
+            all_packets = []
+            for sniffer_inst, label in [(nrf_sniffer, "nrf1"), (nrf_sniffer_2, "nrf2")]:
+                if sniffer_inst is None:
+                    continue
+                try:
+                    pkts = sniffer_inst.get_packets(clear=True)
+                    for p in pkts:
+                        p["_sniffer_source"] = label
+                    all_packets.extend(pkts)
+                except Exception:
+                    pass
+
+            for pkt in all_packets:
                 converted = _nrf_to_blepacket(pkt)
+                converted["sniffer_source"] = pkt.get("_sniffer_source", "nrf1")
                 socketio.emit("sniffer_packet", converted)
 
                 # Emit connection events
                 if pkt.get("type") == "connect":
+                    source = pkt.get("_sniffer_source", "nrf1")
                     conn_dict = {
-                        "session_id":     f"nrf-{pkt.get('pkt_counter', 0)}",
+                        "session_id":     f"{source}-{pkt.get('pkt_counter', 0)}",
                         "access_address": pkt.get("access_address"),
                         "central_mac":    pkt.get("central_mac", "??:??:??:??:??:??"),
                         "peripheral_mac": pkt.get("peripheral_mac", "??:??:??:??:??:??"),
@@ -1516,6 +1685,14 @@ def api_nrf_sniffer_start():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
+    # Also start second sniffer if available
+    if nrf_sniffer_2:
+        try:
+            nrf_sniffer_2.open()
+            nrf_sniffer_2.start_scan()
+        except Exception as exc:
+            print(f"[BlueShield] nRF sniffer #2 start failed: {exc}")
+
     # Start the bridge thread
     if not _nrf_bridge_running:
         _nrf_bridge_running = True
@@ -1539,6 +1716,13 @@ def api_nrf_sniffer_stop():
         nrf_sniffer.stop_scan()
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+    # Also stop second sniffer
+    if nrf_sniffer_2:
+        try:
+            nrf_sniffer_2.stop_scan()
+        except Exception:
+            pass
 
     socketio.emit("sniffer_state", {"state": "IDLE", "source": "nrf"})
     return jsonify({"status": "stopped"})
@@ -1623,19 +1807,110 @@ def on_set_range(data):
 
 # ── Background Scan Loop ────────────────────────────────────────────────────
 
+def _reset_adapter_for_scan():
+    """Reset the BLE scan adapter so BlueZ releases stale state."""
+    try:
+        iface = config.get("interface", "hci2") if config else "hci2"
+        subprocess.run(["hciconfig", iface, "down"], capture_output=True, timeout=5)
+        time.sleep(0.5)
+        subprocess.run(["hciconfig", iface, "up"], capture_output=True, timeout=5)
+        time.sleep(0.5)
+        print(f"[BlueShield] Adapter {iface} reset for clean scan state")
+    except Exception as e:
+        print(f"[BlueShield] Adapter reset warning: {e}")
+
+
 def background_scan_loop():
     """Periodically scan and push results to connected clients."""
     last_scan_time = 0
+    last_nrf_merge_time = 0
+    scan_failures = 0
+
+    # ── Startup settling: give BlueZ/DBus time to initialize after boot ──
+    print("[BlueShield] Background scan loop started — waiting 12s for BlueZ to settle...")
+    time.sleep(12)
+
+    # Reset the scan adapter to clear any stale state from previous runs
+    _reset_adapter_for_scan()
+    time.sleep(2)
+    print("[BlueShield] Adapter ready — starting scan cycle")
+
     while True:
-        now = time.monotonic()
-        # Run scan on interval
-        if auto_scan and (now - last_scan_time) >= scan_interval:
-            do_scan_and_emit()
-            last_scan_time = time.monotonic()
-        # Broadcast jammer status every 2s so packet counter stays live
-        if jammer and jammer.is_jamming:
-            socketio.emit("jammer_update", jammer.get_status())
+        try:
+            now = time.monotonic()
+
+            # Run BLE scan on interval
+            if auto_scan and (now - last_scan_time) >= scan_interval:
+                try:
+                    result = do_scan_and_emit()
+                    if result and "error" not in (result or {}):
+                        scan_failures = 0
+                    else:
+                        scan_failures += 1
+                        if scan_failures <= 3:
+                            print(f"[BlueShield] Scan returned no data (attempt {scan_failures})")
+                        # After 3 consecutive failures, reset adapter and retry
+                        if scan_failures == 3:
+                            print("[BlueShield] 3 scan failures — resetting adapter...")
+                            _reset_adapter_for_scan()
+                except Exception as scan_exc:
+                    scan_failures += 1
+                    print(f"[BlueShield] Scan loop error #{scan_failures}: {scan_exc}")
+                    import traceback
+                    traceback.print_exc()
+                    if scan_failures >= 3:
+                        print("[BlueShield] Persistent scan errors — resetting adapter...")
+                        _reset_adapter_for_scan()
+                        scan_failures = 0  # Reset counter after recovery
+                last_scan_time = time.monotonic()
+
+            # Merge nRF sniffer devices into dashboard every 5 seconds
+            if nrf_sniffer and (now - last_nrf_merge_time) >= 5:
+                try:
+                    _merge_nrf_devices_to_scanner()
+                except Exception:
+                    pass
+                last_nrf_merge_time = now
+
+            # Broadcast jammer status every 2s so packet counter stays live
+            if jammer and jammer.is_jamming:
+                socketio.emit("jammer_update", jammer.get_status())
+        except Exception as loop_exc:
+            print(f"[BlueShield] Background loop error: {loop_exc}")
         time.sleep(2)
+
+
+def _merge_nrf_devices_to_scanner():
+    """Feed nRF sniffer discovered devices into the scanner's device table."""
+    for sniffer_inst in [nrf_sniffer, nrf_sniffer_2]:
+        if not sniffer_inst or not getattr(sniffer_inst, '_running', False):
+            continue
+        try:
+            nrf_devs = sniffer_inst.get_devices()
+        except Exception:
+            continue
+        for nd in nrf_devs:
+            addr = nd.get("address", "").upper()
+            if not addr or addr == "00:00:00:00:00:00":
+                continue
+            # Create a lightweight device dict if scanner doesn't know about it
+            if hasattr(scanner, 'devices') and addr not in scanner.devices:
+                from blueshield.scanner.bt_scanner import BluetoothDevice
+                dev = BluetoothDevice(
+                    address=addr,
+                    name=nd.get("name") or "Unknown",
+                    rssi=nd.get("rssi", -100),
+                    source="nrf_sniffer",
+                )
+                dev.manufacturer = nd.get("manufacturer_name", "Unknown")
+                dev.service_uuids = nd.get("service_uuids", [])
+                dev.tx_power = nd.get("tx_power")
+                scanner.devices[addr] = dev
+            elif hasattr(scanner, 'devices') and addr in scanner.devices:
+                # Update RSSI from sniffer (usually more accurate)
+                existing = scanner.devices[addr]
+                if nd.get("rssi", -100) > -100:
+                    existing.rssi = nd["rssi"]
 
 
 # ── Entry Point ──────────────────────────────────────────────────────────────
@@ -1644,7 +1919,7 @@ def main():
     global scanner, jammer, logger, config, scan_interval, platform_info
     global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
     global following_detector, shadow_detector, env_fingerprint, life_story, conversation_graph, trail_tracker
-    global sniffer_engine, gatt_inspector, crackle_runner, _sniffer_sim, nrf_sniffer, _nrf_bridge_running
+    global sniffer_engine, gatt_inspector, crackle_runner, _sniffer_sim, nrf_sniffer, nrf_sniffer_2, _nrf_bridge_running
 
     parser = argparse.ArgumentParser(description="BlueShield Web Dashboard")
     parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware)")
@@ -1693,17 +1968,15 @@ def main():
         scanner = BluetoothScanner(config)
         print(f"[BlueShield] Scanner    → {config.get('interface', 'hci2')} (Feasycom BP119, BT5.4)")
         if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
-            # Use dedicated jammer adapter (hci1 = Hakimonoe BT548)
-            jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci1")}
+            # Use dedicated jammer adapter (hci0 = Realtek BT5.4 primary)
+            jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
             jammer = BluetoothJammer(jammer_cfg)
-            print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} (Hakimonoe BT548, BT5.3)")
+            sec = config.get("jammer_secondary_interface", "hci3")
+            print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} (Realtek BT5.4, Primary)")
+            print(f"[BlueShield] Jammer 2   → {sec} (Realtek BT5.3, Secondary / Dual-adapter)")
         else:
             print("[BlueShield] Jammer: simulated (requires Linux + hcitool)")
             jammer = SimulatedJammer(config)
-        lr = config.get("long_range_interface", "hci3")
-        print(f"[BlueShield] Long Range → {lr} (nRF52840 Zephyr HCI, Coded PHY)")
-        if config.get("sniffle_enabled"):
-            print(f"[BlueShield] Sniffle  → {config.get('sniffle_port', '/dev/ttyACM0')}")
 
     logger = BlueShieldLogger(config)
 
@@ -1728,8 +2001,9 @@ def main():
     print(f"[BlueShield] GATT inspector  : {'simulated' if args.sim else 'bleak'}")
     print(f"[BlueShield] Crackle runner  : {'binary: ' + crackle_runner._binary if crackle_runner.binary_available() else 'Python fallback'}")
 
-    # ── Initialise nRF52840 BLE sniffer ──────────────────────────────────────
-    nrf_port = config.get("nrf_sniffer_port", "/dev/ttyACM1")
+    # ── Initialise nRF52840 BLE sniffers (dual-dongle) ─────────────────────
+    nrf_port   = config.get("nrf_sniffer_port",   "/dev/ttyACM0")
+    nrf_port_2 = config.get("nrf_sniffer_port_2", "/dev/ttyACM1")
     nrf_enabled = config.get("nrf_sniffer_enabled", False)
     if nrf_enabled or args.sim:
         nrf_sniffer = make_nrf_sniffer(
@@ -1737,7 +2011,21 @@ def main():
             port=nrf_port,
         )
         nrf_type = "SIMULATED" if args.sim else "HARDWARE"
-        print(f"[BlueShield] nRF52 sniffer  : {nrf_type} → {nrf_port}")
+        print(f"[BlueShield] nRF52 sniffer #1: {nrf_type} → {nrf_port}")
+
+        # Second nRF sniffer dongle (if available)
+        try:
+            import os
+            if args.sim or os.path.exists(nrf_port_2):
+                nrf_sniffer_2 = make_nrf_sniffer(
+                    sim=args.sim,
+                    port=nrf_port_2,
+                )
+                print(f"[BlueShield] nRF52 sniffer #2: {nrf_type} → {nrf_port_2}")
+            else:
+                print(f"[BlueShield] nRF52 sniffer #2: NOT FOUND ({nrf_port_2})")
+        except Exception as e:
+            print(f"[BlueShield] nRF52 sniffer #2: FAILED ({e})")
     else:
         print(f"[BlueShield] nRF52 sniffer  : DISABLED (set nrf_sniffer_enabled=true in config)")
 

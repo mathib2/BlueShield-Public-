@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/animejs/dist/bundles/anime.umd.min.js"></script>
 </head>
 <body>
     <!-- Top Bar -->
@@ -217,6 +218,17 @@
                     <div class="env-stat"><span class="env-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span><span class="env-val" id="env-new">0</span><span class="env-label">New Today</span></div>
                     <div class="env-stat"><span class="env-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><span class="env-val" id="env-trusted">0</span><span class="env-label">Trusted</span></div>
                     <div class="env-stat"><span class="env-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span><span class="env-val" id="env-clusters">0</span><span class="env-label">Clusters</span></div>
+                </div>
+                <!-- AI Correlation Engine Bar -->
+                <div class="correlator-bar" id="correlator-bar">
+                    <div class="cb-title"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M8.6 7.4L15.4 16.6M8.6 4.6L15.4 4.6"/></svg> AI Correlation</div>
+                    <div class="cb-stats">
+                        <div class="cb-stat"><span class="cb-val" id="cb-physical">0</span><span class="cb-label">Physical Devices</span></div>
+                        <div class="cb-stat"><span class="cb-val" id="cb-macs">0</span><span class="cb-label">MACs Tracked</span></div>
+                        <div class="cb-stat"><span class="cb-val" id="cb-merges">0</span><span class="cb-label">Merges</span></div>
+                        <div class="cb-stat"><span class="cb-val" id="cb-random">0</span><span class="cb-label">Random MACs</span></div>
+                        <div class="cb-stat"><span class="cb-val" id="cb-train">0</span><span class="cb-label">Model Trained</span></div>
+                    </div>
                 </div>
                 <div class="stats-strip">
                     <div class="ss"><span class="ss-v" id="ss-physical">0</span><span class="ss-l">Physical</span></div>
@@ -510,7 +522,10 @@
                                     <option value="reactive">Reactive — Smart Duty Cycle</option>
                                     <option value="targeted">Targeted — Specific Address</option>
                                     <option value="flood">Flood — Max Throughput</option>
+                                    <option value="full_spectrum">Full Spectrum — BLE + Classic BT</option>
                                     <option value="deauth">Deauth — Connection Disrupt</option>
+                                    <option value="phantom_flood">Phantom Flood — Max Phantoms</option>
+                                    <option value="connection_disrupt">Connection Disrupt — CONNECT_IND</option>
                                 </select>
                             </div>
                             <div class="field">

@@ -20,10 +20,9 @@ DEFAULT_CONFIG = {
     "log_file": str(LOG_DIR / "blueshield.json"),
     "interface": "hci2",              # scanner adapter (Pi onboard Broadcom BT4.1)
     "jammer_interface": "hci0",       # primary jammer (Realtek BT5.1 USB)
-    "jammer_secondary_interface": "hci1",  # secondary jammer (Realtek BT5.1 USB) — dual-adapter
-    "long_range_interface": "hci3",   # nRF52840 Zephyr HCI — Coded PHY long range
-    "sniffle_port": "/dev/ttyACM0",   # nRF52840 #1 Sniffle serial port
-    "nrf_sniffer_port": "/dev/ttyACM1",  # nRF52840 #2 BLE sniffer serial port
+    "jammer_secondary_interface": "hci1",  # secondary jammer (Realtek BT5.3 USB, may enumerate as hci1 or hci3)
+    "nrf_sniffer_port": "/dev/ttyACM0",  # nRF52840 #1 BLE sniffer serial port
+    "nrf_sniffer_port_2": "/dev/ttyACM1",  # nRF52840 #2 BLE sniffer serial port
     "sniffle_enabled": False,         # enable Sniffle packet capture
     "nrf_sniffer_enabled": True,      # enable nRF52 BLE sniffer
     "dashboard_refresh": 2,           # dashboard refresh rate (seconds)

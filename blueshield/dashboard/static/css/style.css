@@ -1360,3 +1360,55 @@ button,input,select,textarea{font-family:inherit}
     .data-table{min-width:500px}
     .live-stats-col .ls-card{min-width:100%}
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AI Correlation Engine Bar
+   ═══════════════════════════════════════════════════════════════════════════ */
+.correlator-bar{display:flex;align-items:center;gap:16px;padding:8px 14px;margin:0 0 4px;background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(59,130,246,.05));border:1px solid rgba(99,102,241,.15);border-radius:8px;overflow-x:auto}
+.cb-title{display:flex;align-items:center;gap:6px;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);white-space:nowrap;min-width:110px}
+.cb-stats{display:flex;gap:18px;flex:1}
+.cb-stat{display:flex;flex-direction:column;align-items:center;gap:1px}
+.cb-val{font-size:.85rem;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--fg-1);transition:color .3s}
+.cb-label{font-size:.6rem;color:var(--fg-3);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.cb-val.changed{color:var(--accent);text-shadow:0 0 8px rgba(99,102,241,.5)}
+
+/* Correlated device row highlights */
+.dev-row.correlated{border-left:2px solid rgba(99,102,241,.4)}
+.dev-row.multi-mac{background:rgba(99,102,241,.03)}
+.mac-badge{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;font-size:.6rem;border-radius:4px;background:rgba(99,102,241,.1);color:var(--accent);font-family:'JetBrains Mono',monospace}
+.mac-badge.random{background:rgba(245,158,11,.1);color:var(--orange)}
+.trend-approaching{color:var(--red);font-weight:600}
+.trend-receding{color:var(--green)}
+.trend-stable{color:var(--fg-3)}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Anime.js Motion Design System
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Scan pulse ring on the header */
+@keyframes scan-pulse{0%{transform:scale(1);opacity:.6}50%{transform:scale(1.6);opacity:0}100%{transform:scale(1);opacity:0}}
+.pill-scan.scanning .dot{animation:scan-pulse 1.2s ease-out infinite}
+.pill-scan.scanning{border-color:var(--green)}
+
+/* Jammer active glow */
+@keyframes jam-glow{0%,100%{box-shadow:0 0 4px rgba(239,68,68,.3)}50%{box-shadow:0 0 16px rgba(239,68,68,.6)}}
+.jam-active-glow{animation:jam-glow 1.5s ease-in-out infinite}
+
+/* Device row entrance (anime.js targets these classes) */
+.dev-row-enter{opacity:0;transform:translateY(8px)}
+.dev-row-visible{opacity:1;transform:translateY(0);transition:opacity .35s ease-out,transform .35s ease-out}
+
+/* Stat counter flash on change */
+@keyframes val-flash{0%{color:var(--accent);text-shadow:0 0 10px rgba(99,102,241,.6)}100%{color:var(--fg-1);text-shadow:none}}
+.val-flash{animation:val-flash .8s ease-out}
+
+/* Full-spectrum mode indicator */
+@keyframes spectrum-wave{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.full-spectrum-active{background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(245,158,11,.15),rgba(59,130,246,.15),rgba(139,92,246,.15));background-size:300% 100%;animation:spectrum-wave 3s ease infinite;border:1px solid rgba(239,68,68,.3)}
+
+/* Smooth number transitions */
+.num-animate{transition:all .3s cubic-bezier(.4,0,.2,1)}
+
+/* USB Reset button pulse when adapters are down */
+@keyframes usb-alert-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.usb-reset-alert{animation:usb-alert-pulse 1.5s ease-in-out infinite}

@@ -91,6 +91,10 @@ let envData          = {};
 let trailData        = {};
 let advancedMode     = false;
 let graphData        = null;
+let correlatedDevices = [];
+let correlatorStats  = {};
+let _prevDeviceCount = 0;
+let _animeReady      = typeof anime !== 'undefined';
 
 /* ── Socket.IO ─────────────────────────────────────────────── */
 const socket = io();
@@ -143,6 +147,7 @@ socket.on("scan_result", data => {
 });
 
 socket.on("device_update", data => {
+    _prevDeviceCount = currentClustered.length;
     currentDevices   = data.devices || currentDevices;
     currentClustered = data.clustered_devices || currentClustered;
     clusterSummary   = data.cluster_summary || clusterSummary;
@@ -156,7 +161,11 @@ socket.on("device_update", data => {
     if (data.shadows) shadowDevices = data.shadows;
     if (data.environment) envData = data.environment;
     if (data.trails) trailData = data.trails;
+    if (data.correlated_devices) correlatedDevices = data.correlated_devices;
+    if (data.correlator_stats) correlatorStats = data.correlator_stats;
     updateAll();
+    updateCorrelatorBar();
+    animateNewDeviceRows();
     /* keep jammer picker fresh when jammer tab is visible */
     if (document.getElementById("tab-jammer")?.classList.contains("active")) renderJammerPicker();
 });
@@ -269,7 +278,7 @@ $("device-search").addEventListener("input", e => { searchFilter = e.target.valu
 
 /* ── Ghost Mode ────────────────────────────────────────────── */
 function ghostMode() {
-    if (confirm("⚠ GHOST MODE: This will immediately shut down the system.\nAre you sure?")) {
+    if (confirm("GHOST MODE: This will immediately shut down the system.\nAre you sure?")) {
         if (confirm("FINAL WARNING: The Raspberry Pi will power off NOW.\nContinue?")) {
             fetch("/api/ghost", { method: "POST" });
         }
@@ -277,6 +286,24 @@ function ghostMode() {
 }
 $("btn-ghost").addEventListener("click", ghostMode);
 if ($("btn-ghost-cfg")) $("btn-ghost-cfg").addEventListener("click", ghostMode);
+
+/* ── USB Reset ────────────────────────────────────────────── */
+async function usbReset() {
+    if (!confirm("Reset USB hub? This will briefly disconnect all USB devices and remap adapters.")) return;
+    try {
+        const r = await fetch("/api/usb-reset", { method: "POST" });
+        const d = await r.json();
+        if (d.status === "ok") {
+            const m = d.mapping;
+            alert(`USB Reset OK!\n\nScanner: ${m.scanner}\nJammer 1: ${m.jammer_primary}\nJammer 2: ${m.jammer_secondary || "N/A"}\nnRF: ${m.nrf_dongles.map(n => n.port + (n.available ? " OK" : " MISSING")).join(", ")}`);
+            location.reload();
+        } else {
+            alert("USB reset error: " + (d.error || "unknown"));
+        }
+    } catch (e) {
+        alert("USB reset failed: " + e.message);
+    }
+}
 
 /* ── Device Table ──────────────────────────────────────────── */
 const CLUSTERED_COLS = ["", "Name", "Category", "Risk", "Motion", "RSSI", "MACs", "Duration", "Status", "Actions"];
@@ -323,26 +350,35 @@ function renderClusteredRow(d) {
     const sel = selectedDeviceId === id ? "selected" : "";
     const followCls = !d.is_known && d.rssi_trend === "stationary" && (d.duration_seconds || 0) > 1800 ? "follow-suspect" : "";
 
+    /* Correlator info: find matching correlated device */
+    const corrDev = correlatedDevices.find(c => c.primary_mac === (d.mac_addresses?.[0] || ""));
+    const macCount = corrDev ? corrDev.mac_count : (d.mac_count || 0);
+    const isRandomMac = corrDev ? corrDev.is_random_mac : false;
+    const corrTrend = corrDev ? corrDev.rssi_trend : "";
+    const multiMacCls = macCount > 1 ? "multi-mac correlated dev-row" : "dev-row";
+
     const riskBadge = `<span class="risk-badge risk-${d.risk_level || 'low'}">${d.risk_score || 0} ${(d.risk_level || 'low').toUpperCase()}</span>`;
 
     const motionArrows = { approaching: "↑ Nearing", leaving: "↓ Leaving", stationary: "— Idle" };
     const motionCls = `movement-${d.rssi_trend || "stationary"}`;
-    const motion = `<span class="movement-ind ${motionCls}">${motionArrows[d.rssi_trend] || "— Idle"}</span>`;
+    const trendCls = corrTrend === "approaching" ? "trend-approaching" : corrTrend === "receding" ? "trend-receding" : "trend-stable";
+    const motion = `<span class="movement-ind ${motionCls} ${trendCls}">${motionArrows[d.rssi_trend] || "— Idle"}</span>`;
 
     const action = d.is_known
         ? `<button class="btn-untrust" onclick="untrustDevice('${id}');event.stopPropagation()">Untrust</button>`
         : `<button class="btn-trust" onclick="trustFingerprint('${id}');event.stopPropagation()">Trust</button>`;
 
     const eco = d.ecosystem ? `<span class="eco-badge eco-${d.ecosystem || 'other'}">${d.ecosystem}</span>` : "";
+    const macBadge = macCount > 1 ? `<span class="mac-badge">${macCount} MACs</span>` : (isRandomMac ? `<span class="mac-badge random">RND</span>` : "");
 
-    return `<tr class="${rowCls} ${sel} ${followCls}" onclick="selectDevice('${id}')">
+    return `<tr class="${rowCls} ${sel} ${followCls} ${multiMacCls}" onclick="selectDevice('${id}')">
         <td>${d.category_icon || ICO.unknown}</td>
-        <td><strong>${escHtml(d.best_name || "Unknown")}</strong> ${eco}<br><span class="mono" style="font-size:.62rem;color:var(--tx-3)">${id}</span></td>
+        <td><strong>${escHtml(d.best_name || "Unknown")}</strong> ${eco} ${macBadge}<br><span class="mono" style="font-size:.62rem;color:var(--tx-3)">${id}</span></td>
         <td><span class="cat-pill">${d.category_icon || "?"} ${d.category || "?"}</span></td>
         <td>${riskBadge}</td>
         <td>${motion}</td>
         <td><span class="mono">${rssi}</span> <div class="rssi-bar"><div class="rssi-fill" style="width:${pct}%;background:${rssiColor}"></div></div></td>
-        <td><span class="mac-chip">${d.mac_count || 0}</span></td>
+        <td><span class="mac-chip">${macCount}</span></td>
         <td><span class="mono">${d.duration_display || "0s"}</span></td>
         <td>${d.is_known ? '<span class="tag tag-ok">Trusted</span>' : '<span class="tag tag-warn">Unknown</span>'}</td>
         <td>${action}</td>
@@ -1366,6 +1402,8 @@ function updateJammer(status) {
     $("jl-be").textContent   = status.backend || "--";
     $("nav-jam-badge").style.display = jammerActive ? "" : "none";
     $("pill-scan").classList.toggle("jamming", jammerActive);
+    updateJammerGlow(jammerActive);
+    applyFullSpectrumEffect(sess.mode || "");
 
     document.querySelectorAll(".ch-strip .ch-bar").forEach(bar => {
         bar.classList.toggle("active", jammerActive && bar.dataset.ch == sess.channel);
@@ -1660,13 +1698,17 @@ function renderHealthTab(d) {
     // BLE Adapter inventory
     const adGrid = $("bt-adapter-grid");
     if (adGrid && d.bt_adapters) {
-        const roleMap = {
-            "hci0": "Primary Jammer",
-            "hci1": "Secondary Jammer",
-            "hci2": "Scanner",
+        // Dynamic role detection from server config
+        const roleMap = d.adapter_roles || {
+            "hci0": "Primary Jammer (Realtek BT5.4)",
+            "hci1": "Secondary Jammer (Realtek BT5.3)",
+            "hci2": "Scanner (Broadcom BT4.1)",
+            "hci3": "Secondary Jammer (Realtek BT5.3)",
         };
+        // Check for any DOWN adapters
+        const hasDown = d.bt_adapters.some(a => !a.up);
         adGrid.innerHTML = d.bt_adapters.map(a => {
-            const role = roleMap[a.name] || a.name;
+            const role = roleMap[a.name] || a.role || a.name;
             const statusDot = a.up ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--red)">●</span>';
             return `<div class="bt-adapter-card">
                 <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
@@ -1678,18 +1720,30 @@ function renderHealthTab(d) {
                 <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">${a.type || "Unknown"}</div>
             </div>`;
         }).join("");
-        // Add nRF sniffer card if present
-        if (d.nrf_sniffer) {
-            const nrf = d.nrf_sniffer;
-            const nrfDot = nrf.running ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--tx-3)">●</span>';
-            adGrid.innerHTML += `<div class="bt-adapter-card">
-                <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-                    ${nrfDot}
-                    <span style="font-weight:600;font-size:.76rem;color:var(--tx-1)">nRF52840</span>
-                    <span style="font-size:.64rem;color:var(--tx-3);margin-left:auto">BLE Sniffer</span>
+        // Add nRF sniffer cards
+        for (const key of ["nrf_sniffer", "nrf_sniffer_2"]) {
+            if (d[key]) {
+                const nrf = d[key];
+                const nrfDot = nrf.running ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--tx-3)">●</span>';
+                const label = key === "nrf_sniffer" ? "nRF52840 #1" : "nRF52840 #2";
+                adGrid.innerHTML += `<div class="bt-adapter-card">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                        ${nrfDot}
+                        <span style="font-weight:600;font-size:.76rem;color:var(--tx-1)">${label}</span>
+                        <span style="font-size:.64rem;color:var(--tx-3);margin-left:auto">BLE Sniffer</span>
+                    </div>
+                    <div style="font-family:var(--font-mono);font-size:.66rem;color:var(--cyan)">${nrf.port}</div>
+                    <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">${nrf.simulated ? "Simulated" : "Hardware"} — ${nrf.running ? "Scanning" : "Idle"}</div>
+                </div>`;
+            }
+        }
+        // USB Reset button if any adapter is DOWN
+        if (hasDown) {
+            adGrid.innerHTML += `<div class="bt-adapter-card" style="border:1px solid var(--red);cursor:pointer" onclick="usbReset()">
+                <div style="text-align:center;padding:4px 0">
+                    <span style="color:var(--red);font-weight:700;font-size:.8rem">USB Reset & Remap</span>
+                    <div style="font-size:.6rem;color:var(--tx-3);margin-top:2px">Adapter down — click to reset USB hub</div>
                 </div>
-                <div style="font-family:var(--font-mono);font-size:.66rem;color:var(--cyan)">${nrf.port}</div>
-                <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">${nrf.simulated ? "Simulated" : "Hardware"} — ${nrf.running ? "Scanning" : "Idle"}</div>
             </div>`;
         }
     }
@@ -2336,6 +2390,184 @@ function _escHtml(s) {
     return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
+/* ════════════════════════════════════════════════════════════════���══════════
+   AI Correlator Bar + anime.js Animation System
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function updateCorrelatorBar() {
+    const s = correlatorStats || {};
+    animateCounter("cb-physical", s.total_clusters || 0);
+    animateCounter("cb-macs", s.total_macs_tracked || 0);
+    animateCounter("cb-merges", s.merges || 0);
+    animateCounter("cb-random", s.random_mac_devices || 0);
+    animateCounter("cb-train", (s.model && s.model.train_samples) || 0);
+}
+
+/* Animated number counter with anime.js (falls back to direct set) */
+function animateCounter(elId, targetVal) {
+    const el = $(elId);
+    if (!el) return;
+    const curVal = parseInt(el.textContent) || 0;
+    if (curVal === targetVal) return;
+
+    if (_animeReady && typeof anime !== 'undefined' && anime.animate) {
+        const obj = { v: curVal };
+        try {
+            anime.animate(obj, {
+                v: [curVal, targetVal],
+                duration: 800,
+                ease: 'outExpo',
+                onUpdate: () => { el.textContent = Math.round(obj.v); }
+            });
+        } catch(e) {
+            el.textContent = targetVal;
+        }
+    } else {
+        el.textContent = targetVal;
+    }
+    // Flash effect
+    el.classList.remove('val-flash');
+    void el.offsetWidth; // force reflow
+    el.classList.add('val-flash');
+}
+
+/* Animate new device rows entering the table */
+function animateNewDeviceRows() {
+    if (!_animeReady || typeof anime === 'undefined' || !anime.animate) return;
+    const newCount = currentClustered.length;
+    if (newCount <= _prevDeviceCount) return;
+
+    try {
+        const rows = document.querySelectorAll('#dev-tbody .dev-row');
+        const newRows = Array.from(rows).slice(0, newCount - _prevDeviceCount);
+        if (newRows.length === 0) return;
+
+        newRows.forEach(r => {
+            r.style.opacity = '0';
+            r.style.transform = 'translateY(8px)';
+        });
+
+        anime.animate(newRows, {
+            opacity: [0, 1],
+            translateY: ['8px', '0px'],
+            delay: anime.stagger ? anime.stagger(40) : 0,
+            duration: 400,
+            ease: 'outExpo'
+        });
+    } catch(e) { /* anime.js not loaded or API mismatch */ }
+}
+
+/* Pulse the scan indicator during active scanning */
+function pulseScanning() {
+    const pill = $("pill-scan");
+    if (!pill) return;
+    pill.classList.add("scanning");
+    setTimeout(() => pill.classList.remove("scanning"), 3000);
+}
+
+/* Jammer glow effect when active */
+function updateJammerGlow(active) {
+    const badge = $("nav-jam-badge");
+    if (!badge) return;
+    if (active) {
+        badge.style.display = "";
+        badge.classList.add("jam-active-glow");
+    } else {
+        badge.classList.remove("jam-active-glow");
+    }
+}
+
+/* Full-spectrum mode rainbow effect on jammer card */
+function applyFullSpectrumEffect(mode) {
+    const jamCard = document.querySelector(".jam-status");
+    if (!jamCard) return;
+    if (mode === "full_spectrum") {
+        jamCard.classList.add("full-spectrum-active");
+    } else {
+        jamCard.classList.remove("full-spectrum-active");
+    }
+}
+
+/* USB Reset with animated feedback */
+async function usbReset() {
+    const btn = document.querySelector('.usb-reset-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Resetting...";
+    }
+    try {
+        const res = await fetch('/api/usb-reset', {method:'POST'});
+        const data = await res.json();
+        if (data.status === 'ok') {
+            if (btn) btn.textContent = "Reset OK";
+            addTimelineEvent("system", `USB Reset: scanner=${data.mapping?.scanner}, jammer1=${data.mapping?.jammer_primary}`);
+        } else {
+            if (btn) btn.textContent = "Error: " + (data.error || "unknown");
+        }
+    } catch(e) {
+        if (btn) btn.textContent = "Error: " + e.message;
+    }
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = "Reset USB"; } }, 3000);
+}
+
+/* Startup entrance animation — stagger sidebar + main content */
+function playStartupAnimation() {
+    if (!_animeReady || typeof anime === 'undefined' || !anime.animate) return;
+    try {
+        // Stagger sidebar nav items
+        const navItems = document.querySelectorAll('.nav-item');
+        anime.animate(navItems, {
+            opacity: [0, 1],
+            translateX: ['-12px', '0px'],
+            delay: anime.stagger ? anime.stagger(30) : 0,
+            duration: 500,
+            ease: 'outExpo'
+        });
+
+        // Fade in main content
+        const content = document.querySelector('.content');
+        if (content) {
+            anime.animate(content, {
+                opacity: [0, 1],
+                duration: 600,
+                ease: 'outQuad'
+            });
+        }
+
+        // Pulse the brand icon
+        const brand = document.querySelector('.brand-icon');
+        if (brand) {
+            anime.animate(brand, {
+                scale: [0.8, 1],
+                opacity: [0, 1],
+                duration: 800,
+                ease: 'outElastic(1, .6)'
+            });
+        }
+
+        // Animate correlator bar stats
+        const cbStats = document.querySelectorAll('.cb-stat');
+        if (cbStats.length) {
+            anime.animate(cbStats, {
+                opacity: [0, 1],
+                translateY: ['6px', '0px'],
+                delay: anime.stagger ? anime.stagger(60, {start: 300}) : 300,
+                duration: 400,
+                ease: 'outExpo'
+            });
+        }
+    } catch(e) { /* silent */ }
+}
+
+/* Hook scan button to show scanning pulse */
+(function hookScanPulse() {
+    const scanBtn = $("btn-scan");
+    if (scanBtn) {
+        const origClick = scanBtn.onclick;
+        scanBtn.addEventListener("click", () => pulseScanning());
+    }
+})();
+
 /* ── Initial fetch ─────────────────────────────────────────── */
 (async function init() {
     try {
@@ -2357,4 +2589,6 @@ function _escHtml(s) {
         renderAlertList(data.alerts || []);
         renderAlertRules();
     } catch {}
+    // Play entrance animation after initial load
+    requestAnimationFrame(() => setTimeout(playStartupAnimation, 100));
 })();
