@@ -26,10 +26,16 @@ DEFAULT_CONFIG = {
     "sniffle_enabled": False,         # enable Sniffle packet capture
     "nrf_sniffer_enabled": True,      # enable nRF52 BLE sniffer
     "dashboard_refresh": 2,           # dashboard refresh rate (seconds)
-    "jam_enabled": False,             # jamming disabled by default (research only)
+    "jam_enabled": True,              # jamming enabled (WSU authorized research; disable elsewhere)
     "jam_channel": 39,                # BLE advertising channel (37, 38, 39)
     "jam_power": -20,                 # transmit power dBm (low for research)
     "max_log_entries": 10000,         # max entries before rotation
+
+    # ── nRF52840 radio_test backend (real RF jamming, bypasses BlueZ) ──
+    "nrf_jammer_enabled": True,       # enable nRF52840 radio backend if firmware detected
+    "nrf_jammer_port": "/dev/ttyACM1",  # UART of dongle flashed with radio_test firmware
+    "nrf_jammer_tx_power": 8,         # TX power in dBm (nRF52840 max: +8)
+    "nrf_jammer_phy": "nrf_1Mbit",    # PHY mode: nrf_1Mbit|nrf_2Mbit|ble_1Mbit|ble_lr125Kbit
 }
 
 

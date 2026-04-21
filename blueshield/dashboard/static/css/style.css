@@ -843,6 +843,29 @@ button,input,select,textarea{font-family:inherit}
     border:1px solid var(--border);
 }
 
+/* Mode capability hints (honest labeling) */
+.jam-capability-hint{
+    margin-top:6px;padding:8px 10px;font-size:.72rem;
+    border-radius:6px;line-height:1.4;
+    border:1px solid var(--border);
+}
+.jam-capability-hint.cap-ok{
+    background:rgba(16,185,129,.08);border-color:rgba(16,185,129,.25);
+    color:#10b981;
+}
+.jam-capability-hint.cap-warn{
+    background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.3);
+    color:#f59e0b;
+}
+.jam-capability-hint.cap-info{
+    background:rgba(96,165,250,.05);border-color:rgba(96,165,250,.2);
+    color:var(--tx-2);
+}
+.jam-capability-hint.cap-err{
+    background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.3);
+    color:var(--red);
+}
+
 /* Device picker */
 .jam-picker-search{padding:0}
 .jam-picker-list{max-height:320px;overflow-y:auto}

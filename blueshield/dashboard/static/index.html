@@ -517,17 +517,28 @@
                             <div class="field">
                                 <label>Mode</label>
                                 <select id="j-mode" class="input">
-                                    <option value="sweep">Sweep — All Channels</option>
-                                    <option value="continuous">Continuous — Single Channel</option>
-                                    <option value="reactive">Reactive — Smart Duty Cycle</option>
-                                    <option value="targeted">Targeted — Specific Address</option>
-                                    <option value="flood">Flood — Max Throughput</option>
-                                    <option value="full_spectrum">Full Spectrum — BLE + Classic BT</option>
-                                    <option value="deauth">Deauth — Connection Disrupt</option>
-                                    <option value="phantom_flood">Phantom Flood — Max Phantoms</option>
-                                    <option value="connection_disrupt">Connection Disrupt — CONNECT_IND</option>
+                                    <optgroup label="━━━ nRF52840 Radio (Real RF Jamming) ━━━">
+                                        <option value="airpods_killer">🎯 AirPods Killer — BR/EDR AFH saturation</option>
+                                        <option value="rf_sweep_full">RF Sweep Full — All 2.4 GHz (0-80)</option>
+                                        <option value="rf_sweep_bredr">RF Sweep BR/EDR — Classic BT (2-80)</option>
+                                        <option value="rf_sweep_ble">RF Sweep BLE — Data channels (0-39)</option>
+                                        <option value="rf_cw_carrier">RF CW Carrier — Single channel</option>
+                                        <option value="rf_modulated">RF Modulated — PRBS9 single channel</option>
+                                    </optgroup>
+                                    <optgroup label="━━━ HCI Advertising (BLE-only, no BR/EDR) ━━━">
+                                        <option value="flood">Flood — Max BLE adv throughput</option>
+                                        <option value="phantom_flood">Phantom Flood — Fake device spam</option>
+                                        <option value="sweep">Sweep — BLE adv channels</option>
+                                        <option value="continuous">Continuous — Single BLE adv ch</option>
+                                        <option value="targeted">Targeted — Specific Address</option>
+                                        <option value="full_spectrum">Full Spectrum — BLE + BR/EDR inquiry</option>
+                                        <option value="reactive">Reactive — Duty cycle (limited)</option>
+                                        <option value="deauth">ADV_DIRECT_IND Flood (no real deauth)</option>
+                                        <option value="connection_disrupt">ADV_DIRECT rotating addr</option>
+                                    </optgroup>
                                 </select>
                             </div>
+                            <div id="j-capability-hint" class="jam-capability-hint" style="display:none"></div>
                             <div class="field">
                                 <label>Channel</label>
                                 <select id="j-channel" class="input">
