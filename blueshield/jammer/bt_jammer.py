@@ -42,6 +42,18 @@ except ImportError:
     CAPABILITY_MATRIX = {}
     def detect_nrf_jammer_firmware(port): return {"available": False, "error": "nrf backend not loaded"}
 
+# Optional ButteRFly/WHAD backend for BLE injection/jamming (InjectaBLE DSN 2021)
+try:
+    from blueshield.jammer.butterfly_jammer import (
+        ButteRFlyJammer, ButteRFlyMode, detect_butterfly,
+    )
+    HAS_BUTTERFLY_BACKEND = True
+except ImportError:
+    HAS_BUTTERFLY_BACKEND = False
+    ButteRFlyJammer = None
+    ButteRFlyMode = None
+    def detect_butterfly(port): return {"available": False, "error": "butterfly backend not loaded"}
+
 
 # ---------------------------------------------------------------------------
 # JamMode enum — all supported jamming strategies
@@ -69,6 +81,14 @@ class JamMode(Enum):
     RF_CW_CARRIER = "rf_cw_carrier"         # Continuous carrier on a single channel
     RF_MODULATED = "rf_modulated"           # Modulated burst TX on a single channel
     AIRPODS_KILLER = "airpods_killer"       # Tuned sweep: AirPods A2DP AFH saturation
+
+    # ── ButteRFly/WHAD modes (BLE research-grade, InjectaBLE DSN 2021) ──
+    # Requires one nRF52840 dongle flashed with ButteRFly firmware.
+    # Supports selective ADV jamming, reactive jam, and LL PDU injection.
+    BLE_JAM_ADV = "ble_jam_adv"             # Selective ADV jamming (WHAD)
+    BLE_REACTIVE_JAM = "ble_reactive_jam"   # Reactive jam on target channel (WHAD)
+    AIRPODS_ATTACK = "airpods_attack"       # Auto-detect + jam AirPods BLE adv
+    NEARBY_ATTACK = "nearby_attack"         # Jam ALL Apple Continuity across 37/38/39
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +633,24 @@ class BluetoothJammer:
             else:
                 print(f"[BlueShield Jammer] nRF52840 jammer firmware not detected on "
                       f"{self._nrf_jammer_port}: {detection.get('error', 'not flashed')}")
+
+        # ── ButteRFly/WHAD backend (BLE injection + selective jamming) ──
+        self._butterfly_jammer = None
+        self._butterfly_port: str = config.get("butterfly_port", "/dev/butterfly")
+        self._butterfly_available: bool = False
+        if HAS_BUTTERFLY_BACKEND and config.get("butterfly_enabled", True):
+            detection = detect_butterfly(self._butterfly_port)
+            if detection.get("available"):
+                try:
+                    self._butterfly_jammer = ButteRFlyJammer(port=self._butterfly_port)
+                    self._butterfly_available = True
+                    print(f"[BlueShield Jammer] ButteRFly (WHAD) backend: "
+                          f"{self._butterfly_port} ({detection.get('firmware_type')})")
+                except Exception as e:
+                    print(f"[BlueShield Jammer] ButteRFly backend init failed: {e}")
+            else:
+                print(f"[BlueShield Jammer] ButteRFly firmware not detected on "
+                      f"{self._butterfly_port}: {detection.get('error', 'not flashed')}")
 
         # Pre-generate payload pools at init
         self._regenerate_payload_pool()
@@ -2300,6 +2338,11 @@ class BluetoothJammer:
         "rf_cw_carrier", "rf_modulated", "airpods_killer",
     }
 
+    # Modes that go through the ButteRFly/WHAD backend (BLE injection)
+    BUTTERFLY_MODES = {
+        "ble_jam_adv", "ble_reactive_jam", "airpods_attack", "nearby_attack",
+    }
+
     def _start_nrf_jam(self, mode: str, channel: int, session: "JamSession") -> bool:
         """Route to the nRF52840 radio_test backend for real RF jamming."""
         if not self._nrf_available or not self._nrf_jammer:
@@ -2333,6 +2376,40 @@ class BluetoothJammer:
             print(f"[BlueShield Jammer] nRF start exception: {e}")
             return False
 
+    def _start_butterfly_jam(self, mode: str, channel: int, target: str,
+                             session: "JamSession") -> bool:
+        """Route to the ButteRFly/WHAD backend for BLE injection/jamming."""
+        if not self._butterfly_available or not self._butterfly_jammer:
+            print("[BlueShield Jammer] ButteRFly backend requested but not available")
+            print(f"  Flash firmware: see tools/nrf_jammer_firmware_src/README.md")
+            return False
+
+        mode_map = {
+            "ble_jam_adv":        ButteRFlyMode.BLE_JAM_ADV,
+            "ble_reactive_jam":   ButteRFlyMode.BLE_REACTIVE_JAM,
+            "airpods_attack":     ButteRFlyMode.AIRPODS_ATTACK,
+            "nearby_attack":      ButteRFlyMode.NEARBY_ATTACK,
+        }
+        bf_mode = mode_map.get(mode)
+        if bf_mode is None:
+            return False
+
+        try:
+            ok = self._butterfly_jammer.start(
+                bf_mode, target_addr=target, channel=channel,
+            )
+            if ok:
+                print(f"[BlueShield Jammer] ButteRFly BLE attack ACTIVE: mode={mode}, "
+                      f"target={target or 'any'}, channel={channel}")
+                return True
+            else:
+                print(f"[BlueShield Jammer] ButteRFly start failed: "
+                      f"{self._butterfly_jammer.last_error}")
+                return False
+        except Exception as e:
+            print(f"[BlueShield Jammer] ButteRFly start exception: {e}")
+            return False
+
     def _start_jam_locked(self, mode: str, channel: int, target: str) -> JamSession:
         """Internal start logic, must be called while holding _jam_lock."""
         if self.is_jamming:
@@ -2360,13 +2437,24 @@ class BluetoothJammer:
             if self._start_nrf_jam(mode, channel, session):
                 return session
             else:
-                # Fallback — mark session as failed but don't crash
                 self.is_jamming = False
                 session.is_active = False
                 session.end_time = datetime.now(timezone.utc).isoformat()
                 raise RuntimeError(
                     f"nRF52840 backend required for '{mode}' but not available. "
                     f"Flash firmware: tools/deploy_nrf_jammer.sh {self._nrf_jammer_port}")
+
+        # ── ButteRFly/WHAD path (BLE injection, selective ADV jamming) ──
+        if mode in self.BUTTERFLY_MODES:
+            if self._start_butterfly_jam(mode, channel, target, session):
+                return session
+            else:
+                self.is_jamming = False
+                session.is_active = False
+                session.end_time = datetime.now(timezone.utc).isoformat()
+                raise RuntimeError(
+                    f"ButteRFly backend required for '{mode}' but not available. "
+                    f"Flash firmware (see tools/flash_butterfly.ps1)")
 
         # Bring primary interface up
         self._hci_cmd(f"hciconfig {self.interface} up")
@@ -2468,6 +2556,13 @@ class BluetoothJammer:
                 self._nrf_jammer.stop()
             except Exception as e:
                 print(f"[BlueShield Jammer] nRF stop error: {e}")
+
+        # Stop ButteRFly/WHAD backend if active
+        if self._butterfly_available and self._butterfly_jammer:
+            try:
+                self._butterfly_jammer.stop()
+            except Exception as e:
+                print(f"[BlueShield Jammer] ButteRFly stop error: {e}")
 
         # Join primary thread
         if self._jam_thread:
@@ -2573,6 +2668,16 @@ class BluetoothJammer:
             except Exception:
                 pass
 
+        # ── ButteRFly/WHAD backend status ──
+        butterfly_status = None
+        butterfly_active = False
+        if self._butterfly_jammer:
+            try:
+                butterfly_status = self._butterfly_jammer.get_stats()
+                butterfly_active = butterfly_status.get("is_active", False)
+            except Exception:
+                pass
+
         # ── Honest OTA PPS estimate ──
         # JamSession.get_pps() counts Python loop iterations (inflated 10-20x).
         # Estimate actual OTA rate from effective interval & adapter count.
@@ -2626,6 +2731,11 @@ class BluetoothJammer:
             "nrf_active": nrf_active,
             "nrf_status": nrf_status,
             "nrf_port": self._nrf_jammer_port,
+            # ButteRFly/WHAD backend
+            "butterfly_available": self._butterfly_available,
+            "butterfly_active": butterfly_active,
+            "butterfly_status": butterfly_status,
+            "butterfly_port": self._butterfly_port,
             # Honest capability for current mode
             "mode_capability": capability,
             "affects_ble_adv": capability.get("affects_ble_adv", False),
