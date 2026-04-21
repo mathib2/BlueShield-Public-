@@ -1496,34 +1496,10 @@ function updateJammer(status) {
     updateJammerGlow(jammerActive);
     applyFullSpectrumEffect(sess.mode || "");
 
-    // ── Honest capability display ──
-    const tier = status.effectiveness_tier || "unknown";
-    const affectsAudio = status.affects_bredr_audio;
-    const nrfActive = status.nrf_active;
-    const nrfAvailable = status.nrf_available;
-    const capabilityEl = $("j-capability-hint");
-    if (capabilityEl) {
-        const selectedMode = $("j-mode")?.value || sess.mode;
-        let hint = "";
-        let cls = "";
-        if (selectedMode) {
-            if (selectedMode.startsWith("rf_") || selectedMode === "airpods_killer") {
-                if (nrfAvailable) {
-                    hint = `✓ Real RF jamming — nRF52840 radio_test backend (+8 dBm, all 2.4 GHz). Tier S effectiveness.`;
-                    cls = "cap-ok";
-                } else {
-                    hint = `⚠ nRF52840 firmware not detected. Flash: tools/deploy_nrf_jammer.sh`;
-                    cls = "cap-warn";
-                }
-            } else {
-                hint = `ℹ BLE advertising only (channels 37/38/39). Does NOT affect BR/EDR audio. Tier ${tier}.`;
-                cls = "cap-info";
-            }
-        }
-        capabilityEl.textContent = hint;
-        capabilityEl.className = "jam-capability-hint " + cls;
-        capabilityEl.style.display = hint ? "" : "none";
-    }
+    // ── Honest capability display — delegate to j-mode change handler ──
+    // Trigger the proper hint logic (defined in the j-mode change listener)
+    // which has per-mode tactical descriptions. Don't overwrite here.
+    // (Do nothing; the change handler keeps the hint current.)
 
     // Use OTA-estimated PPS for honest reporting
     if (jammerActive && status.ota_packets_per_second_est !== undefined) {
