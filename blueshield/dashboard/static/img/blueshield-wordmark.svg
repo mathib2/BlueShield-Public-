@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 64" width="260" height="64" fill="none">
+  <!-- Sigil -->
+  <g transform="translate(0,0)" stroke="currentColor" stroke-width="2" stroke-linejoin="miter" stroke-linecap="square" fill="none">
+    <path d="M32 4 L56 18 L56 40 L32 58 L8 40 L8 18 Z"/>
+    <path d="M32 11 L50 21.5 L50 37 L32 51 L14 37 L14 21.5 Z" stroke-width="1" opacity="0.55"/>
+    <path d="M22 26 L32 22 L42 26"/>
+    <path d="M22 34 L32 30 L42 34"/>
+    <path d="M22 42 L32 38 L42 42"/>
+  </g>
+
+  <!-- Wordmark: Rajdhani-style geometric caps, tightly spaced -->
+  <g transform="translate(72, 38)" fill="currentColor" font-family="Rajdhani, 'Space Grotesk', system-ui, sans-serif" font-weight="700" font-size="22" letter-spacing="3">
+    <text>BLUESHIELD</text>
+  </g>
+
+  <!-- Tagline -->
+  <g transform="translate(72, 52)" fill="currentColor" opacity="0.55" font-family="'JetBrains Mono', 'Consolas', monospace" font-size="8" letter-spacing="2">
+    <text>// BLE THREAT INTELLIGENCE</text>
+  </g>
+</svg>

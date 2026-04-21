@@ -719,13 +719,20 @@ function renderTimeline() {
 }
 $("btn-clear-tl").addEventListener("click", () => { timeline = []; renderTimeline(); });
 
-/* ── Channel Grid ──────────────────────────────────────────── */
-function simulateChannelActivity(devCount) {
+/* ── Channel Grid (real data from nRF sniffer/Sniffle) ──────── */
+function updateChannelActivityFromBackend(channelData) {
+    // channelData is a dict {channel_idx: count} from nRF sniffer's
+    // real packet capture. If backend didn't send it, we show zeros
+    // rather than fabricated numbers.
+    if (!channelData || typeof channelData !== 'object') return;
     for (let i = 0; i < 40; i++) {
-        if ([37, 38, 39].includes(i)) channelStats[i] += Math.floor(Math.random() * devCount * 3) + devCount;
-        else channelStats[i] += Math.floor(Math.random() * devCount);
+        if (channelData[i] !== undefined) {
+            channelStats[i] = channelData[i];
+        }
     }
 }
+// Backward-compat stub — does nothing. Was previously Math.random() fabricator.
+function simulateChannelActivity(devCount) { /* DELETED: v7 no fake data */ }
 function renderChannelGrid() {
     const el = $("ch-grid");
     const maxCount = Math.max(...channelStats, 1);

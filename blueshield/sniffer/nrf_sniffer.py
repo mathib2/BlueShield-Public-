@@ -2003,16 +2003,20 @@ def make_nrf_sniffer(
         baudrate: Baud rate (default 1 000 000).
     """
     if sim:
-        return SimulatedNrfSniffer(port=port, baudrate=baudrate)
+        # Explicit simulation request (development without hardware)
+        s = SimulatedNrfSniffer(port=port, baudrate=baudrate)
+        s._is_simulated_explicit = True
+        return s
 
-    # Try to open real hardware; fall back to simulated if unavailable
+    # Real hardware only. If pyserial missing → raise, don't silently fake.
     try:
         import serial  # type: ignore  # noqa: F401
-        sniffer = NrfSniffer(port=port, baudrate=baudrate)
-        return sniffer
     except ImportError:
-        logger.warning("pyserial not installed -- using simulated nRF sniffer")
-        return SimulatedNrfSniffer(port=port, baudrate=baudrate)
+        raise RuntimeError(
+            "pyserial required for real nRF sniffer but not installed. "
+            "Install: pip install pyserial. Pass sim=True to use simulated mode."
+        )
+    return NrfSniffer(port=port, baudrate=baudrate)
 
 
 # =============================================================================

@@ -732,17 +732,27 @@ def make_sniffer(
     pcap_dir: str = "/tmp/blueshield_pcaps",
 ) -> _BaseSniffleEngine:
     """
-    Return the best available sniffer engine.
+    Return a sniffer engine — REAL hardware by default, sim only if explicit.
+
+    IMPORTANT: This function will NEVER silently return simulated data.
+    If the user did not pass sim=True and real hardware is not available,
+    returns a disabled engine that surfaces `hardware_available=False` to
+    the dashboard, which must show "sniffer unavailable" instead of fake data.
 
     Args:
-        sim:         Force simulated engine.
+        sim:         Only set True when --sim CLI flag is explicit.
         serial_port: Serial port for real Sniffle hardware.
         pcap_dir:    Directory for PCAP output files.
     """
     if sim:
-        return SimulatedSniffleEngine(pcap_dir=pcap_dir)
+        # Explicit simulation request (e.g., development without hardware)
+        eng = SimulatedSniffleEngine(pcap_dir=pcap_dir)
+        eng._is_simulated_explicit = True
+        return eng
 
+    # Try real hardware; if unavailable, return a disabled real engine
+    # (NOT a silent simulator) so the UI can show unavailable status.
     eng = SniffleEngine(serial_port=serial_port, pcap_dir=pcap_dir)
-    if not eng.hardware_available:
-        return SimulatedSniffleEngine(pcap_dir=pcap_dir)
+    # Even if hardware_available is False, return the real engine so
+    # the dashboard can distinguish "hardware missing" from "simulated".
     return eng

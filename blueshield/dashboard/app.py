@@ -590,7 +590,7 @@ def api_status():
         "devices": scanner.get_all_devices(),
         "clustered_devices": clustered,
         "cluster_summary": cluster_summary,
-        "jammer": jammer.get_status(),
+        "jammer": jammer.get_status() if jammer else JAMMER_UNAVAILABLE_STATUS,
         "alerts": logger.get_alerts(count=30),
         "auto_scan": auto_scan,
         "scan_interval": scan_interval,
@@ -672,13 +672,26 @@ def api_get_range():
     })
 
 
+JAMMER_UNAVAILABLE_STATUS = {
+    "is_jamming": False, "jam_enabled": False, "backend": "offline",
+    "total_sessions": 0, "active_session": None, "adapters": [],
+    "adapters_active": [], "packets_per_second": 0,
+    "ota_packets_per_second_est": 0,
+    "offline_reason": "jammer hardware not available (requires Linux + hcitool)",
+}
+
+
 @app.route("/api/jammer", methods=["GET"])
 def api_jammer_status():
+    if jammer is None:
+        return jsonify(JAMMER_UNAVAILABLE_STATUS)
     return jsonify(jammer.get_status())
 
 
 @app.route("/api/jammer/start", methods=["POST"])
 def api_jammer_start():
+    if jammer is None:
+        return jsonify({"error": "Jammer offline — hardware unavailable"}), 503
     data = request.get_json(force=True, silent=True) or {}
     mode = data.get("mode", "sweep")
     channel = int(data.get("channel", 39))
@@ -696,6 +709,8 @@ def api_jammer_start():
 
 @app.route("/api/jammer/stop", methods=["POST"])
 def api_jammer_stop():
+    if jammer is None:
+        return jsonify(JAMMER_UNAVAILABLE_STATUS)
     session = jammer.stop_jam()
     if session:
         logger.log_jam_session({
@@ -1759,7 +1774,7 @@ def on_connect():
         "devices": scanner.get_all_devices(),
         "clustered_devices": clustered,
         "cluster_summary": cluster_summary,
-        "jammer": jammer.get_status(),
+        "jammer": jammer.get_status() if jammer else JAMMER_UNAVAILABLE_STATUS,
         "alerts": logger.get_alerts(count=30),
         "auto_scan": auto_scan,
         "scan_interval": scan_interval,
@@ -1873,7 +1888,7 @@ def background_scan_loop():
                 last_nrf_merge_time = now
 
             # Broadcast jammer status every 2s so packet counter stays live
-            if jammer and jammer.is_jamming:
+            if jammer is not None and jammer.is_jamming:
                 socketio.emit("jammer_update", jammer.get_status())
         except Exception as loop_exc:
             print(f"[BlueShield] Background loop error: {loop_exc}")
@@ -1960,23 +1975,28 @@ def main():
     _sniffer_sim = args.sim
 
     if args.sim:
-        print("[BlueShield] Using SIMULATED scanner and jammer")
+        print("[BlueShield] *** SIMULATION MODE *** — no real hardware used")
+        print("[BlueShield] All metrics are synthetic. Do not use for research claims.")
         scanner = SimulatedScanner(config)
         jammer = SimulatedJammer(config)
+        scanner._is_simulated_explicit = True
+        jammer._is_simulated_explicit = True
     else:
         print("[BlueShield] Using REAL hardware scanner")
         scanner = BluetoothScanner(config)
         print(f"[BlueShield] Scanner    → {config.get('interface', 'hci2')} (Feasycom BP119, BT5.4)")
         if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
-            # Use dedicated jammer adapter (hci0 = Realtek BT5.4 primary)
             jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
             jammer = BluetoothJammer(jammer_cfg)
             sec = config.get("jammer_secondary_interface", "hci3")
             print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} (Realtek BT5.4, Primary)")
             print(f"[BlueShield] Jammer 2   → {sec} (Realtek BT5.3, Secondary / Dual-adapter)")
         else:
-            print("[BlueShield] Jammer: simulated (requires Linux + hcitool)")
-            jammer = SimulatedJammer(config)
+            # Real jammer requires Linux + hcitool. Do NOT silently fall back
+            # to simulated — that produces fake PPS counts in the UI.
+            print("[BlueShield] *** JAMMER UNAVAILABLE *** requires Linux + hcitool")
+            print("[BlueShield] Dashboard will show jammer as 'offline'. No jam commands will run.")
+            jammer = None
 
     logger = BlueShieldLogger(config)
 
