@@ -1580,3 +1580,23 @@ button,input,select,textarea{font-family:inherit}
     background:var(--accent-bg); border-color:var(--border-hi);
     color:var(--accent);
 }
+
+/* Heuristic disclaimer tags (tactical mono) */
+.lp-disclaimer, .heuristic-note{
+    margin-top:6px;
+    font-family:'JetBrains Mono', monospace;
+    font-size:9px; letter-spacing:1.2px;
+    color:var(--tx-3); text-transform:uppercase;
+    cursor:help; opacity:0.7;
+}
+.lp-disclaimer:hover, .heuristic-note:hover{opacity:1}
+
+/* Tactical nav badge */
+.nav-badge{
+    font-family:'JetBrains Mono', monospace;
+    font-size:9px; letter-spacing:1px;
+    padding:1px 5px; border-radius:2px;
+}
+
+/* Login page footer classification and tactical */
+body.tactical-login{background:var(--bg-0)}

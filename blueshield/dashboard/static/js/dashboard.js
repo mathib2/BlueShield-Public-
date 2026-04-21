@@ -240,13 +240,34 @@ $("btn-theme").addEventListener("click", () => {
 });
 { const t = localStorage.getItem("theme"); if (t === "light") { document.documentElement.setAttribute("data-theme","light"); $("ico-sun").style.display="none"; $("ico-moon").style.display=""; } }
 
-/* ── Clock ─────────────────────────────────────────────────── */
+/* ── Clock + Operator/Session strip ─────────────────────────── */
+// Generate a deterministic-feeling session ID (ties to session start)
+(function generateSID(){
+    const sid = (
+        Math.random().toString(16).slice(2, 6) + '-' +
+        Math.random().toString(16).slice(2, 6) + '-' +
+        Math.random().toString(16).slice(2, 6)
+    ).toUpperCase();
+    try {
+        const sidEl = document.getElementById('op-sid');
+        if (sidEl) sidEl.textContent = sid;
+    } catch(e) {}
+})();
+
 setInterval(() => {
     const d = new Date();
-    $("clock").textContent = d.toTimeString().slice(0, 8);
+    const clockEl = $("clock");
+    if (clockEl) clockEl.textContent = d.toTimeString().slice(0, 8);
+
     const up = Math.floor((Date.now() - startTime) / 1000);
-    const m = Math.floor(up / 60), s = up % 60;
-    $("sf-uptime").textContent = `${m}:${String(s).padStart(2, "0")}`;
+    const h = Math.floor(up / 3600), m = Math.floor((up % 3600) / 60), s = up % 60;
+    const sfUp = $("sf-uptime");
+    if (sfUp) sfUp.textContent = `${m}:${String(s).padStart(2, "0")}`;
+
+    // Military-style HH:MM:SS uptime in operator strip
+    const opUp = document.getElementById('op-uptime');
+    if (opUp) opUp.textContent =
+        `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }, 1000);
 
 /* ── Scan Controls ─────────────────────────────────────────── */
@@ -1265,9 +1286,28 @@ $("j-mode").addEventListener("change", e => {
     const hintEl = $("j-capability-hint");
     if (hintEl) {
         let hint = "", cls = "";
-        if (mode === "airpods_killer") {
-            hint = "🎯 Optimized for AirPods A2DP disruption. Sweeps all 79 BR/EDR channels at +8 dBm, 1ms dwell. Saturates AFH → audio drops in 2-4s. REQUIRES nRF52840 with radio_test firmware.";
+        // ── ButteRFly modes (InjectaBLE DSN 2021 — real PHY-level jam) ──
+        if (mode === "airpods_attack") {
+            hint = "REACTIVE PHY JAM on Apple TLV 0x07 (AirPods Proximity Pairing). <150μs turnaround collides with ADV before scanner CRC. Cayre DSN 2021. REQUIRES ButteRFly firmware.";
             cls = "cap-ok";
+        } else if (mode === "nearby_attack") {
+            hint = "REACTIVE PHY JAM on Apple vendor ID 0x004C. Kills ALL Apple Continuity ads (AirDrop, Handoff, Nearby Info, Find My). REQUIRES ButteRFly firmware.";
+            cls = "cap-ok";
+        } else if (mode === "apple_spam") {
+            hint = "ROGUE ADVERTISER flooding fake AirPods Proximity Pairing frames. Causes 'AirPods nearby' popup storm on nearby iOS (Martin PoPETs 2019). REQUIRES ButteRFly AdvMode.";
+            cls = "cap-ok";
+        } else if (mode === "ble_adv_flood") {
+            hint = "ROGUE ADVERTISER at 20ms interval on ch 37/38/39. Apple Nearby Info payload. Disrupts scanners and nearby-accessory discovery.";
+            cls = "cap-ok";
+        } else if (mode === "ble_raw_inject") {
+            hint = "RAW PDU INJECT via BTLE_ADV_NONCONN_IND at 1000Hz. Spoofs target's RPA for collision attack. Enter target MAC in field below.";
+            cls = "cap-ok";
+        } else if (mode === "ble_reactive_jam") {
+            hint = "PATTERN-TRIGGERED PHY JAM. <150μs response corrupts matched packets. Generic — use airpods_attack for targeted Apple ADV jamming.";
+            cls = "cap-ok";
+        } else if (mode === "airpods_killer") {
+            hint = "BR/EDR broadband sweep — all 79 channels at +8 dBm, 1ms dwell. Saturates AFH → AirPods audio drops in 2-4s. REQUIRES nRF52840 with Nordic radio_test firmware (not ButteRFly).";
+            cls = "cap-warn";
         } else if (mode.startsWith("rf_sweep")) {
             hint = "✓ Real RF sweep via nRF52840 radio_test firmware. Direct NRF_RADIO register control bypasses BlueZ entirely. +8 dBm, all 2.4 GHz ISM band.";
             cls = "cap-ok";
@@ -1446,7 +1486,11 @@ function updateJammer(status) {
     $("jl-pkts").textContent = pkts.toLocaleString();
     $("jl-mode").textContent = sess.mode || "--";
     $("jl-ch").textContent   = sess.channel || "--";
-    $("jl-be").textContent   = status.backend || "--";
+    // Show the REAL active backend name (not the default hcitool label)
+    let activeBackend = status.backend || "--";
+    if (status.butterfly_active) activeBackend = "butterfly";
+    else if (status.nrf_active) activeBackend = "nrf_radio";
+    $("jl-be").textContent = activeBackend;
     $("nav-jam-badge").style.display = jammerActive ? "" : "none";
     $("pill-scan").classList.toggle("jamming", jammerActive);
     updateJammerGlow(jammerActive);
