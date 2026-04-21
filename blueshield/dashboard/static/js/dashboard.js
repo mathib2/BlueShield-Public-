@@ -1,5 +1,5 @@
 /**
- * BlueShield v5.0 — Bluetooth Intelligence Platform Dashboard
+ * BLUESHIELD v7.0 — Tactical BLE Intelligence Console
  *
  * Features: Tab navigation, device table (clustered/raw), split-pane detail,
  * risk scoring, movement indicators, proximity radar w/ trails, RSSI charts,
