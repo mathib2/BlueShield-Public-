@@ -27,21 +27,48 @@ from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
 
+# Optional nRF52840 radio_test backend for real RF jamming (research-grade)
+try:
+    from blueshield.jammer.nrf_radio_jammer import (
+        NRFRadioJammer, NRFRadioMode, NRFRadioConfig,
+        detect_nrf_jammer_firmware, CAPABILITY_MATRIX,
+    )
+    HAS_NRF_BACKEND = True
+except ImportError:
+    HAS_NRF_BACKEND = False
+    NRFRadioJammer = None
+    NRFRadioMode = None
+    NRFRadioConfig = None
+    CAPABILITY_MATRIX = {}
+    def detect_nrf_jammer_firmware(port): return {"available": False, "error": "nrf backend not loaded"}
+
 
 # ---------------------------------------------------------------------------
 # JamMode enum — all supported jamming strategies
 # ---------------------------------------------------------------------------
 
 class JamMode(Enum):
+    # ── HCI-based modes (BLE advertising only — cannot affect BR/EDR audio) ──
     REACTIVE = "reactive"                   # Jam when unknown device detected
     CONTINUOUS = "continuous"               # Continuous jamming on target channels
     TARGETED = "targeted"                   # Jam specific device address
     SWEEP = "sweep"                         # Sweep across all BLE channels
     FLOOD = "flood"                         # Maximum-rate advertising flood
-    DEAUTH = "deauth"                       # Connection disruption via ADV_DIRECT_IND
-    CONNECTION_DISRUPT = "connection_disrupt"  # Spoofed CONNECT_IND PDU injection
+    DEAUTH = "deauth"                       # ADV_DIRECT_IND flood (note: no real BLE deauth)
+    CONNECTION_DISRUPT = "connection_disrupt"  # ADV_DIRECT_IND with rotating addr
     PHANTOM_FLOOD = "phantom_flood"         # Max phantom device generation
-    FULL_SPECTRUM = "full_spectrum"         # BLE + BR/EDR combined maximum disruption
+    FULL_SPECTRUM = "full_spectrum"         # BLE + BR/EDR combined (HCI level)
+
+    # ── nRF52840 radio_test modes (REAL RF jamming, affects BR/EDR audio) ──
+    # These require one nRF52840 dongle flashed with radio_test firmware.
+    # They bypass BlueZ entirely and drive the NRF_RADIO peripheral directly,
+    # enabling TX on any channel 0–80 (2400–2480 MHz) at +8 dBm.
+    RF_SWEEP_FULL = "rf_sweep_full"         # Sweep 0-80 MHz at 1ms dwell (all 2.4 GHz ISM)
+    RF_SWEEP_BREDR = "rf_sweep_bredr"       # Sweep 2-80 (BR/EDR + BLE data channels)
+    RF_SWEEP_BLE = "rf_sweep_ble"           # Sweep 0-39 BLE channels
+    RF_CW_CARRIER = "rf_cw_carrier"         # Continuous carrier on a single channel
+    RF_MODULATED = "rf_modulated"           # Modulated burst TX on a single channel
+    AIRPODS_KILLER = "airpods_killer"       # Tuned sweep: AirPods A2DP AFH saturation
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +592,27 @@ class BluetoothJammer:
         if sec_iface and sec_iface != self.interface:
             self._secondary_interface = sec_iface
             self._secondary_dev_id = self._parse_dev_id(sec_iface)
+
+        # ── nRF52840 radio_test backend (real RF jamming on all 2.4 GHz) ──
+        self._nrf_jammer = None
+        self._nrf_jammer_port: str = config.get("nrf_jammer_port", "/dev/ttyACM1")
+        self._nrf_available: bool = False
+        if HAS_NRF_BACKEND and config.get("nrf_jammer_enabled", True):
+            detection = detect_nrf_jammer_firmware(self._nrf_jammer_port)
+            if detection.get("available"):
+                try:
+                    self._nrf_jammer = NRFRadioJammer(NRFRadioConfig(
+                        port=self._nrf_jammer_port,
+                        tx_power_dbm=config.get("nrf_jammer_tx_power", 8),
+                    ))
+                    self._nrf_available = True
+                    print(f"[BlueShield Jammer] nRF52840 radio_test backend: "
+                          f"{self._nrf_jammer_port} ({detection.get('firmware_type')})")
+                except Exception as e:
+                    print(f"[BlueShield Jammer] nRF backend init failed: {e}")
+            else:
+                print(f"[BlueShield Jammer] nRF52840 jammer firmware not detected on "
+                      f"{self._nrf_jammer_port}: {detection.get('error', 'not flashed')}")
 
         # Pre-generate payload pools at init
         self._regenerate_payload_pool()
@@ -2242,6 +2290,49 @@ class BluetoothJammer:
         with self._jam_lock:
             return self._start_jam_locked(mode, channel, target)
 
+    # ------------------------------------------------------------------
+    # nRF52840 radio_test backend routing (real RF jamming modes)
+    # ------------------------------------------------------------------
+
+    # Modes that go through the nRF52840 radio_test firmware (real RF, all channels)
+    NRF_RADIO_MODES = {
+        "rf_sweep_full", "rf_sweep_bredr", "rf_sweep_ble",
+        "rf_cw_carrier", "rf_modulated", "airpods_killer",
+    }
+
+    def _start_nrf_jam(self, mode: str, channel: int, session: "JamSession") -> bool:
+        """Route to the nRF52840 radio_test backend for real RF jamming."""
+        if not self._nrf_available or not self._nrf_jammer:
+            print("[BlueShield Jammer] nRF backend requested but not available")
+            print(f"  Flash firmware with: tools/deploy_nrf_jammer.sh {self._nrf_jammer_port}")
+            return False
+
+        mode_map = {
+            "rf_sweep_full":    NRFRadioMode.CHANNEL_SWEEP_FULL,
+            "rf_sweep_bredr":   NRFRadioMode.CHANNEL_SWEEP_BREDR,
+            "rf_sweep_ble":     NRFRadioMode.CHANNEL_SWEEP_BLE,
+            "rf_cw_carrier":    NRFRadioMode.CW_CARRIER,
+            "rf_modulated":     NRFRadioMode.MODULATED_CARRIER,
+            "airpods_killer":   NRFRadioMode.AIRPODS_KILLER,
+        }
+        nrf_mode = mode_map.get(mode)
+        if nrf_mode is None:
+            return False
+
+        try:
+            ok = self._nrf_jammer.start(nrf_mode, channel=channel)
+            if ok:
+                print(f"[BlueShield Jammer] nRF RF jamming ACTIVE: mode={mode}, "
+                      f"port={self._nrf_jammer_port}, +8dBm")
+                return True
+            else:
+                print(f"[BlueShield Jammer] nRF start failed: "
+                      f"{self._nrf_jammer.last_error}")
+                return False
+        except Exception as e:
+            print(f"[BlueShield Jammer] nRF start exception: {e}")
+            return False
+
     def _start_jam_locked(self, mode: str, channel: int, target: str) -> JamSession:
         """Internal start logic, must be called while holding _jam_lock."""
         if self.is_jamming:
@@ -2263,6 +2354,19 @@ class BluetoothJammer:
         self.sessions.append(session)
         self.is_jamming = True
         self._stop_event.clear()
+
+        # ── nRF52840 radio_test path (real RF jamming modes) ──
+        if mode in self.NRF_RADIO_MODES:
+            if self._start_nrf_jam(mode, channel, session):
+                return session
+            else:
+                # Fallback — mark session as failed but don't crash
+                self.is_jamming = False
+                session.is_active = False
+                session.end_time = datetime.now(timezone.utc).isoformat()
+                raise RuntimeError(
+                    f"nRF52840 backend required for '{mode}' but not available. "
+                    f"Flash firmware: tools/deploy_nrf_jammer.sh {self._nrf_jammer_port}")
 
         # Bring primary interface up
         self._hci_cmd(f"hciconfig {self.interface} up")
@@ -2358,6 +2462,13 @@ class BluetoothJammer:
 
         self._stop_event.set()
 
+        # Stop nRF52840 radio backend if active
+        if self._nrf_available and self._nrf_jammer:
+            try:
+                self._nrf_jammer.stop()
+            except Exception as e:
+                print(f"[BlueShield Jammer] nRF stop error: {e}")
+
         # Join primary thread
         if self._jam_thread:
             self._jam_thread.join(timeout=5)
@@ -2452,21 +2563,75 @@ class BluetoothJammer:
         if self._dual_adapter and self._secondary_interface:
             adapters_list.append(self._secondary_interface)
 
+        # ── nRF52840 radio_test backend status ──
+        nrf_status = None
+        nrf_active = False
+        if self._nrf_jammer:
+            try:
+                nrf_status = self._nrf_jammer.get_stats()
+                nrf_active = nrf_status.get("is_active", False)
+            except Exception:
+                pass
+
+        # ── Honest OTA PPS estimate ──
+        # JamSession.get_pps() counts Python loop iterations (inflated 10-20x).
+        # Estimate actual OTA rate from effective interval & adapter count.
+        ota_pps_est = 0.0
+        if self.is_jamming and self.sessions and self.sessions[-1].is_active:
+            mode_ = self.sessions[-1].mode
+            if mode_ in self.NRF_RADIO_MODES:
+                # nRF sweep: ~1 burst per ms dwell
+                ota_pps_est = (nrf_status or {}).get("packets_est", 0) / max(elapsed, 1)
+            elif self._use_ext_adv:
+                # 4 Ext Adv sets × 1 event per 20ms = 200/s per adapter
+                adapter_count = 2 if self._dual_adapter else 1
+                ota_pps_est = 200.0 * adapter_count
+            else:
+                # Legacy adv: ~50/s per adapter (20ms interval, single set)
+                adapter_count = 2 if self._dual_adapter else 1
+                ota_pps_est = 50.0 * adapter_count
+
+        # ── Determine effective backend ──
+        if nrf_active:
+            effective_backend = "nrf52840_radio_test"
+        elif self._use_ext_adv:
+            effective_backend = "hci_ext_adv"
+        elif self._use_raw:
+            effective_backend = "hci_raw_legacy"
+        else:
+            effective_backend = "hcitool"
+
+        # ── Mode capability tier (honest labeling) ──
+        current_mode = self.sessions[-1].mode if self.sessions and self.sessions[-1].is_active else None
+        capability = CAPABILITY_MATRIX.get(current_mode, {}) if current_mode else {}
+
         return {
             "is_jamming": self.is_jamming,
             "jam_enabled": self.config.get("jam_enabled", False),
             "total_sessions": len(self.sessions),
             "active_session": active_session,
-            "backend": ("raw_hci" if self._use_raw else "hcitool"),
+            "backend": effective_backend,
             "dual_adapter": self._dual_adapter,
             "adapters": adapters_list,
-            # Extended metrics
+            # HCI metrics (inflated)
             "packets_per_second": round(pps, 1),
+            "ota_packets_per_second_est": round(ota_pps_est, 1),  # Honest estimate
             "total_bytes": total_bytes,
             "channel_distribution": channel_dist,
             "elapsed_seconds": round(elapsed, 1),
             "adapters_active": adapters_active,
             "backend_type": self._backend_type,
+            # nRF52840 backend
+            "nrf_available": self._nrf_available,
+            "nrf_active": nrf_active,
+            "nrf_status": nrf_status,
+            "nrf_port": self._nrf_jammer_port,
+            # Honest capability for current mode
+            "mode_capability": capability,
+            "affects_ble_adv": capability.get("affects_ble_adv", False),
+            "affects_bredr_audio": capability.get("affects_bredr_audio", False),
+            "effectiveness_tier": capability.get("tier", "unknown"),
+            "capability_note": capability.get("note"),
         }
 
 

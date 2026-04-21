@@ -1250,9 +1250,49 @@ let _jamStartTime = 0;
 let _jamDurTimer  = null;
 
 $("j-mode").addEventListener("change", e => {
-    const needsTarget = ["targeted", "deauth"].includes(e.target.value);
+    const mode = e.target.value;
+    const needsTarget = ["targeted", "deauth"].includes(mode);
     $("j-target-grp").style.display = needsTarget ? "" : "none";
+
+    // Show capability hint on mode change (without needing active session)
+    const hintEl = $("j-capability-hint");
+    if (hintEl) {
+        let hint = "", cls = "";
+        if (mode === "airpods_killer") {
+            hint = "🎯 Optimized for AirPods A2DP disruption. Sweeps all 79 BR/EDR channels at +8 dBm, 1ms dwell. Saturates AFH → audio drops in 2-4s. REQUIRES nRF52840 with radio_test firmware.";
+            cls = "cap-ok";
+        } else if (mode.startsWith("rf_sweep")) {
+            hint = "✓ Real RF sweep via nRF52840 radio_test firmware. Direct NRF_RADIO register control bypasses BlueZ entirely. +8 dBm, all 2.4 GHz ISM band.";
+            cls = "cap-ok";
+        } else if (mode === "rf_cw_carrier") {
+            hint = "⚠ Single-channel CW. AFH will route around it within 2-3 seconds. Use sweep modes for sustained disruption.";
+            cls = "cap-warn";
+        } else if (mode === "rf_modulated") {
+            hint = "ℹ Single-channel modulated (PRBS9) burst. More disruptive than CW but still AFH-routable.";
+            cls = "cap-info";
+        } else if (mode === "full_spectrum") {
+            hint = "ℹ HCI-level BLE+BR/EDR. Inquiry loop is ~1/sec (too slow for audio). Affects discovery only.";
+            cls = "cap-info";
+        } else if (["flood", "phantom_flood", "sweep", "continuous"].includes(mode)) {
+            hint = "ℹ BLE advertising channels 37/38/39 only. Disrupts discovery/pairing, NOT active BR/EDR audio.";
+            cls = "cap-info";
+        } else if (["deauth", "connection_disrupt"].includes(mode)) {
+            hint = "⚠ Sends ADV_DIRECT_IND (no real BLE deauth primitive exists). Target will ignore.";
+            cls = "cap-warn";
+        } else if (mode === "targeted") {
+            hint = "ℹ Random-address nudge toward target — not true targeting. Same effect as flood.";
+            cls = "cap-info";
+        } else if (mode === "reactive") {
+            hint = "ℹ Duty-cycled spam (80% jam / 20% quiet). No actual reactive trigger logic.";
+            cls = "cap-info";
+        }
+        hintEl.textContent = hint;
+        hintEl.className = "jam-capability-hint " + cls;
+        hintEl.style.display = hint ? "" : "none";
+    }
 });
+// Trigger once on load
+setTimeout(() => $("j-mode").dispatchEvent(new Event("change")), 300);
 
 $("btn-jam").addEventListener("click", async () => {
     if (jammerActive) {
@@ -1404,6 +1444,44 @@ function updateJammer(status) {
     $("pill-scan").classList.toggle("jamming", jammerActive);
     updateJammerGlow(jammerActive);
     applyFullSpectrumEffect(sess.mode || "");
+
+    // ── Honest capability display ──
+    const tier = status.effectiveness_tier || "unknown";
+    const affectsAudio = status.affects_bredr_audio;
+    const nrfActive = status.nrf_active;
+    const nrfAvailable = status.nrf_available;
+    const capabilityEl = $("j-capability-hint");
+    if (capabilityEl) {
+        const selectedMode = $("j-mode")?.value || sess.mode;
+        let hint = "";
+        let cls = "";
+        if (selectedMode) {
+            if (selectedMode.startsWith("rf_") || selectedMode === "airpods_killer") {
+                if (nrfAvailable) {
+                    hint = `✓ Real RF jamming — nRF52840 radio_test backend (+8 dBm, all 2.4 GHz). Tier S effectiveness.`;
+                    cls = "cap-ok";
+                } else {
+                    hint = `⚠ nRF52840 firmware not detected. Flash: tools/deploy_nrf_jammer.sh`;
+                    cls = "cap-warn";
+                }
+            } else {
+                hint = `ℹ BLE advertising only (channels 37/38/39). Does NOT affect BR/EDR audio. Tier ${tier}.`;
+                cls = "cap-info";
+            }
+        }
+        capabilityEl.textContent = hint;
+        capabilityEl.className = "jam-capability-hint " + cls;
+        capabilityEl.style.display = hint ? "" : "none";
+    }
+
+    // Use OTA-estimated PPS for honest reporting
+    if (jammerActive && status.ota_packets_per_second_est !== undefined) {
+        const otaEl = $("jl-pps");
+        if (otaEl && status.ota_packets_per_second_est > 0) {
+            otaEl.textContent = Math.round(status.ota_packets_per_second_est);
+            otaEl.title = "OTA-estimated packets/sec (honest, not Python loop rate)";
+        }
+    }
 
     document.querySelectorAll(".ch-strip .ch-bar").forEach(bar => {
         bar.classList.toggle("active", jammerActive && bar.dataset.ch == sess.channel);
