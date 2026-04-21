@@ -173,7 +173,7 @@
                         <div class="live-center-panel">
                             <div class="live-hero">
                                 <div class="lh-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-                                <div class="lh-title">BlueShield <span class="lh-ver">v5.5</span></div>
+                                <div class="lh-title">BLUESHIELD <span class="lh-ver">v7.0</span></div>
                                 <div class="lh-subtitle">Bluetooth Intelligence Platform</div>
                             </div>
                             <div class="live-people" id="live-people">
@@ -183,8 +183,8 @@
                                 <div class="lp-movement" id="lp-movement">Movement: —</div>
                                 <div class="lp-disclaimer" title="Heuristic count: groups devices by ecosystem (Apple/MS/Google) within ±15 dBm. Not calibrated to physical person count.">// EST BY ECOSYSTEM BUCKET</div>
                             </div>
-                            <div class="live-weather" id="live-weather">
-                                <div class="lw-title">BT Weather</div>
+                            <div class="live-weather" id="live-weather" title="Heuristic labels based on current scan density and RSSI variance — not predictive">
+                                <div class="lw-title">BT Environment Snapshot</div>
                                 <div class="lw-row"><span class="lw-icon" id="lw-density-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg></span><span class="lw-text" id="lw-density">Clear</span></div>
                                 <div class="lw-row"><span class="lw-icon" id="lw-turb-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 6c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M2 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/><path d="M2 18c2-2 4-2 6 0s4 2 6 0 4-2 6 0"/></svg></span><span class="lw-text" id="lw-turb">Calm</span></div>
                                 <div class="lw-row"><span class="lw-icon" id="lw-wind-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span class="lw-text" id="lw-wind">Stable</span></div>
@@ -666,9 +666,9 @@
                 </div>
             </section>
 
-            <!-- FOLLOWING TAB — Who's Following Me? -->
+            <!-- FOLLOWING TAB — Following Detector -->
             <section class="tab-pane" id="tab-following">
-                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Who's Following Me?</h2><span class="badge badge-follow" id="follow-top">0</span></div></div>
+                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Following Detector</h2><span class="badge badge-follow" id="follow-top">0</span></div><div class="heuristic-note" title="Weighted heuristic score (7 factors: duration, visibility, RSSI stdev, MAC rotation, tracker flag, category, proximity). >=70% = alert. Not a calibrated probability.">// HEURISTIC SCORE ≥0.70 ALERTS</div></div>
                 <div class="follow-overview" id="follow-overview">
                     <div class="follow-status-card">
                         <div class="fsc-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--green)" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke-width="2"/></svg></div>
@@ -683,7 +683,7 @@
 
             <!-- SHADOWS TAB — Shadow Device Detection -->
             <section class="tab-pane" id="tab-shadows">
-                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Shadow Devices</h2><span class="badge badge-shadow" id="shadow-top">0</span></div></div>
+                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Shadow Devices</h2><span class="badge badge-shadow" id="shadow-top">0</span></div><div class="heuristic-note" title="Score reflects unusual BLE behavior patterns (intermittent visibility, MAC rotation, edge-lurking). Does not indicate malicious intent. Many low-power IoT legitimately match these patterns.">// STEALTH BEHAVIOR SCORE 0-100</div></div>
                 <div class="shadow-overview" id="shadow-overview">
                     <div class="shadow-status-card">
                         <div class="shsc-icon"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--purple)" stroke-width="1.5"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></div>
@@ -779,12 +779,15 @@
         <span id="sb-jam">Jammer: Off</span><span class="sb-sep">|</span>
         <span id="sb-risk">Risk: --</span>
         <span style="flex:1"></span>
-        <span>BlueShield v5.3</span>
+        <span class="mono" style="color:var(--tx-3);letter-spacing:1.5px">// BUILD 7.0.0 · SIGNED admin@blueshield ·</span>
+        <span class="mono" style="color:var(--accent)">BLUESHIELD v7.0</span>
     </footer>
 
+    <!-- Classification banner (DoD 5200.48 footer duplicate) -->
+    <div class="classification-banner classification-unclass">
+        // UNCLASSIFIED // FOR RESEARCH USE // WSU AUTHORIZED //
+    </div>
+
     <script src="/static/js/dashboard.js"></script>
-    <!-- Easter Egg: Ink-wash dragon (dark mode only) -->
-    <canvas id="dragon-canvas" style="position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;opacity:0;transition:opacity 1.5s"></canvas>
-    <script src="/static/js/dragon.js"></script>
 </body>
 </html>
