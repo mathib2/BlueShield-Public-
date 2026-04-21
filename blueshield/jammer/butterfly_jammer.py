@@ -352,6 +352,9 @@ class ButteRFlyJammer:
         if self._mode != ButteRFlyMode.OFF:
             self.stop()
 
+        # Clear stale error from previous session
+        self.last_error = None
+
         if not self._device:
             if not self.open():
                 return False
