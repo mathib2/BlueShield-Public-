@@ -72,7 +72,7 @@
                 <div class="nav-label">MONITOR</div>
                 <button class="nav-item" data-tab="live">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16" fill="currentColor"/></svg>
-                    <span>Live</span><span class="nav-badge live-badge" style="background:var(--green-bg);color:var(--green)">DEMO</span>
+                    <span>Live</span><span class="nav-badge live-badge" style="background:var(--accent-bg);color:var(--accent);font-family:'JetBrains Mono',monospace">LIVE</span>
                 </button>
                 <button class="nav-item active" data-tab="devices">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
@@ -178,9 +178,10 @@
                             </div>
                             <div class="live-people" id="live-people">
                                 <div class="lp-big" id="lp-count">0</div>
-                                <div class="lp-label">Estimated People Nearby</div>
+                                <div class="lp-label">Device Clusters (ecosystem-grouped)</div>
                                 <div class="lp-detail" id="lp-detail"></div>
                                 <div class="lp-movement" id="lp-movement">Movement: —</div>
+                                <div class="lp-disclaimer" title="Heuristic count: groups devices by ecosystem (Apple/MS/Google) within ±15 dBm. Not calibrated to physical person count.">// EST BY ECOSYSTEM BUCKET</div>
                             </div>
                             <div class="live-weather" id="live-weather">
                                 <div class="lw-title">BT Weather</div>
@@ -547,7 +548,7 @@
                                         <option value="ble_reactive_jam">REACTIVE JAM — pattern-match PHY jam</option>
                                     </optgroup>
                                     <optgroup label="━━━ nRF52840 radio_test (Real RF, needs firmware) ━━━">
-                                        <option value="airpods_killer">🎯 AirPods Killer — BR/EDR AFH saturation</option>
+                                        <option value="airpods_killer">AIRPODS KILLER — BR/EDR AFH saturation (needs radio_test fw)</option>
                                         <option value="rf_sweep_full">RF Sweep Full — All 2.4 GHz (0-80)</option>
                                         <option value="rf_sweep_bredr">RF Sweep BR/EDR — Classic BT (2-80)</option>
                                         <option value="rf_sweep_ble">RF Sweep BLE — Data channels (0-39)</option>

@@ -2710,10 +2710,13 @@ class BluetoothJammer:
             "backend": effective_backend,
             "dual_adapter": self._dual_adapter,
             "adapters": adapters_list,
-            # HCI metrics (inflated)
-            "packets_per_second": round(pps, 1),
-            "ota_packets_per_second_est": round(ota_pps_est, 1),  # Honest estimate
-            "total_bytes": total_bytes,
+            # Honest OTA-estimated packets/sec (primary display value).
+            # The old Python-loop-iteration count is deliberately removed
+            # from the public API to prevent 10-20x inflation in the UI.
+            "packets_per_second": round(ota_pps_est, 1),
+            "ota_packets_per_second_est": round(ota_pps_est, 1),  # alias
+            "_internal_loop_rate": round(pps, 1),                 # debug only
+            "total_bytes_est": total_bytes,                        # explicitly est
             "channel_distribution": channel_dist,
             "elapsed_seconds": round(elapsed, 1),
             "adapters_active": adapters_active,

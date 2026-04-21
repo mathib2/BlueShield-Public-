@@ -2016,9 +2016,15 @@ def main():
     gatt_inspector = make_gatt_inspector(sim=args.sim)
     crackle_runner = CrackleRunner(output_dir=str(Path(pcap_dir) / "crackle"))
 
-    hw_type = "SIMULATED" if (args.sim or not sniffer_engine.hardware_available) else "HARDWARE"
-    print(f"[BlueShield] Sniffer engine  : {hw_type} (Sniffle / BLE PDU capture)")
-    print(f"[BlueShield] GATT inspector  : {'simulated' if args.sim else 'bleak'}")
+    # Be explicit about whether Sniffle is real hardware vs unavailable
+    if args.sim:
+        sniffer_status = "SIMULATED (--sim flag explicit)"
+    elif sniffer_engine.hardware_available:
+        sniffer_status = "HARDWARE"
+    else:
+        sniffer_status = "UNAVAILABLE (no TI CC1352 on serial port)"
+    print(f"[BlueShield] Sniffer engine  : {sniffer_status} (Sniffle / TI CC1352 BLE PDU capture)")
+    print(f"[BlueShield] GATT inspector  : {'simulated (--sim)' if args.sim else 'bleak'}")
     print(f"[BlueShield] Crackle runner  : {'binary: ' + crackle_runner._binary if crackle_runner.binary_available() else 'Python fallback'}")
 
     # ── Initialise nRF52840 BLE sniffers (dual-dongle) ─────────────────────
