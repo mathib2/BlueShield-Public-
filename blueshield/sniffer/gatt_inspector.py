@@ -471,12 +471,16 @@ class SimulatedGATTInspector(GATTInspector):
 
 
 def make_gatt_inspector(sim: bool = False) -> GATTInspector:
-    """Return a real or simulated GATT inspector."""
+    """Return GATT inspector — REAL by default, sim only if explicit."""
     if sim:
-        return SimulatedGATTInspector()
-    # If bleak isn't available, fall back to simulated
+        inst = SimulatedGATTInspector()
+        inst._is_simulated_explicit = True
+        return inst
     try:
         import bleak  # noqa: F401
-        return GATTInspector()
     except ImportError:
-        return SimulatedGATTInspector()
+        raise RuntimeError(
+            "bleak required for real GATT inspector but not installed. "
+            "Install: pip install bleak. Pass sim=True to use simulated mode."
+        )
+    return GATTInspector()

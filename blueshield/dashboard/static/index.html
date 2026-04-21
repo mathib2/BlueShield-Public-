@@ -3,13 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BlueShield v5 - Bluetooth Intelligence Platform</title>
+    <title>BLUESHIELD — Tactical BLE Intelligence</title>
+    <link rel="icon" href="/static/img/blueshield-sigil.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/animejs/dist/bundles/anime.umd.min.js"></script>
 </head>
 <body>
+    <!-- Classification Banner (DoD 5200.48) -->
+    <div class="classification-banner classification-unclass" id="class-banner">
+        // UNCLASSIFIED // FOR RESEARCH USE // WSU AUTHORIZED //
+    </div>
+
     <!-- Top Bar -->
     <header class="topbar">
         <div class="topbar-left">
@@ -17,9 +23,24 @@
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h12"/></svg>
             </button>
             <div class="brand">
-                <svg class="brand-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                <span class="brand-name">BlueShield</span>
-                <span class="brand-ver">v5.5</span>
+                <svg class="brand-sigil" width="22" height="22" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="miter" stroke-linecap="square">
+                    <path d="M32 4 L56 18 L56 40 L32 58 L8 40 L8 18 Z"/>
+                    <path d="M22 26 L32 22 L42 26"/>
+                    <path d="M22 34 L32 30 L42 34"/>
+                    <path d="M22 42 L32 38 L42 42"/>
+                </svg>
+                <span class="brand-name">BLUESHIELD</span>
+                <span class="brand-ver">v7.0</span>
+            </div>
+            <div class="operator-strip" id="operator-strip">
+                <span class="op-label">OPERATOR</span>
+                <span class="op-value mono" id="op-user">admin</span>
+                <span class="op-sep">·</span>
+                <span class="op-label">SID</span>
+                <span class="op-value mono" id="op-sid">----</span>
+                <span class="op-sep">·</span>
+                <span class="op-label">UPTIME</span>
+                <span class="op-value mono" id="op-uptime">00:00:00</span>
             </div>
         </div>
         <div class="topbar-center">
@@ -517,11 +538,13 @@
                             <div class="field">
                                 <label>Mode</label>
                                 <select id="j-mode" class="input">
-                                    <optgroup label="━━━ ButteRFly (BLE Injection, InjectaBLE DSN 2021) ━━━">
-                                        <option value="airpods_attack">🎯 AirPods Attack — auto-detect + jam ADV</option>
-                                        <option value="nearby_attack">Nearby Attack — jam all Apple Continuity</option>
-                                        <option value="ble_jam_adv">BLE ADV Jam — selective (specify target MAC)</option>
-                                        <option value="ble_reactive_jam">BLE Reactive Jam — sync'd pattern match</option>
+                                    <optgroup label="━━━ ButteRFly v1.1.3 (InjectaBLE DSN 2021) ━━━">
+                                        <option value="airpods_attack">AIRPODS REACTIVE — PHY jam on Apple TLV 0x07</option>
+                                        <option value="nearby_attack">NEARBY ATTACK — PHY jam all Apple vendor 0x004C</option>
+                                        <option value="apple_spam">CONTINUITY SPAM — flood iOS popup storm (AdvMode)</option>
+                                        <option value="ble_adv_flood">ADV FLOOD — rogue advertiser</option>
+                                        <option value="ble_raw_inject">RAW INJECT — PDU flood @1000Hz (target MAC)</option>
+                                        <option value="ble_reactive_jam">REACTIVE JAM — pattern-match PHY jam</option>
                                     </optgroup>
                                     <optgroup label="━━━ nRF52840 radio_test (Real RF, needs firmware) ━━━">
                                         <option value="airpods_killer">🎯 AirPods Killer — BR/EDR AFH saturation</option>

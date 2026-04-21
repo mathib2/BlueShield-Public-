@@ -2341,6 +2341,7 @@ class BluetoothJammer:
     # Modes that go through the ButteRFly/WHAD backend (BLE injection)
     BUTTERFLY_MODES = {
         "ble_jam_adv", "ble_reactive_jam", "airpods_attack", "nearby_attack",
+        "apple_spam", "ble_adv_flood", "ble_raw_inject",
     }
 
     def _start_nrf_jam(self, mode: str, channel: int, session: "JamSession") -> bool:
@@ -2384,19 +2385,10 @@ class BluetoothJammer:
             print(f"  Flash firmware: see tools/nrf_jammer_firmware_src/README.md")
             return False
 
-        mode_map = {
-            "ble_jam_adv":        ButteRFlyMode.BLE_JAM_ADV,
-            "ble_reactive_jam":   ButteRFlyMode.BLE_REACTIVE_JAM,
-            "airpods_attack":     ButteRFlyMode.AIRPODS_ATTACK,
-            "nearby_attack":      ButteRFlyMode.NEARBY_ATTACK,
-        }
-        bf_mode = mode_map.get(mode)
-        if bf_mode is None:
-            return False
-
+        # All these modes are strings in ButteRFlyMode enum — pass directly
         try:
             ok = self._butterfly_jammer.start(
-                bf_mode, target_addr=target, channel=channel,
+                mode, target_addr=target, channel=channel,
             )
             if ok:
                 print(f"[BlueShield Jammer] ButteRFly BLE attack ACTIVE: mode={mode}, "
