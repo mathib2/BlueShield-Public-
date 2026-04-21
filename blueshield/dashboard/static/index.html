@@ -517,7 +517,13 @@
                             <div class="field">
                                 <label>Mode</label>
                                 <select id="j-mode" class="input">
-                                    <optgroup label="━━━ nRF52840 Radio (Real RF Jamming) ━━━">
+                                    <optgroup label="━━━ ButteRFly (BLE Injection, InjectaBLE DSN 2021) ━━━">
+                                        <option value="airpods_attack">🎯 AirPods Attack — auto-detect + jam ADV</option>
+                                        <option value="nearby_attack">Nearby Attack — jam all Apple Continuity</option>
+                                        <option value="ble_jam_adv">BLE ADV Jam — selective (specify target MAC)</option>
+                                        <option value="ble_reactive_jam">BLE Reactive Jam — sync'd pattern match</option>
+                                    </optgroup>
+                                    <optgroup label="━━━ nRF52840 radio_test (Real RF, needs firmware) ━━━">
                                         <option value="airpods_killer">🎯 AirPods Killer — BR/EDR AFH saturation</option>
                                         <option value="rf_sweep_full">RF Sweep Full — All 2.4 GHz (0-80)</option>
                                         <option value="rf_sweep_bredr">RF Sweep BR/EDR — Classic BT (2-80)</option>

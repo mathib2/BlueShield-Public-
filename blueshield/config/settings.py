@@ -32,10 +32,17 @@ DEFAULT_CONFIG = {
     "max_log_entries": 10000,         # max entries before rotation
 
     # ── nRF52840 radio_test backend (real RF jamming, bypasses BlueZ) ──
-    "nrf_jammer_enabled": True,       # enable nRF52840 radio backend if firmware detected
-    "nrf_jammer_port": "/dev/ttyACM1",  # UART of dongle flashed with radio_test firmware
-    "nrf_jammer_tx_power": 8,         # TX power in dBm (nRF52840 max: +8)
-    "nrf_jammer_phy": "nrf_1Mbit",    # PHY mode: nrf_1Mbit|nrf_2Mbit|ble_1Mbit|ble_lr125Kbit
+    # Disabled by default; enable and point to a dongle flashed with radio_test
+    # only if you have that specific firmware (not ButteRFly, not sniffer).
+    "nrf_jammer_enabled": False,      # not flashed yet — leave false until radio_test is deployed
+    "nrf_jammer_port": "/dev/nrf_radio_test",  # different path than ButteRFly to avoid collision
+    "nrf_jammer_tx_power": 8,
+    "nrf_jammer_phy": "nrf_1Mbit",
+
+    # ── ButteRFly/WHAD backend (BLE injection + InjectaBLE DSN 2021) ──
+    # Romain Cayre firmware v1.1.3 — verified on /dev/ttyACM1 (c0ff:eeee)
+    "butterfly_enabled": True,
+    "butterfly_port": "/dev/ttyACM1",
 }
 
 
