@@ -1368,7 +1368,10 @@ $("j-mode").addEventListener("change", e => {
     if (hintEl) {
         let hint = "", cls = "";
         // ── ButteRFly modes (InjectaBLE DSN 2021 — real PHY-level jam) ──
-        if (mode === "airpods_attack") {
+        if (mode === "ble_inject_terminate") {
+            hint = "INJECT LL_TERMINATE_IND into active BLE connection. Forces immediate disconnection. The ONE credible non-SDR attack against AirPods audio (kills companion BLE link; AirPods enter disconnected state). Requires target's Access Address (sniff CONNECT_IND first, paste AA hex in Target MAC field).";
+            cls = "cap-ok";
+        } else if (mode === "airpods_attack") {
             hint = "REACTIVE PHY JAM on Apple TLV 0x07 (AirPods Proximity Pairing). <150μs turnaround collides with ADV before scanner CRC. Cayre DSN 2021. REQUIRES ButteRFly firmware.";
             cls = "cap-ok";
         } else if (mode === "nearby_attack") {

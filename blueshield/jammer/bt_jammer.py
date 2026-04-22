@@ -2342,6 +2342,8 @@ class BluetoothJammer:
     BUTTERFLY_MODES = {
         "ble_jam_adv", "ble_reactive_jam", "airpods_attack", "nearby_attack",
         "apple_spam", "ble_adv_flood", "ble_raw_inject",
+        # v7.5: LL_TERMINATE_IND injection (InjectaBLE DSN 2021)
+        "ble_inject_terminate", "ble_hijack_slave", "ble_hijack_master",
     }
 
     def _start_nrf_jam(self, mode: str, channel: int, session: "JamSession") -> bool:
@@ -2444,6 +2446,16 @@ class BluetoothJammer:
                 self.is_jamming = False
                 session.is_active = False
                 session.end_time = datetime.now(timezone.utc).isoformat()
+                # Surface the specific ButteRFly error if one is set, else
+                # fall back to the generic "backend unavailable" message.
+                bf_err = None
+                if self._butterfly_jammer:
+                    try:
+                        bf_err = self._butterfly_jammer.last_error
+                    except Exception:
+                        pass
+                if bf_err and self._butterfly_available:
+                    raise RuntimeError(f"Mode '{mode}': {bf_err}")
                 raise RuntimeError(
                     f"ButteRFly backend required for '{mode}' but not available. "
                     f"Flash firmware (see tools/flash_butterfly.ps1)")
