@@ -54,6 +54,14 @@ except ImportError:
     ButteRFlyMode = None
     def detect_butterfly(port): return {"available": False, "error": "butterfly backend not loaded"}
 
+# v7.6: AutoTerminator (dual-ButteRFly sniff→inject pipeline)
+try:
+    from blueshield.jammer.auto_terminator import AutoTerminator
+    HAS_AUTO_TERMINATOR = True
+except ImportError:
+    HAS_AUTO_TERMINATOR = False
+    AutoTerminator = None
+
 
 # ---------------------------------------------------------------------------
 # JamMode enum — all supported jamming strategies
@@ -651,6 +659,25 @@ class BluetoothJammer:
             else:
                 print(f"[BlueShield Jammer] ButteRFly firmware not detected on "
                       f"{self._butterfly_port}: {detection.get('error', 'not flashed')}")
+
+        # ── AutoTerminator: dual-ButteRFly sniff→inject pipeline (v7.6) ──
+        # Observer on /dev/ttyACM0, Injector on /dev/ttyACM1.
+        # If only ONE ButteRFly is present, mode is disabled cleanly.
+        self._auto_terminator = None
+        self._auto_terminator_available: bool = False
+        observer_port = config.get("auto_terminator_observer_port", "/dev/ttyACM0")
+        injector_port = config.get("auto_terminator_injector_port", "/dev/ttyACM1")
+        if HAS_AUTO_TERMINATOR and os.path.exists(observer_port) and os.path.exists(injector_port):
+            try:
+                self._auto_terminator = AutoTerminator(
+                    observer_port=observer_port,
+                    injector_port=injector_port,
+                )
+                self._auto_terminator_available = True
+                print(f"[BlueShield Jammer] AutoTerminator backend: "
+                      f"observer={observer_port}, injector={injector_port}")
+            except Exception as e:
+                print(f"[BlueShield Jammer] AutoTerminator init failed: {e}")
 
         # Pre-generate payload pools at init
         self._regenerate_payload_pool()
@@ -2346,6 +2373,10 @@ class BluetoothJammer:
         "ble_inject_terminate", "ble_hijack_slave", "ble_hijack_master",
     }
 
+    # v7.6: AutoTerminator = dual-ButteRFly sniff→inject pipeline
+    # (the best BLE attack this hardware can do)
+    AUTO_TERMINATOR_MODES = {"auto_terminator", "ble_auto_terminate"}
+
     def _start_nrf_jam(self, mode: str, channel: int, session: "JamSession") -> bool:
         """Route to the nRF52840 radio_test backend for real RF jamming."""
         if not self._nrf_available or not self._nrf_jammer:
@@ -2437,6 +2468,34 @@ class BluetoothJammer:
                 raise RuntimeError(
                     f"nRF52840 backend required for '{mode}' but not available. "
                     f"Flash firmware: tools/deploy_nrf_jammer.sh {self._nrf_jammer_port}")
+
+        # ── AutoTerminator path (v7.6: dual-ButteRFly sniff→inject) ──
+        if mode in self.AUTO_TERMINATOR_MODES:
+            if not self._auto_terminator_available or not self._auto_terminator:
+                self.is_jamming = False
+                session.is_active = False
+                session.end_time = datetime.now(timezone.utc).isoformat()
+                raise RuntimeError(
+                    "AutoTerminator requires TWO ButteRFly dongles "
+                    f"(got: observer_available={self._auto_terminator_available})"
+                )
+            # Target MAC: if "any" or empty, use wildcard (any new connection).
+            # Otherwise a specific MAC address.
+            target_norm = (target or "").upper().strip()
+            if not target_norm or target_norm == "ANY" or target_norm == "ALL":
+                self._auto_terminator.target_all()
+                print(f"[BlueShield Jammer] AutoTerminator WILDCARD mode: terminate any CONNECT_IND")
+            else:
+                self._auto_terminator.add_target(target_norm)
+                print(f"[BlueShield Jammer] AutoTerminator TARGET: {target_norm}")
+            if self._auto_terminator.start():
+                return session
+            self.is_jamming = False
+            session.is_active = False
+            session.end_time = datetime.now(timezone.utc).isoformat()
+            raise RuntimeError(
+                f"AutoTerminator failed: {self._auto_terminator.last_error}"
+            )
 
         # ── ButteRFly/WHAD path (BLE injection, selective ADV jamming) ──
         if mode in self.BUTTERFLY_MODES:
@@ -2568,6 +2627,14 @@ class BluetoothJammer:
             except Exception as e:
                 print(f"[BlueShield Jammer] ButteRFly stop error: {e}")
 
+        # Stop AutoTerminator if active
+        if self._auto_terminator_available and self._auto_terminator:
+            try:
+                if self._auto_terminator.is_active:
+                    self._auto_terminator.stop()
+            except Exception as e:
+                print(f"[BlueShield Jammer] AutoTerminator stop error: {e}")
+
         # Join primary thread
         if self._jam_thread:
             self._jam_thread.join(timeout=5)
@@ -2682,6 +2749,16 @@ class BluetoothJammer:
             except Exception:
                 pass
 
+        # ── AutoTerminator status (v7.6) ──
+        auto_terminator_status = None
+        auto_terminator_active = False
+        if self._auto_terminator:
+            try:
+                auto_terminator_status = self._auto_terminator.get_stats()
+                auto_terminator_active = auto_terminator_status.get("is_active", False)
+            except Exception:
+                pass
+
         # ── Honest OTA PPS estimate ──
         # JamSession.get_pps() counts Python loop iterations (inflated 10-20x).
         # Estimate actual OTA rate from effective interval & adapter count.
@@ -2743,6 +2820,10 @@ class BluetoothJammer:
             "butterfly_active": butterfly_active,
             "butterfly_status": butterfly_status,
             "butterfly_port": self._butterfly_port,
+            # AutoTerminator (v7.6 dual-ButteRFly pipeline)
+            "auto_terminator_available": self._auto_terminator_available,
+            "auto_terminator_active": auto_terminator_active,
+            "auto_terminator_status": auto_terminator_status,
             # Honest capability for current mode
             "mode_capability": capability,
             "affects_ble_adv": capability.get("affects_ble_adv", False),
