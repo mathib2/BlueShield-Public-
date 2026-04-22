@@ -40,9 +40,14 @@ DEFAULT_CONFIG = {
     "nrf_jammer_phy": "nrf_1Mbit",
 
     # ── ButteRFly/WHAD backend (BLE injection + InjectaBLE DSN 2021) ──
-    # Romain Cayre firmware v1.1.3 — verified on /dev/ttyACM1 (c0ff:eeee)
+    # Romain Cayre firmware v1.1.3 — we now have TWO of these dongles
     "butterfly_enabled": True,
     "butterfly_port": "/dev/ttyACM1",
+
+    # ── AutoTerminator (v7.6): dual-ButteRFly sniff→inject pipeline ──
+    # Observer sniffs CONNECT_IND, Injector fires LL_TERMINATE_IND
+    "auto_terminator_observer_port": "/dev/ttyACM0",
+    "auto_terminator_injector_port": "/dev/ttyACM1",
 }
 
 

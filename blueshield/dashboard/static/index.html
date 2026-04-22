@@ -575,6 +575,9 @@
                                 <div class="field">
                                     <label>Raw Mode (ButteRFly)</label>
                                     <select id="j-mode" class="input">
+                                        <optgroup label="v7.6: AutoTerminator (dual-ButteRFly sniff→inject)">
+                                            <option value="auto_terminator">AUTO-TERMINATE — sniff CONNECT_IND → inject LL_TERMINATE_IND (best BLE attack on this hw)</option>
+                                        </optgroup>
                                         <optgroup label="ButteRFly v1.1.3 (InjectaBLE DSN 2021)">
                                             <option value="airpods_attack" selected>Reactive PHY jam · Apple TLV 0x07</option>
                                             <option value="nearby_attack">Reactive PHY jam · Apple vendor 0x004C</option>
@@ -582,7 +585,7 @@
                                             <option value="ble_adv_flood">AdvMode flood · generic</option>
                                             <option value="ble_raw_inject">Raw PDU inject @1000Hz</option>
                                             <option value="ble_reactive_jam">Reactive PHY jam · pattern</option>
-                                            <option value="ble_inject_terminate">Inject LL_TERMINATE_IND</option>
+                                            <option value="ble_inject_terminate">Inject LL_TERMINATE_IND (manual AA)</option>
                                         </optgroup>
                                         <optgroup label="nRF52840 radio_test (firmware required)">
                                             <option value="rf_sweep_full">RF Sweep · All 2.4 GHz (0-80)</option>
