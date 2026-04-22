@@ -431,14 +431,30 @@ function escHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"
 /* ── Device Selection & Detail Panel ───────────────────────── */
 window.selectDevice = function(id) {
     selectedDeviceId = id;
-    $("device-detail").classList.add("open");
+    const panel = $("device-detail");
+    panel.classList.add("open");
+    panel.classList.remove("closed");
     renderDetailPanel();
     renderDeviceTable();
 };
-$("close-detail").addEventListener("click", () => {
+function closeDevicePanel() {
     selectedDeviceId = null;
-    $("device-detail").classList.remove("open");
+    const panel = $("device-detail");
+    if (panel) {
+        panel.classList.add("closed");
+        panel.classList.remove("open");
+    }
     renderDeviceTable();
+}
+$("close-detail").addEventListener("click", closeDevicePanel);
+// Escape closes the panel
+document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && selectedDeviceId) closeDevicePanel();
+});
+// Start with panel hidden until a device is selected
+document.addEventListener("DOMContentLoaded", () => {
+    const panel = $("device-detail");
+    if (panel) panel.classList.add("closed");
 });
 
 function renderDetailPanel() {
@@ -1276,6 +1292,71 @@ let _jamPrevPkts = 0;
 let _jamPrevTime = 0;
 let _jamStartTime = 0;
 let _jamDurTimer  = null;
+
+/* 3-tier jammer control: Target × Action × Intensity → raw mode */
+const J_TARGET_PATTERNS = {
+    apple:     { vendor: "0x004C", tlv: "0x07 (Proximity Pairing)", note: "Apple Continuity protocol" },
+    samsung:   { vendor: "0x0075", tlv: "EIR manufacturer data",    note: "Samsung Fast Pair / Galaxy" },
+    google:    { vendor: "0x00E0", tlv: "Fast Pair Model ID",       note: "Google Fast Pair" },
+    microsoft: { vendor: "0x0006", tlv: "Swift Pair beacon",        note: "Microsoft Swift Pair" },
+    generic:   { vendor: "any",    tlv: "any",                      note: "All BLE advertisers" },
+    custom:    { vendor: "user",   tlv: "user",                     note: "Custom byte pattern" },
+};
+
+function mapTargetActionToMode(target, action, intensity) {
+    // Defense-grade routing: 3-tier UI → raw backend mode
+    if (action === "track_only") return "ble_scan";
+    if (action === "force_disconnect") {
+        // Requires active BLE link to target; inject LL_TERMINATE_IND
+        return "ble_inject_terminate";
+    }
+    if (action === "spoof_nearby") {
+        if (target === "apple") return "apple_spam";
+        return "ble_adv_flood";
+    }
+    // Default: disrupt_discovery via reactive PHY jam
+    if (target === "apple") {
+        return intensity === "aggressive" ? "nearby_attack" : "airpods_attack";
+    }
+    if (target === "generic") return "ble_reactive_jam";
+    // Samsung/Google/Microsoft fall back to generic reactive jam for now
+    // (different patterns will be matched by the backend in a future update)
+    return "ble_reactive_jam";
+}
+
+function updateJammerIntent() {
+    const target = $("j-target-profile")?.value || "apple";
+    const action = $("j-action")?.value || "disrupt_discovery";
+    const intensity = $("j-intensity")?.value || "standard";
+    const mode = mapTargetActionToMode(target, action, intensity);
+    // Reflect selected raw mode in the advanced dropdown (keeps expert visibility)
+    const modeSel = $("j-mode");
+    if (modeSel && Array.from(modeSel.options).some(o => o.value === mode)) {
+        modeSel.value = mode;
+        modeSel.dispatchEvent(new Event("change"));
+    }
+    // Update hint copy with selected intent
+    const hintEl = $("j-capability-hint");
+    if (hintEl) {
+        const tp = J_TARGET_PATTERNS[target] || J_TARGET_PATTERNS.generic;
+        let actionDesc = "";
+        if (action === "track_only") actionDesc = "Passive sniff only — no RF transmitted.";
+        else if (action === "force_disconnect") actionDesc = "Inject LL_TERMINATE_IND into active BLE link (requires prior CONNECT_IND capture).";
+        else if (action === "spoof_nearby") actionDesc = "Rogue advertiser broadcasting crafted payload (may fail on firmware without AdvMode).";
+        else actionDesc = `Reactive PHY jam on vendor ${tp.vendor} — corrupts advertisements in <150μs (Cayre DSN 2021).`;
+        hintEl.textContent = `${tp.note} · ${actionDesc}`;
+        hintEl.className = "jam-capability-hint cap-ok";
+        hintEl.style.display = "";
+    }
+}
+
+// Wire the new 3-tier controls
+["j-target-profile", "j-action", "j-intensity"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", updateJammerIntent);
+});
+// Initialize on load
+setTimeout(updateJammerIntent, 200);
 
 $("j-mode").addEventListener("change", e => {
     const mode = e.target.value;
@@ -2697,3 +2778,44 @@ function playStartupAnimation() {
     // Play entrance animation after initial load
     requestAnimationFrame(() => setTimeout(playStartupAnimation, 100));
 })();
+
+/* ─── v7.5 Evidence Integrity UI ─────────────────────────────── */
+async function loadIntegrityStatus() {
+    try {
+        const r = await fetch("/api/integrity/status");
+        const d = await r.json();
+        const sEl = document.getElementById("int-status");
+        const fpEl = document.getElementById("int-fp");
+        const chEl = document.getElementById("int-chain");
+        if (!sEl) return;
+        if (!d.available) {
+            sEl.textContent = "UNAVAILABLE";
+            sEl.style.color = "var(--red)";
+            return;
+        }
+        sEl.textContent = "OPERATIONAL";
+        sEl.style.color = "var(--green)";
+        fpEl.textContent = d.signer_fingerprint || "--";
+        if (d.chain) {
+            chEl.textContent = d.chain.valid
+                ? `VALID · ${d.chain.entries} entries`
+                : `TAMPERED · first bad line ${d.chain.first_bad_line}`;
+            chEl.style.color = d.chain.valid ? "var(--green)" : "var(--red)";
+        }
+    } catch (e) {
+        const sEl = document.getElementById("int-status");
+        if (sEl) { sEl.textContent = "ERROR"; sEl.style.color = "var(--red)"; }
+    }
+}
+// Auto-load on first config tab view + verify button
+document.addEventListener("DOMContentLoaded", () => {
+    loadIntegrityStatus();
+    const btn = document.getElementById("btn-verify-chain");
+    if (btn) btn.addEventListener("click", async () => {
+        btn.textContent = "VERIFYING…";
+        btn.disabled = true;
+        await loadIntegrityStatus();
+        btn.textContent = "VERIFY CHAIN";
+        btn.disabled = false;
+    });
+});

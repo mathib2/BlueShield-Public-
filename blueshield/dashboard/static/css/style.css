@@ -362,9 +362,15 @@ button,input,select,textarea{font-family:inherit}
 .split-main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .split-detail{
     width:340px;border-left:1px solid var(--border);
-    background:linear-gradient(180deg,#08102B 0%,#060C1E 100%);
+    background:var(--bg-1);
     display:flex;flex-direction:column;overflow:hidden;
+    transition:width 0.15s ease-out, border-left-width 0.15s ease-out;
 }
+.split-detail.closed{
+    width:0 !important; border-left-width:0;
+    pointer-events:none; overflow:hidden;
+}
+.split-detail.closed > *{opacity:0; transition:opacity 0.1s}
 .detail-head{
     display:flex;align-items:center;justify-content:space-between;
     padding:11px 16px;border-bottom:1px solid var(--border);
@@ -1602,3 +1608,30 @@ button,input,select,textarea{font-family:inherit}
 body.tactical-login{background:var(--bg-0)}
 
 
+
+/* ═══════════════════════════════════════════════════════════════
+   v7.5 — Review-driven design polish
+   - Replace loud classification banner with subtle status strip
+   - Fix device panel close
+   - Relabeled Radar → Proximity Chart
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Subtle system status strip (replaces fluorescent green banner) */
+.sys-status-strip{
+    display:flex; align-items:center; justify-content:flex-end;
+    gap:20px; padding:4px 16px;
+    background:var(--bg-1);
+    border-bottom:1px solid var(--border);
+    font-family:'JetBrains Mono', monospace;
+    font-size:9px; letter-spacing:1.5px;
+    color:var(--tx-3);
+    user-select:none;
+}
+.sys-status-item{display:inline-flex; align-items:center; gap:6px}
+.sys-dot{width:6px; height:6px; border-radius:50%; display:inline-block}
+.sys-ok{background:var(--green); box-shadow:0 0 6px rgba(63,185,80,0.5)}
+.sys-warn{background:var(--orange)}
+.sys-crit{background:var(--red); animation:tc-pulse 1s ease-in-out infinite}
+
+/* Hide the old classification banner style if it lingers */
+.classification-banner{display:none !important}

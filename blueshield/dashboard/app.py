@@ -37,6 +37,17 @@ from blueshield.scanner.advanced_analysis import (
 )
 from blueshield.jammer.bt_jammer import BluetoothJammer, SimulatedJammer
 from blueshield.logs.logger import BlueShieldLogger
+# v7.5: evidence-integrity module (Ed25519 signatures + hash-chained event log)
+try:
+    from blueshield.logs.integrity import (
+        SessionSigner, ChainedEventLog, write_session_manifest,
+    )
+    HAS_INTEGRITY = True
+except ImportError:
+    HAS_INTEGRITY = False
+    SessionSigner = None
+    ChainedEventLog = None
+    write_session_manifest = None
 from blueshield.sniffer.sniffle_engine import make_sniffer, BLEPacket, ConnectionRecord
 from blueshield.sniffer.gatt_inspector import make_gatt_inspector
 from blueshield.sniffer.crackle_runner import CrackleRunner
@@ -50,11 +61,78 @@ from blueshield.core.device_correlator import DeviceCorrelator
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
-app.secret_key = "blueshield-secret-change-me-in-production"
+# v7.5: secret key loaded from env or generated per-boot (never hardcoded in prod)
+import secrets as _secrets_mod
+_sk_path = Path(__file__).parent.parent / "keys" / "flask_secret.bin"
+if _sk_path.exists():
+    app.secret_key = _sk_path.read_bytes()
+else:
+    app.secret_key = _secrets_mod.token_bytes(32)
+    try:
+        _sk_path.parent.mkdir(parents=True, exist_ok=True)
+        _sk_path.write_bytes(app.secret_key)
+        os.chmod(_sk_path, 0o600)
+    except Exception:
+        pass
+# Session cookies: HttpOnly + SameSite, 30-minute idle timeout
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=1800,
+)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
-# ── Authentication ──────────────────────────────────────────────────────────
-USERS = {"admin": "admin123"}
+# ── Authentication (v7.5: bcrypt hashes, no hardcoded plaintext) ─────────────
+# User store: {username: bcrypt_hash}. Loaded from keys/users.json if present,
+# otherwise seeded with admin/admin123 → prompts user to change via /api/auth/change-password.
+import json as _json_mod
+_USERS_PATH = Path(__file__).parent.parent / "keys" / "users.json"
+
+def _hash_password(pw: str) -> str:
+    try:
+        import bcrypt
+        return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
+    except ImportError:
+        # Fallback: SHA-256 + fixed-per-install salt. Not ideal but avoids plaintext.
+        import hashlib
+        salt = app.secret_key[:16]
+        return "sha256:" + hashlib.sha256(salt + pw.encode("utf-8")).hexdigest()
+
+def _verify_password(pw: str, stored_hash: str) -> bool:
+    try:
+        if stored_hash.startswith("sha256:"):
+            import hashlib
+            salt = app.secret_key[:16]
+            return stored_hash == "sha256:" + hashlib.sha256(salt + pw.encode("utf-8")).hexdigest()
+        import bcrypt
+        return bcrypt.checkpw(pw.encode("utf-8"), stored_hash.encode("ascii"))
+    except Exception:
+        return False
+
+def _load_users():
+    if _USERS_PATH.exists():
+        try:
+            return _json_mod.loads(_USERS_PATH.read_text())
+        except Exception:
+            pass
+    # Seed with default admin — hash, not plaintext. User is warned on login.
+    default = {"admin": _hash_password("admin123"), "_seeded_default": True}
+    try:
+        _USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _USERS_PATH.write_text(_json_mod.dumps(default, indent=2))
+        os.chmod(_USERS_PATH, 0o600)
+    except Exception:
+        pass
+    return default
+
+def _save_users(users: dict):
+    try:
+        _USERS_PATH.write_text(_json_mod.dumps(users, indent=2))
+        os.chmod(_USERS_PATH, 0o600)
+    except Exception:
+        pass
+
+USERS = _load_users()
 
 def login_required(f):
     @wraps(f)
@@ -96,6 +174,9 @@ trail_tracker = None
 advanced_mode = False
 auto_scan = True
 device_correlator = DeviceCorrelator()
+# v7.5: evidence integrity (assigned in startup)
+signer = None
+chained_log = None
 scan_interval = 15  # must be > scan_duration (default 5s) to avoid InProgress errors
 _advanced_scan_counter = 0  # throttle heavy analysis — only run every 3rd scan on Pi 3
 rssi_filter = -100  # default: all devices
@@ -556,14 +637,29 @@ def do_scan_and_emit():
 def login():
     if request.method == "POST":
         data = request.get_json() if request.is_json else request.form
-        username = data.get("username", "")
-        password = data.get("password", "")
-        if username in USERS and USERS[username] == password:
+        username = (data.get("username", "") or "").strip()
+        password = data.get("password", "") or ""
+        stored = USERS.get(username)
+        # stored may be bcrypt hash (string) or, on very old configs, plaintext
+        ok = False
+        if stored and isinstance(stored, str):
+            ok = _verify_password(password, stored)
+        if ok:
+            session.permanent = True
             session["logged_in"] = True
             session["username"] = username
+            # v7.5: audit trail for successful auth
+            try: log_event_chained("login_success", {"username": username})
+            except: pass
             if request.is_json:
-                return jsonify({"success": True})
+                return jsonify({
+                    "success": True,
+                    "using_default_password": USERS.get("_seeded_default") and username == "admin" and password == "admin123",
+                })
             return redirect("/")
+        # Log failed attempts
+        try: log_event_chained("login_failure", {"username": username})
+        except: pass
         if request.is_json:
             return jsonify({"error": "Invalid credentials"}), 401
         return send_file(str(STATIC_DIR / "login.html"))
@@ -573,8 +669,31 @@ def login():
 
 @app.route("/logout")
 def logout():
+    try: log_event_chained("logout", {"username": session.get("username", "unknown")})
+    except: pass
     session.clear()
     return redirect("/login")
+
+@app.route("/api/auth/change-password", methods=["POST"])
+@login_required
+def api_change_password():
+    """Allow logged-in users to change their password. v7.5 hardening."""
+    data = request.get_json(force=True, silent=True) or {}
+    old_pw = data.get("old", "")
+    new_pw = data.get("new", "")
+    if len(new_pw) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    u = session.get("username", "")
+    if not u or u not in USERS:
+        return jsonify({"error": "Session user invalid"}), 401
+    if not _verify_password(old_pw, USERS[u]):
+        return jsonify({"error": "Current password incorrect"}), 401
+    USERS[u] = _hash_password(new_pw)
+    USERS.pop("_seeded_default", None)
+    _save_users(USERS)
+    try: log_event_chained("password_changed", {"username": u})
+    except: pass
+    return jsonify({"success": True})
 
 @app.route("/")
 def index():
@@ -702,6 +821,11 @@ def api_jammer_start():
         session = jammer.start_jam(mode=mode, channel=channel, target=target)
         status = jammer.get_status()
         socketio.emit("jammer_update", status)
+        # v7.5: audit trail for offensive action (hash-chained, tamper-evident)
+        log_event_chained("jam_start", {
+            "mode": mode, "channel": channel, "target": target,
+            "session_id": session.session_id if session else None,
+        })
         return jsonify(status)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
@@ -713,6 +837,13 @@ def api_jammer_stop():
         return jsonify(JAMMER_UNAVAILABLE_STATUS)
     session = jammer.stop_jam()
     if session:
+        # v7.5: audit trail for offensive action (hash-chained)
+        log_event_chained("jam_stop", {
+            "session_id": session.session_id,
+            "mode": session.mode,
+            "packets_sent": session.packets_sent,
+            "end_time": session.end_time,
+        })
         logger.log_jam_session({
             "session_id": session.session_id,
             "mode": session.mode,
@@ -1101,6 +1232,54 @@ def api_correlator_following():
 def api_correlator_stats():
     """Get AI model statistics."""
     return jsonify(device_correlator.get_stats())
+
+
+# ── v7.5 evidence integrity API ──
+@app.route("/api/integrity/status")
+@login_required
+def api_integrity_status():
+    """Return signer fingerprint + chained-log verification result."""
+    if not HAS_INTEGRITY or signer is None or not signer.available:
+        return jsonify({
+            "available": False,
+            "reason": "cryptography library not installed",
+        })
+    result = chained_log.verify() if chained_log else {"valid": False}
+    return jsonify({
+        "available": True,
+        "signer_fingerprint": signer.fingerprint,
+        "public_key_pem": signer.public_key_pem(),
+        "chain": result,
+        "algorithm": "Ed25519",
+        "hash": "SHA-256",
+    })
+
+
+@app.route("/api/integrity/verify-chain")
+@login_required
+def api_integrity_verify():
+    """Walk the entire hash chain and report any tampering."""
+    if not chained_log:
+        return jsonify({"valid": False, "reason": "chain log unavailable"}), 503
+    return jsonify(chained_log.verify())
+
+
+@app.route("/api/integrity/pubkey", methods=["GET"])
+@login_required
+def api_integrity_pubkey():
+    """Serve the public key so external auditors can verify signatures."""
+    if not signer or not signer.available:
+        return jsonify({"error": "signer unavailable"}), 503
+    return signer.public_key_pem(), 200, {"Content-Type": "application/x-pem-file"}
+
+
+def log_event_chained(event_type: str, data: dict):
+    """Helper — append an event to the hash-chained log if available."""
+    if chained_log:
+        try:
+            chained_log.append({"event": event_type, **data})
+        except Exception as e:
+            print(f"[BlueShield] chained log append failed: {e}")
 
 
 @app.route("/api/ghost", methods=["POST"])
@@ -1999,6 +2178,30 @@ def main():
             jammer = None
 
     logger = BlueShieldLogger(config)
+
+    # v7.5: evidence-integrity init (Ed25519 + chained JSONL event log)
+    global signer, chained_log
+    signer = None
+    chained_log = None
+    if HAS_INTEGRITY:
+        try:
+            keydir = str(Path(__file__).parent.parent / "keys")
+            signer = SessionSigner(keydir=keydir)
+            chained_log_path = str(Path(__file__).parent.parent / "logs" / "events_chain.jsonl")
+            chained_log = ChainedEventLog(chained_log_path, signer=signer)
+            if signer.available:
+                print(f"[BlueShield] Evidence integrity: Ed25519 signer ready "
+                      f"(fingerprint: {signer.fingerprint})")
+                print(f"[BlueShield] Chained event log: {chained_log_path}")
+                chained_log.append({
+                    "event": "session_start",
+                    "operator": "admin",
+                    "blueshield_version": "7.5",
+                })
+            else:
+                print("[BlueShield] Evidence integrity: cryptography not available")
+        except Exception as e:
+            print(f"[BlueShield] Evidence integrity init failed: {e}")
 
     # ── Initialise sniffer subsystem ─────────────────────────────────────────
     pcap_dir = str(Path(__file__).parent.parent.parent / "captures")
