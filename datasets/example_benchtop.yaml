@@ -1,0 +1,63 @@
+# BlueShield Evaluation — Example ground-truth dataset
+#
+# This is a REFERENCE labeled dataset for evaluating BlueShield's detection
+# pipeline. Replace with your own labels from a controlled capture session.
+#
+# How to use:
+#   1. Capture: run BlueShield scanning for N hours in a known environment
+#   2. Label:   for each physical device you know about, list its known
+#               MACs (from BlueShield's correlator output) and set
+#               expected_is_following / expected_is_tracker per the threat
+#               model you're evaluating against.
+#   3. Evaluate:
+#         python3 tools/eval_harness.py --dataset datasets/example_benchtop.yaml
+#      → prints precision/recall table, writes eval_report.json
+#
+# A minimum dataset for thesis-quality evaluation:
+#   - 4-6 physical devices
+#   - 12-24 hour capture window
+#   - At least 1 device labeled as tracker (e.g. AirTag on desk)
+#   - At least 1 device labeled as following (e.g. phone carried by operator)
+#   - At least 1 device labeled as neither (e.g. static speaker nearby)
+
+dataset:
+  name: "Lab benchtop — example template"
+  environment: "3m x 3m lab bench, no external BT emitters"
+  captured_from: 2026-04-20T08:00:00Z
+  captured_to:   2026-04-20T20:00:00Z
+  blueshield_version: "7.5"
+  hardware: "Raspberry Pi 3 Model B, 1x Feasycom BP119, 2x Realtek USB, 2x nRF52840"
+
+devices:
+  iphone_operator:
+    label: "Operator's iPhone (carried throughout session)"
+    icloud_account: "operator@example.com"
+    expected_is_following: true          # carried by operator, should trip follow-detector
+    expected_is_tracker: false
+    notes: "Known to rotate RPA every ~15 min"
+    known_macs:
+      # REPLACE with actual MACs from your BlueShield correlator output
+      - "7E:C2:AB:40:B1:0C"
+      - "DA:A6:30:41:8F:90"
+
+  airtag_desk:
+    label: "AirTag placed on desk (not moved)"
+    expected_is_following: false
+    expected_is_tracker: true            # should trip tracker-detection
+    known_macs:
+      # REPLACE with actual MAC
+      - "3C:2E:FF:4E:D8:91"
+
+  airpods_operator:
+    label: "AirPods Pro 2 paired to operator iPhone"
+    expected_is_following: true          # moves with operator
+    expected_is_tracker: false
+    known_macs:
+      - "8C:68:8B:E2:F7:08"
+
+  homepod_static:
+    label: "HomePod mini (stationary)"
+    expected_is_following: false
+    expected_is_tracker: false
+    known_macs:
+      - "FC:7E:87:66:88:78"
