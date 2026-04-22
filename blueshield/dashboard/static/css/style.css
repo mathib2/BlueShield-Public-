@@ -939,7 +939,7 @@ button,input,select,textarea{font-family:inherit}
 .al-msg{color:var(--tx-1);flex:1;font-size:.75rem}
 
 /* ── Config ─────────────────────────────────────────────────── */
-.cfg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;padding:14px;overflow-y:auto;flex:1;align-content:start}
+.cfg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;padding:14px;overflow-y:auto;flex:1;align-content:start;max-width:1200px}
 .cfg-card{background:var(--bg-2);border:1px solid var(--border);border-radius: 2px;padding:14px;box-shadow:var(--sh-2);position:relative;overflow:hidden}
 .cfg-card::before{content:'';position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(34,211,238,0.15),transparent)}
 .cfg-card h3{font-size:.67rem;font-weight:700;color:var(--accent);margin-bottom:9px;text-transform:uppercase;letter-spacing:.6px}
@@ -1619,15 +1619,16 @@ body.tactical-login{background:var(--bg-0)}
 /* Subtle system status strip (replaces fluorescent green banner) */
 .sys-status-strip{
     display:flex; align-items:center; justify-content:flex-end;
-    gap:20px; padding:4px 16px;
+    gap:20px; padding:5px 18px;
     background:var(--bg-1);
     border-bottom:1px solid var(--border);
     font-family:'JetBrains Mono', monospace;
-    font-size:9px; letter-spacing:1.5px;
-    color:var(--tx-3);
+    font-size:10px; letter-spacing:1.5px;
+    color:var(--tx-2);
     user-select:none;
 }
-.sys-status-item{display:inline-flex; align-items:center; gap:6px}
+.sys-status-item{display:inline-flex; align-items:center; gap:6px; color:var(--tx-2)}
+.sys-status-item .mono{color:var(--tx-1); opacity:0.75}
 .sys-dot{width:6px; height:6px; border-radius:50%; display:inline-block}
 .sys-ok{background:var(--green); box-shadow:0 0 6px rgba(63,185,80,0.5)}
 .sys-warn{background:var(--orange)}
