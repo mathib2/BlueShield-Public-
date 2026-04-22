@@ -11,9 +11,12 @@
     <script src="https://cdn.jsdelivr.net/npm/animejs/dist/bundles/anime.umd.min.js"></script>
 </head>
 <body>
-    <!-- Classification Banner (DoD 5200.48) -->
-    <div class="classification-banner classification-unclass" id="class-banner">
-        // UNCLASSIFIED // FOR RESEARCH USE // WSU AUTHORIZED //
+    <!-- Subtle system status strip (replaces loud green banner) -->
+    <div class="sys-status-strip" id="sys-status">
+        <span class="sys-status-item"><span class="sys-dot sys-ok"></span><span class="mono">SYS: OPERATIONAL</span></span>
+        <span class="sys-status-item mono">CLASS: UNCLASSIFIED</span>
+        <span class="sys-status-item mono">ENV: RESEARCH · WSU AUTHORIZED</span>
+        <span class="sys-status-item mono">AUDIT: ACTIVE</span>
     </div>
 
     <!-- Top Bar -->
@@ -275,7 +278,7 @@
 
             <!-- RADAR TAB -->
             <section class="tab-pane" id="tab-radar">
-                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Proximity Radar</h2></div><div class="tb-right"><span class="tb-info" id="radar-count">0 devices</span></div></div>
+                <div class="tab-toolbar"><div class="tb-left"><h2 class="tab-title">Proximity Chart</h2><div class="heuristic-note" title="Radius = distance inferred from RSSI (log-distance path-loss model). Angle is NOT bearing — single-antenna hardware cannot determine direction. For true direction finding, need BLE 5.1+ AoA-capable hardware (nRF52833+) or multi-adapter trilateration.">// RSSI DISTANCE ONLY · ANGLE NOT BEARING</div></div><div class="tb-right"><span class="tb-info" id="radar-count">0 devices</span></div></div>
                 <div class="radar-container">
                     <canvas id="radar-canvas" width="600" height="600"></canvas>
                     <div class="radar-legend" id="radar-legend">
@@ -536,39 +539,69 @@
                     <div class="jam-card">
                         <div class="jam-card-hd"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:5px"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>Configuration</div>
                         <div class="jam-card-bd">
+                            <!-- 3-tier control model: Target × Action × Intensity -->
                             <div class="field">
-                                <label>Mode</label>
-                                <select id="j-mode" class="input">
-                                    <optgroup label="━━━ ButteRFly v1.1.3 (InjectaBLE DSN 2021) ━━━">
-                                        <option value="airpods_attack">AIRPODS REACTIVE — PHY jam on Apple TLV 0x07</option>
-                                        <option value="nearby_attack">NEARBY ATTACK — PHY jam all Apple vendor 0x004C</option>
-                                        <option value="apple_spam">CONTINUITY SPAM — flood iOS popup storm (AdvMode)</option>
-                                        <option value="ble_adv_flood">ADV FLOOD — rogue advertiser</option>
-                                        <option value="ble_raw_inject">RAW INJECT — PDU flood @1000Hz (target MAC)</option>
-                                        <option value="ble_reactive_jam">REACTIVE JAM — pattern-match PHY jam</option>
-                                    </optgroup>
-                                    <optgroup label="━━━ nRF52840 radio_test (Real RF, needs firmware) ━━━">
-                                        <option value="airpods_killer">AIRPODS KILLER — BR/EDR AFH saturation (needs radio_test fw)</option>
-                                        <option value="rf_sweep_full">RF Sweep Full — All 2.4 GHz (0-80)</option>
-                                        <option value="rf_sweep_bredr">RF Sweep BR/EDR — Classic BT (2-80)</option>
-                                        <option value="rf_sweep_ble">RF Sweep BLE — Data channels (0-39)</option>
-                                        <option value="rf_cw_carrier">RF CW Carrier — Single channel</option>
-                                        <option value="rf_modulated">RF Modulated — PRBS9 single channel</option>
-                                    </optgroup>
-                                    <optgroup label="━━━ HCI Advertising (BLE-only, no BR/EDR) ━━━">
-                                        <option value="flood">Flood — Max BLE adv throughput</option>
-                                        <option value="phantom_flood">Phantom Flood — Fake device spam</option>
-                                        <option value="sweep">Sweep — BLE adv channels</option>
-                                        <option value="continuous">Continuous — Single BLE adv ch</option>
-                                        <option value="targeted">Targeted — Specific Address</option>
-                                        <option value="full_spectrum">Full Spectrum — BLE + BR/EDR inquiry</option>
-                                        <option value="reactive">Reactive — Duty cycle (limited)</option>
-                                        <option value="deauth">ADV_DIRECT_IND Flood (no real deauth)</option>
-                                        <option value="connection_disrupt">ADV_DIRECT rotating addr</option>
-                                    </optgroup>
+                                <label>Target Profile</label>
+                                <select id="j-target-profile" class="input">
+                                    <option value="apple" selected>Apple (AirPods · iPhone · Watch · Find My)</option>
+                                    <option value="samsung">Samsung (Galaxy · Buds · Fast Pair)</option>
+                                    <option value="google">Google Fast Pair</option>
+                                    <option value="microsoft">Microsoft Swift Pair (Surface)</option>
+                                    <option value="generic">Generic BLE (any vendor)</option>
+                                    <option value="custom">Custom byte pattern…</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>Action</label>
+                                <select id="j-action" class="input">
+                                    <option value="disrupt_discovery" selected>Disrupt Discovery (block new pairing / handoff)</option>
+                                    <option value="force_disconnect">Force Disconnect (inject LL_TERMINATE_IND)</option>
+                                    <option value="spoof_nearby">Spoof Nearby Advertiser (flood adv channels)</option>
+                                    <option value="track_only">Track Only (passive, no TX)</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>Intensity</label>
+                                <select id="j-intensity" class="input">
+                                    <option value="passive">Passive — observe only</option>
+                                    <option value="standard" selected>Standard — reactive PHY jam on one channel</option>
+                                    <option value="aggressive">Aggressive — rotate across 37/38/39</option>
                                 </select>
                             </div>
                             <div id="j-capability-hint" class="jam-capability-hint" style="display:none"></div>
+                            <!-- Advanced (expert) controls, collapsed by default -->
+                            <details class="jam-advanced">
+                                <summary>Advanced mode controls</summary>
+                                <div class="field">
+                                    <label>Raw Mode (ButteRFly)</label>
+                                    <select id="j-mode" class="input">
+                                        <optgroup label="ButteRFly v1.1.3 (InjectaBLE DSN 2021)">
+                                            <option value="airpods_attack" selected>Reactive PHY jam · Apple TLV 0x07</option>
+                                            <option value="nearby_attack">Reactive PHY jam · Apple vendor 0x004C</option>
+                                            <option value="apple_spam">AdvMode flood · AirPods payload</option>
+                                            <option value="ble_adv_flood">AdvMode flood · generic</option>
+                                            <option value="ble_raw_inject">Raw PDU inject @1000Hz</option>
+                                            <option value="ble_reactive_jam">Reactive PHY jam · pattern</option>
+                                            <option value="ble_inject_terminate">Inject LL_TERMINATE_IND</option>
+                                        </optgroup>
+                                        <optgroup label="nRF52840 radio_test (firmware required)">
+                                            <option value="rf_sweep_full">RF Sweep · All 2.4 GHz (0-80)</option>
+                                            <option value="rf_sweep_bredr">RF Sweep · BR/EDR (2-80)</option>
+                                            <option value="rf_sweep_ble">RF Sweep · BLE data (0-39)</option>
+                                            <option value="rf_cw_carrier">CW Carrier · single channel</option>
+                                            <option value="rf_modulated">Modulated · PRBS9 single channel</option>
+                                        </optgroup>
+                                        <optgroup label="HCI Advertising (BLE-only)">
+                                            <option value="flood">Max throughput flood</option>
+                                            <option value="phantom_flood">Phantom device spam</option>
+                                            <option value="sweep">Sweep adv channels</option>
+                                            <option value="continuous">Single-channel continuous</option>
+                                            <option value="targeted">Targeted by address</option>
+                                            <option value="full_spectrum">BLE + BR/EDR inquiry</option>
+                                        </optgroup>
+                                    </select>
+                                </div>
+                            </details>
                             <div class="field">
                                 <label>Channel</label>
                                 <select id="j-channel" class="input">
@@ -766,6 +799,17 @@
                         <button class="btn btn-danger" id="btn-reset" style="width:100%;margin-bottom:8px">Reset All Data</button>
                         <button class="btn btn-ghost-mode" id="btn-ghost-cfg">Ghost Mode (Shutdown)</button>
                     </div>
+                    <!-- v7.5: Evidence integrity panel (Ed25519 + hash chain) -->
+                    <div class="cfg-card"><h3>Evidence Integrity</h3>
+                        <div class="cfg-info mono" id="integrity-info" style="font-size:.7rem;line-height:1.6">
+                            <div>Status: <span id="int-status" style="color:var(--tx-3)">checking…</span></div>
+                            <div>Algorithm: <span id="int-algo" style="color:var(--accent)">Ed25519 / SHA-256</span></div>
+                            <div>Signer: <span id="int-fp" class="mono" style="color:var(--accent)">--</span></div>
+                            <div>Chain: <span id="int-chain" style="color:var(--tx-3)">--</span></div>
+                        </div>
+                        <button class="btn btn-ghost" id="btn-verify-chain" style="width:100%;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:1.5px">VERIFY CHAIN</button>
+                        <a class="btn btn-ghost" href="/api/integrity/pubkey" download="blueshield_pubkey.pem" style="display:block;width:100%;margin-top:4px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:1.5px;text-decoration:none">DOWNLOAD PUBKEY</a>
+                    </div>
                 </div>
             </section>
         </main>
@@ -782,11 +826,6 @@
         <span class="mono" style="color:var(--tx-3);letter-spacing:1.5px">// BUILD 7.0.0 · SIGNED admin@blueshield ·</span>
         <span class="mono" style="color:var(--accent)">BLUESHIELD v7.0</span>
     </footer>
-
-    <!-- Classification banner (DoD 5200.48 footer duplicate) -->
-    <div class="classification-banner classification-unclass">
-        // UNCLASSIFIED // FOR RESEARCH USE // WSU AUTHORIZED //
-    </div>
 
     <script src="/static/js/dashboard.js"></script>
 </body>
