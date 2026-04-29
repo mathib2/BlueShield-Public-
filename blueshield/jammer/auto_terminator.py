@@ -246,7 +246,9 @@ class AutoTerminator:
                 self.last_target_aa = aa
                 self.last_target_mac = mac
             except Exception as e:
-                self.last_error = f"inject AA=0x{aa:08x}: {e}"
+                import traceback
+                tb = traceback.format_exc(limit=3).strip().splitlines()[-1]
+                self.last_error = f"inject AA=0x{aa:08x}: {type(e).__name__}: {e or tb}"
 
     # ------------------------------------------------------------------
     # Status

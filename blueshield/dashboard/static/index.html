@@ -569,41 +569,36 @@
                                 </select>
                             </div>
                             <div id="j-capability-hint" class="jam-capability-hint" style="display:none"></div>
-                            <!-- Advanced (expert) controls, collapsed by default -->
+                            <!-- Advanced (expert) controls, collapsed by default.
+                                 Modes listed here have all been empirically verified
+                                 to start, run, and report telemetry on this hardware
+                                 (Pi 3B + ButteRFly v1.1.3 on /dev/ttyACM0 + ttyACM1).
+                                 Modes that don't work on the current firmware
+                                 (rf_sweep_*, rf_cw_carrier, rf_modulated, airpods_killer,
+                                 auto_terminator, and the hcitool placeholder modes
+                                 flood/phantom_flood/sweep/continuous/targeted/full_spectrum)
+                                 have been removed from the UI to prevent demo failure. -->
                             <details class="jam-advanced">
-                                <summary>Advanced mode controls</summary>
+                                <summary>Advanced mode (raw backend selection)</summary>
                                 <div class="field">
-                                    <label>Raw Mode (ButteRFly)</label>
+                                    <label>Raw mode</label>
                                     <select id="j-mode" class="input">
-                                        <optgroup label="v7.6: AutoTerminator (dual-ButteRFly sniff→inject)">
-                                            <option value="auto_terminator">AUTO-TERMINATE — sniff CONNECT_IND → inject LL_TERMINATE_IND (best BLE attack on this hw)</option>
+                                        <optgroup label="HijackTerminator — single ButteRFly (recommended)">
+                                            <option value="hijack_terminator">HIJACK-TERMINATE — sniff CONNECT_IND → hijack slave → LL_TERMINATE_IND</option>
+                                            <option value="hijack_terminator_desync">HIJACK-DESYNC — same hijack, then LL_CONNECTION_UPDATE_IND with bad params (supervision timeout ~6 s)</option>
                                         </optgroup>
-                                        <optgroup label="ButteRFly v1.1.3 (InjectaBLE DSN 2021)">
-                                            <option value="airpods_attack" selected>Reactive PHY jam · Apple TLV 0x07</option>
-                                            <option value="nearby_attack">Reactive PHY jam · Apple vendor 0x004C</option>
-                                            <option value="apple_spam">AdvMode flood · AirPods payload</option>
-                                            <option value="ble_adv_flood">AdvMode flood · generic</option>
-                                            <option value="ble_raw_inject">Raw PDU inject @1000Hz</option>
-                                            <option value="ble_reactive_jam">Reactive PHY jam · pattern</option>
-                                            <option value="ble_inject_terminate">Inject LL_TERMINATE_IND (manual AA)</option>
-                                        </optgroup>
-                                        <optgroup label="nRF52840 radio_test (firmware required)">
-                                            <option value="rf_sweep_full">RF Sweep · All 2.4 GHz (0-80)</option>
-                                            <option value="rf_sweep_bredr">RF Sweep · BR/EDR (2-80)</option>
-                                            <option value="rf_sweep_ble">RF Sweep · BLE data (0-39)</option>
-                                            <option value="rf_cw_carrier">CW Carrier · single channel</option>
-                                            <option value="rf_modulated">Modulated · PRBS9 single channel</option>
-                                        </optgroup>
-                                        <optgroup label="HCI Advertising (BLE-only)">
-                                            <option value="flood">Max throughput flood</option>
-                                            <option value="phantom_flood">Phantom device spam</option>
-                                            <option value="sweep">Sweep adv channels</option>
-                                            <option value="continuous">Single-channel continuous</option>
-                                            <option value="targeted">Targeted by address</option>
-                                            <option value="full_spectrum">BLE + BR/EDR inquiry</option>
+                                        <optgroup label="ButteRFly InjectaBLE (Cayre DSN 2021)">
+                                            <option value="airpods_attack" selected>Reactive PHY jam · Apple TLV 0x07 (AirPods Proximity Pairing)</option>
+                                            <option value="nearby_attack">Reactive PHY jam · Apple vendor 0x004C (all Continuity)</option>
+                                            <option value="ble_reactive_jam">Reactive PHY jam · generic pattern</option>
+                                            <option value="ble_raw_inject">Raw ADV PDU inject @ 500 Hz</option>
+                                            <option value="ble_adv_flood">Rogue advertiser flood (auto-falls-back to raw_inject)</option>
+                                            <option value="apple_spam">Rogue advertiser flood · AirPods payload</option>
+                                            <option value="ble_inject_terminate">Inject LL_TERMINATE_IND (manual AA — for advanced ops)</option>
                                         </optgroup>
                                     </select>
                                 </div>
+                                <div class="jam-mode-doc" id="j-mode-doc"></div>
                             </details>
                             <div class="field">
                                 <label>Channel</label>

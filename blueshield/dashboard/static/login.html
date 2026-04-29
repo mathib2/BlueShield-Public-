@@ -2,138 +2,139 @@
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BLUESHIELD — Access Terminal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>BlueShield — Operator Sign-in</title>
     <link rel="icon" href="/static/img/blueshield-sigil.svg" type="image/svg+xml">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- QR code generator (vanilla JS, no deps, MIT) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         *{box-sizing:border-box;margin:0;padding:0}
         :root{
-            --bg-0:#05070C;--bg-1:#0A0E16;--bg-2:#0E131D;--bg-3:#141A26;
-            --tx-1:#E6EDF3;--tx-2:#8B949E;--tx-3:#484F58;
-            --accent:#FFB000;--accent-dim:#B57F00;
-            --ok:#3FB950;--crit:#F85149;
-            --border:rgba(139,148,158,0.12);
-            --border-hi:rgba(255,176,0,0.28);
+            --bg-0:#070A10;
+            --bg-1:#0C1019;
+            --bg-2:#121724;
+            --bg-3:#1A2030;
+            --line:rgba(140,160,200,0.10);
+            --line-hi:rgba(255,176,0,0.32);
+            --tx-1:#E8EEF8;
+            --tx-2:#9BA7BB;
+            --tx-3:#5A6478;
+            --accent:#FFB000;
+            --accent-soft:rgba(255,176,0,0.10);
+            --ok:#3FB950;
+            --crit:#F85149;
+            --grad: linear-gradient(135deg,#0E1320 0%,#0A0E16 100%);
         }
         html,body{height:100%}
         body{
-            font-family:'Inter',system-ui,sans-serif;
-            background:var(--bg-0);color:var(--tx-1);
-            min-height:100vh;display:flex;flex-direction:column;
-            overflow-x:hidden;
+            font-family:'Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+            background:var(--bg-0);
+            color:var(--tx-1);
+            min-height:100vh;
+            -webkit-font-smoothing:antialiased;
+            background-image:
+                radial-gradient(900px 600px at 80% 0%, rgba(255,176,0,0.04), transparent 60%),
+                radial-gradient(700px 500px at 0% 100%, rgba(63,185,80,0.03), transparent 55%),
+                radial-gradient(800px 600px at 50% 50%, rgba(88,166,255,0.025), transparent 60%);
         }
-        /* Classification banner */
-        .class-banner{
-            padding:4px 12px;text-align:center;
-            font-family:'JetBrains Mono',monospace;
-            font-size:10px;font-weight:700;letter-spacing:2px;
-            text-transform:uppercase;
-            color:#000;background:var(--ok);
+
+        /* Top status bar */
+        .top-bar{
+            display:flex;align-items:center;justify-content:space-between;
+            padding:10px 18px;
+            border-bottom:1px solid var(--line);
+            background:rgba(7,10,16,0.72);
+            backdrop-filter:saturate(140%) blur(10px);
+            -webkit-backdrop-filter:saturate(140%) blur(10px);
         }
-        /* Scanline overlay */
-        .scanlines{
-            position:fixed;inset:0;z-index:0;pointer-events:none;
-            background:repeating-linear-gradient(
-                180deg,
-                transparent 0,
-                transparent 3px,
-                rgba(255,176,0,0.015) 3px,
-                rgba(255,176,0,0.015) 4px
-            );
+        .brand-mark{display:flex;align-items:center;gap:10px}
+        .brand-mark svg{color:var(--accent)}
+        .brand-mark .name{font-weight:700;letter-spacing:1px;font-size:14px}
+        .brand-mark .ver{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tx-3);padding:2px 6px;border:1px solid var(--line);border-radius:3px;margin-left:4px}
+        .top-bar .meta{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:1.5px}
+        .top-bar .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);margin-right:5px;box-shadow:0 0 6px rgba(63,185,80,.6)}
+        @media(max-width:600px){
+            .top-bar .meta .hide-sm{display:none}
         }
-        /* Corner reticles */
-        .reticle{position:fixed;width:24px;height:24px;z-index:1;opacity:0.4}
-        .reticle::before,.reticle::after{
-            content:'';position:absolute;background:var(--accent);
-        }
-        .reticle::before{width:100%;height:1px;top:0}
-        .reticle::after{width:1px;height:100%;left:0;top:0}
-        .reticle.tl{top:40px;left:16px}
-        .reticle.tr{top:40px;right:16px;transform:scaleX(-1)}
-        .reticle.bl{bottom:16px;left:16px;transform:scaleY(-1)}
-        .reticle.br{bottom:16px;right:16px;transform:scale(-1,-1)}
-        /* Main container */
+
+        /* Main two-column layout */
         main{
-            flex:1;display:flex;align-items:center;justify-content:center;
-            padding:40px 20px;position:relative;z-index:2;
+            display:grid;
+            grid-template-columns: 1fr 1fr;
+            gap:32px;
+            padding:32px;
+            max-width:1280px;
+            margin:0 auto;
+            min-height:calc(100vh - 90px);
+            align-items:center;
         }
-        .login-card{
-            width:100%;max-width:420px;
-            background:var(--bg-1);
-            border:1px solid var(--border);
+        @media(max-width:920px){
+            main{grid-template-columns:1fr;padding:18px;gap:18px}
+        }
+
+        /* Left: sign-in card */
+        .signin-card{
+            background:var(--grad);
+            border:1px solid var(--line);
             border-top:2px solid var(--accent);
-            padding:40px 36px;
+            border-radius:6px;
+            padding:36px 30px;
+            box-shadow:0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.02);
         }
-        /* Branding */
-        .brand{text-align:center;margin-bottom:28px}
-        .brand-sigil{display:block;margin:0 auto 14px;color:var(--accent)}
-        .brand-name{
-            font-family:'Rajdhani','Space Grotesk',sans-serif;
-            font-weight:700;font-size:28px;letter-spacing:4px;
-            color:var(--tx-1);
-        }
-        .brand-sub{
+        .signin-head{margin-bottom:22px}
+        .signin-eyebrow{
             font-family:'JetBrains Mono',monospace;
-            font-size:10px;letter-spacing:2px;
-            color:var(--accent);margin-top:4px;
-            text-transform:uppercase;
+            font-size:10px;letter-spacing:2.5px;color:var(--accent);
+            text-transform:uppercase;margin-bottom:6px;
         }
-        /* Terminal auth prompt */
-        .term-prompt{
+        .signin-title{font-size:22px;font-weight:700;letter-spacing:.5px}
+        .signin-sub{margin-top:4px;color:var(--tx-2);font-size:13px}
+
+        .field{margin-bottom:14px}
+        .field label{
+            display:block;font-size:11px;font-weight:600;
+            color:var(--tx-2);text-transform:uppercase;
+            letter-spacing:1.5px;margin-bottom:6px;
             font-family:'JetBrains Mono',monospace;
-            font-size:11px;color:var(--tx-3);
-            letter-spacing:1px;text-transform:uppercase;
-            margin-bottom:20px;text-align:center;
         }
-        .term-prompt::before{content:'>>  '}
-        .term-prompt::after{content:'  <<'}
-        /* Form */
-        .form-group{margin-bottom:16px}
-        .form-label{
-            display:block;
-            font-family:'JetBrains Mono',monospace;
-            font-size:10px;font-weight:600;
-            color:var(--tx-2);
-            text-transform:uppercase;letter-spacing:1.5px;
-            margin-bottom:6px;
-        }
-        .form-input{
-            width:100%;padding:10px 12px;
+        .field input{
+            width:100%;padding:11px 13px;
             background:var(--bg-3);
-            border:1px solid var(--border);
-            border-radius:2px;
+            border:1px solid var(--line);
+            border-radius:4px;
             color:var(--tx-1);
             font-family:'JetBrains Mono',monospace;
-            font-size:13px;letter-spacing:1px;
+            font-size:14px;letter-spacing:.5px;
             outline:none;
-            transition:border-color .15s, background .15s;
+            transition:border-color .12s, background .12s, box-shadow .12s;
         }
-        .form-input:focus{
+        .field input:focus{
             border-color:var(--accent);
             background:var(--bg-2);
-            box-shadow:inset 0 0 0 1px var(--accent);
+            box-shadow:0 0 0 3px rgba(255,176,0,0.10);
         }
-        .form-input::placeholder{color:var(--tx-3);letter-spacing:0.5px}
-        /* Auth button */
-        .btn-auth{
-            width:100%;padding:12px;margin-top:12px;
-            background:transparent;
-            border:1px solid var(--accent);
-            color:var(--accent);
-            font-family:'JetBrains Mono',monospace;
-            font-size:12px;font-weight:700;letter-spacing:3px;
+        .field input::placeholder{color:var(--tx-3)}
+
+        .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 16px}
+        .check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--tx-2);cursor:pointer;user-select:none}
+        .check input{accent-color:var(--accent)}
+
+        .btn-primary{
+            width:100%;padding:13px;
+            background:var(--accent);color:#0A0A0A;
+            border:none;border-radius:4px;
+            font-family:'Inter',sans-serif;
+            font-weight:700;font-size:13px;letter-spacing:1.5px;
             text-transform:uppercase;
-            cursor:pointer;border-radius:2px;
-            transition:background .15s, box-shadow .15s;
+            cursor:pointer;
+            transition:transform .08s, box-shadow .15s, filter .15s;
+            box-shadow:0 6px 16px rgba(255,176,0,0.18);
         }
-        .btn-auth:hover{
-            background:var(--accent);color:#000;
-            box-shadow:0 0 14px rgba(255,176,0,0.35);
-        }
-        .btn-auth:active{transform:translateY(1px)}
-        .btn-auth:disabled{opacity:0.4;cursor:not-allowed}
-        /* Error */
+        .btn-primary:hover{filter:brightness(1.07);box-shadow:0 8px 22px rgba(255,176,0,.28)}
+        .btn-primary:active{transform:translateY(1px)}
+        .btn-primary:disabled{opacity:0.5;cursor:not-allowed}
+
         .err{
             display:none;
             padding:10px 12px;margin-bottom:14px;
@@ -141,84 +142,255 @@
             border-left:3px solid var(--crit);
             color:var(--crit);
             font-family:'JetBrains Mono',monospace;
-            font-size:11px;letter-spacing:0.5px;
+            font-size:12px;letter-spacing:.3px;border-radius:3px;
         }
         .err.show{display:block}
-        /* Footer */
-        .login-meta{
-            margin-top:24px;text-align:center;
+
+        .signin-foot{
+            margin-top:18px;padding-top:14px;
+            border-top:1px solid var(--line);
+            display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;
             font-family:'JetBrains Mono',monospace;
-            font-size:9px;color:var(--tx-3);
+            font-size:10px;color:var(--tx-3);
             letter-spacing:1px;text-transform:uppercase;
         }
-        .login-meta div + div{margin-top:4px}
-        /* Bottom classification */
+
+        /* Right: connection panel — QR codes */
+        .conn-panel{
+            background:var(--grad);
+            border:1px solid var(--line);
+            border-radius:6px;
+            padding:26px 24px;
+            box-shadow:0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.02);
+        }
+        .conn-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+        .conn-title{font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx-2);font-family:'JetBrains Mono',monospace}
+        .conn-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--line);border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tx-2)}
+        .conn-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--tx-3)}
+        .conn-pill.live .dot{background:var(--ok);box-shadow:0 0 6px rgba(63,185,80,.6)}
+        .conn-pill.live{color:var(--tx-1);border-color:rgba(63,185,80,0.35)}
+
+        .qr-grid{display:grid;grid-template-columns:1fr;gap:12px}
+        .qr-card{
+            display:grid;grid-template-columns: 110px 1fr;gap:14px;
+            padding:14px;
+            background:var(--bg-2);
+            border:1px solid var(--line);
+            border-radius:5px;
+            transition:border-color .15s, background .15s;
+        }
+        .qr-card:hover{border-color:var(--line-hi)}
+        .qr-img{
+            width:110px;height:110px;
+            background:#fff;border-radius:3px;
+            display:flex;align-items:center;justify-content:center;
+            padding:6px;
+        }
+        .qr-img canvas, .qr-img img{display:block;max-width:100%;height:auto}
+        .qr-empty{font-family:'JetBrains Mono',monospace;font-size:9px;color:#888;text-align:center;line-height:1.4}
+        .qr-meta{display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0}
+        .qr-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);letter-spacing:1.5px;text-transform:uppercase}
+        .qr-url{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--tx-1);word-break:break-all;line-height:1.45}
+        .qr-hint{font-size:11px;color:var(--tx-3);line-height:1.4;margin-top:2px}
+
+        .conn-help{
+            margin-top:14px;padding:10px 12px;
+            border-left:2px solid var(--accent);
+            background:var(--accent-soft);
+            border-radius:0 3px 3px 0;
+            font-size:11px;color:var(--tx-2);line-height:1.55;
+        }
+        .conn-help b{color:var(--tx-1)}
+
+        @media(max-width:520px){
+            .qr-card{grid-template-columns:90px 1fr}
+            .qr-img{width:90px;height:90px}
+        }
+
+        /* Bottom strip */
         footer{
-            padding:4px 12px;text-align:center;
+            position:fixed;left:0;right:0;bottom:0;
+            padding:8px 14px;
             font-family:'JetBrains Mono',monospace;
-            font-size:10px;font-weight:700;letter-spacing:2px;
-            text-transform:uppercase;
-            color:#000;background:var(--ok);
+            font-size:9.5px;color:var(--tx-3);
+            letter-spacing:1.5px;text-transform:uppercase;
+            text-align:center;
+            border-top:1px solid var(--line);
+            background:rgba(7,10,16,0.7);
+            backdrop-filter:blur(10px);
         }
     </style>
 </head>
 <body>
-    <div class="class-banner">// UNCLASSIFIED // FOR RESEARCH USE // WSU AUTHORIZED //</div>
-
-    <div class="scanlines"></div>
-    <span class="reticle tl"></span>
-    <span class="reticle tr"></span>
-    <span class="reticle bl"></span>
-    <span class="reticle br"></span>
+    <div class="top-bar">
+        <div class="brand-mark">
+            <svg width="22" height="22" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="miter">
+                <path d="M32 4 L56 18 L56 40 L32 58 L8 40 L8 18 Z"/>
+                <path d="M22 26 L32 22 L42 26"/>
+                <path d="M22 34 L32 30 L42 34"/>
+                <path d="M22 42 L32 38 L42 42"/>
+            </svg>
+            <div class="name">BLUESHIELD</div>
+            <div class="ver">v7.7</div>
+        </div>
+        <div class="meta">
+            <span><span class="dot"></span>SYSTEM ONLINE</span>
+            <span class="hide-sm">UNCLASSIFIED · WSU AUTHORIZED</span>
+        </div>
+    </div>
 
     <main>
-        <div class="login-card">
-            <div class="brand">
-                <svg class="brand-sigil" width="56" height="56" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="miter" stroke-linecap="square">
-                    <path d="M32 4 L56 18 L56 40 L32 58 L8 40 L8 18 Z"/>
-                    <path d="M32 11 L50 21.5 L50 37 L32 51 L14 37 L14 21.5 Z" stroke-width="1" opacity="0.55"/>
-                    <path d="M22 26 L32 22 L42 26"/>
-                    <path d="M22 34 L32 30 L42 34"/>
-                    <path d="M22 42 L32 38 L42 42"/>
-                </svg>
-                <div class="brand-name">BLUESHIELD</div>
-                <div class="brand-sub">// BLE Threat Intelligence Platform // v7.0 //</div>
-            </div>
+        <!-- Sign-in -->
+        <section class="signin-card">
+            <header class="signin-head">
+                <div class="signin-eyebrow">Operator sign-in</div>
+                <div class="signin-title">Tactical BLE Console</div>
+                <div class="signin-sub">Real-time Bluetooth threat intelligence and response.</div>
+            </header>
 
-            <div class="term-prompt">Operator authentication required</div>
+            <div class="err" id="error-msg">Access denied — invalid credentials</div>
 
-            <div class="err" id="error-msg">ACCESS DENIED — invalid credentials</div>
-
-            <form id="login-form">
-                <div class="form-group">
-                    <label class="form-label" for="username">Operator ID</label>
-                    <input type="text" id="username" class="form-input" placeholder="Enter operator ID" autocomplete="username" autofocus required>
+            <form id="login-form" autocomplete="on">
+                <div class="field">
+                    <label for="username">Operator ID</label>
+                    <input type="text" id="username" name="username" placeholder="admin" autocomplete="username" autofocus required>
                 </div>
-                <div class="form-group">
-                    <label class="form-label" for="password">Access Code</label>
-                    <input type="password" id="password" class="form-input" placeholder="Enter access code" autocomplete="current-password" required>
+                <div class="field">
+                    <label for="password">Access code</label>
+                    <input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password" required>
                 </div>
-                <button type="submit" class="btn-auth" id="btn-auth">&gt;&gt; AUTHENTICATE &lt;&lt;</button>
+                <div class="row">
+                    <label class="check"><input type="checkbox" id="remember" checked>Keep me signed in</label>
+                </div>
+                <button type="submit" class="btn-primary" id="btn-auth">Sign in</button>
             </form>
 
-            <div class="login-meta">
-                <div>Session timeout: 30 min</div>
-                <div>Access logged to audit trail</div>
+            <div class="signin-foot">
+                <span>Session expires after 30 min idle</span>
+                <span>Audit chain: Ed25519</span>
             </div>
-        </div>
+        </section>
+
+        <!-- Connection panel -->
+        <section class="conn-panel">
+            <div class="conn-head">
+                <div class="conn-title">Open on any device</div>
+                <span class="conn-pill" id="conn-status"><span class="dot"></span><span id="conn-status-text">Detecting…</span></span>
+            </div>
+
+            <div class="qr-grid" id="qr-grid">
+                <!-- Local AP / mDNS / LAN entries injected here -->
+            </div>
+
+            <div class="qr-card" id="qr-public" style="display:none">
+                <div class="qr-img"><div id="qr-public-img"></div></div>
+                <div class="qr-meta">
+                    <div class="qr-label" style="color:#3FB950">Public · over the internet</div>
+                    <div class="qr-url" id="qr-public-url"></div>
+                    <div class="qr-hint">HTTPS tunnel — works on any phone with cellular.</div>
+                </div>
+            </div>
+
+            <div class="conn-help">
+                <b>Demo plan:</b> tell the audience to join the WiFi network <b>BlueShield</b>
+                (open). Then scan any code above with their phone camera and the BlueShield
+                console opens in their browser. Login is the same operator credentials.
+            </div>
+        </section>
     </main>
 
-    <footer>// UNCLASSIFIED // FOR RESEARCH USE // WSU AUTHORIZED //</footer>
+    <footer>UNCLASSIFIED · FOR RESEARCH USE · WSU SENIOR DESIGN · BLUESHIELD v7.7</footer>
 
     <script>
+    (function(){
+        // ─ QR helper ────────────────────────────────────────────────────
+        function makeQR(container, text, size){
+            // qrcode.js renders into a <div>; clear first
+            while(container.firstChild) container.removeChild(container.firstChild);
+            try {
+                new QRCode(container, {
+                    text: text,
+                    width: size || 96,
+                    height: size || 96,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                    correctLevel: QRCode.CorrectLevel.M,
+                });
+            } catch(e) {
+                container.innerHTML = '<div class="qr-empty">QR<br>render<br>error</div>';
+            }
+        }
+
+        // ─ Local URLs (AP / mDNS / LAN) ─────────────────────────────────
+        function loadLocal(){
+            return fetch("/api/system/local-urls").then(r=>r.json()).then(d => {
+                const grid = document.getElementById("qr-grid");
+                grid.innerHTML = "";
+                if (!d || !d.urls || d.urls.length === 0){
+                    grid.innerHTML = '<div class="conn-help">No local network paths detected. Plug in or join the BlueShield WiFi.</div>';
+                    return false;
+                }
+                d.urls.forEach(entry => {
+                    const card = document.createElement("div");
+                    card.className = "qr-card";
+                    const isAP = entry.url.includes("10.42.0.1");
+                    card.innerHTML = `
+                        <div class="qr-img"><div class="qr-target"></div></div>
+                        <div class="qr-meta">
+                            <div class="qr-label" style="${isAP?'color:#FFB000':''}">${entry.label}${isAP?' · primary':''}</div>
+                            <div class="qr-url">${entry.url}</div>
+                            <div class="qr-hint">${isAP
+                                ? 'Audience joins WiFi “BlueShield”, then scans this code. No internet needed.'
+                                : 'Reachable from any device on the same network.'}</div>
+                        </div>`;
+                    grid.appendChild(card);
+                    makeQR(card.querySelector(".qr-target"), entry.url, 96);
+                });
+                return true;
+            }).catch(()=>false);
+        }
+
+        // ─ Public tunnel URL ────────────────────────────────────────────
+        function loadPublic(){
+            return fetch("/api/system/public-url").then(r=>r.json()).then(d => {
+                const card = document.getElementById("qr-public");
+                if (d && d.available && d.url){
+                    document.getElementById("qr-public-url").textContent = d.url;
+                    makeQR(document.getElementById("qr-public-img"), d.url, 96);
+                    card.style.display = "";
+                    return true;
+                }
+                card.style.display = "none";
+                return false;
+            }).catch(()=>false);
+        }
+
+        // ─ Connection status pill ───────────────────────────────────────
+        function setStatus(localOK, publicOK){
+            const pill = document.getElementById("conn-status");
+            const text = document.getElementById("conn-status-text");
+            const live = localOK || publicOK;
+            pill.classList.toggle("live", live);
+            const parts = [];
+            if (localOK) parts.push("local");
+            if (publicOK) parts.push("public");
+            text.textContent = live ? parts.join(" + ") + " live" : "no path";
+        }
+
+        Promise.all([loadLocal(), loadPublic()]).then(([l,p]) => setStatus(l,p));
+        // Re-poll every 30s to pick up tunnel changes / new IPs
+        setInterval(() => Promise.all([loadLocal(), loadPublic()])
+                                .then(([l,p]) => setStatus(l,p)), 30000);
+
+        // ─ Auth ─────────────────────────────────────────────────────────
         document.getElementById("login-form").addEventListener("submit", async (e) => {
             e.preventDefault();
             const btn = document.getElementById("btn-auth");
             const err = document.getElementById("error-msg");
             btn.disabled = true;
-            btn.textContent = ">> AUTHENTICATING... <<";
+            const oldText = btn.textContent;
+            btn.textContent = "Signing in…";
             err.classList.remove("show");
-
             try {
                 const res = await fetch("/login", {
                     method: "POST",
@@ -229,24 +401,23 @@
                     }),
                 });
                 const data = await res.json();
-                if (data.success) {
-                    btn.textContent = ">> AUTHORIZED <<";
+                if (data.success){
+                    btn.textContent = "Signed in ✓";
                     btn.style.background = "var(--ok)";
-                    btn.style.borderColor = "var(--ok)";
-                    btn.style.color = "#000";
-                    setTimeout(() => { window.location.href = "/"; }, 300);
-                } else {
-                    err.textContent = "ACCESS DENIED — " + (data.error || "invalid credentials");
-                    err.classList.add("show");
+                    btn.style.color = "#fff";
+                    setTimeout(() => { window.location.href = "/"; }, 250);
+                    return;
                 }
-            } catch (ex) {
-                err.textContent = "ACCESS DENIED — connection error";
+                err.textContent = "Access denied — " + (data.error || "invalid credentials");
+                err.classList.add("show");
+            } catch(ex) {
+                err.textContent = "Access denied — connection error";
                 err.classList.add("show");
             }
-            if (!err.classList.contains("show")) return;
             btn.disabled = false;
-            btn.textContent = ">> AUTHENTICATE <<";
+            btn.textContent = oldText;
         });
+    })();
     </script>
 </body>
 </html>
