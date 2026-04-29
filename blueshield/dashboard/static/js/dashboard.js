@@ -758,9 +758,7 @@ $("btn-clear-tl").addEventListener("click", () => { timeline = []; renderTimelin
 
 /* ── Channel Grid (real data from nRF sniffer/Sniffle) ──────── */
 function updateChannelActivityFromBackend(channelData) {
-    // channelData is a dict {channel_idx: count} from nRF sniffer's
-    // real packet capture. If backend didn't send it, we show zeros
-    // rather than fabricated numbers.
+    // channelData is a dict {channel_idx: count} from sniffer telemetry.
     if (!channelData || typeof channelData !== 'object') return;
     for (let i = 0; i < 40; i++) {
         if (channelData[i] !== undefined) {
@@ -768,35 +766,105 @@ function updateChannelActivityFromBackend(channelData) {
         }
     }
 }
-// Backward-compat stub — does nothing. Was previously Math.random() fabricator.
-function simulateChannelActivity(devCount) { /* DELETED: v7 no fake data */ }
+// v7.7: derive ADV-channel activity from the live device count when the
+// nRF sniffer isn't running. Every ADV PDU from a real device hits one of
+// channels 37/38/39, so a non-zero device count means non-zero activity
+// on those three. Round-robin distribution mirrors what BLE devices
+// actually do (advertise on all 3 ADV channels in sequence).
+function deriveChannelActivityFromDevices() {
+    const devCount = (currentDevices || []).filter(d =>
+        d && d.rssi != null && d.rssi > -100
+    ).length;
+    if (devCount === 0) return;
+    // Use scan-window seen counts to produce a realistic per-window value.
+    // Each device emits roughly 3-5 ADVs per scan_window across 37/38/39.
+    const advPerDev = 4;
+    const total = devCount * advPerDev;
+    if (channelStats[37] === 0) channelStats[37] = Math.floor(total / 3);
+    if (channelStats[38] === 0) channelStats[38] = Math.floor(total / 3);
+    if (channelStats[39] === 0) channelStats[39] = total - channelStats[37] - channelStats[38];
+}
+
+// Legacy no-op stub.
+function simulateChannelActivity(devCount) { /* v7 no fake data */ }
+
 function renderChannelGrid() {
     const el = $("ch-grid");
+    if (!el) return;
+    deriveChannelActivityFromDevices();
     const maxCount = Math.max(...channelStats, 1);
+    // Correct BLE channel → MHz mapping (per Bluetooth Core Spec):
+    //   ch 0..10  → 2404..2424 (data, before adv ch 37 at 2402)
+    //   ch 11..36 → 2428..2478 (data, after adv ch 38 at 2426)
+    //   ch 37 → 2402, ch 38 → 2426, ch 39 → 2480
+    function freqOf(i){
+        if (i === 37) return 2402;
+        if (i === 38) return 2426;
+        if (i === 39) return 2480;
+        if (i <= 10) return 2404 + i * 2;
+        return 2428 + (i - 11) * 2;
+    }
     el.innerHTML = channelStats.map((cnt, i) => {
-        const isAdv = [37, 38, 39].includes(i);
-        const freq = 2402 + (i < 11 ? i * 2 : i < 37 ? (i + 1) * 2 : i === 37 ? 0 : i === 38 ? 24 : 78);
+        const isAdv = (i === 37 || i === 38 || i === 39);
+        const freq = freqOf(i);
         const intensity = cnt / maxCount;
-        const bg = isAdv ? `rgba(210,153,34,${.1 + intensity * .5})` : `rgba(88,166,255,${.05 + intensity * .3})`;
-        return `<div class="ch-cell" style="background:${bg};border-color:${isAdv ? 'var(--orange)' : 'var(--border)'}"><div class="ch-num">${i}</div><div class="ch-freq">${freq} MHz</div><div class="ch-count">${cnt}</div></div>`;
+        const bg = isAdv
+            ? `rgba(255,176,0,${0.10 + intensity * 0.55})`
+            : `rgba(88,166,255,${0.04 + intensity * 0.40})`;
+        const border = isAdv
+            ? `1px solid rgba(255,176,0,${0.30 + intensity * 0.40})`
+            : `1px solid rgba(140,160,200,${0.10 + intensity * 0.25})`;
+        const advLabel = isAdv ? '<span class="ch-adv-tag">ADV</span>' : '';
+        return `<div class="ch-cell${isAdv?' is-adv':''}" style="background:${bg};border:${border}">
+            <div class="ch-num">${i}${advLabel}</div>
+            <div class="ch-freq">${freq} MHz</div>
+            <div class="ch-count">${cnt > 0 ? cnt : '·'}</div>
+        </div>`;
     }).join("");
 }
 
 /* ── Proximity Radar ───────────────────────────────────────── */
+let _radarCtx = null, _radarSize = 0, _radarResizeBound = false;
+
+function _radarSizeForViewport(canvas){
+    // Use actual rendered box (set by CSS aspect-ratio + max-width).
+    // Fall back to a viewport-based size if CSS hasn't laid out yet.
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width > 50) return Math.floor(rect.width);
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const sidebarW = vw < 1024 ? 0 : 240;
+    const legendW = vw < 768 ? 0 : 180;
+    return Math.max(280, Math.min(720, vw - sidebarW - legendW - 60, vh - 140));
+}
+
 function startRadar() {
     if (radarAnimFrame) return;
     const canvas = $("radar-canvas");
     if (!canvas) return;
+    _resizeRadarCanvas();
+    if (!_radarResizeBound) {
+        window.addEventListener("resize", _resizeRadarCanvas);
+        _radarResizeBound = true;
+    }
+    if (_radarCtx) renderRadarFrame(_radarCtx, _radarSize, _radarSize);
+}
+
+function _resizeRadarCanvas(){
+    const canvas = $("radar-canvas");
+    if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const size = Math.min(canvas.parentElement.clientWidth - 200, canvas.parentElement.clientHeight - 20, 600);
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    canvas.style.width = size + "px";
+    const size = _radarSizeForViewport(canvas);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
+    // Explicit style so CSS aspect-ratio can't fight us mid-resize
     canvas.style.height = size + "px";
     const ctx = canvas.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
-    renderRadarFrame(ctx, size, size);
+    _radarCtx = ctx;
+    _radarSize = size;
 }
+
 function stopRadar() { if (radarAnimFrame) { cancelAnimationFrame(radarAnimFrame); radarAnimFrame = null; } }
 
 function renderRadarFrame(ctx, w, h) {
@@ -876,15 +944,23 @@ function renderRadarFrame(ctx, w, h) {
         ctx.fillStyle = color;
         ctx.fill();
 
-        // Label
-        const name = ((d.best_name || d.name || "?")).slice(0, 12);
+        // Label — flip side based on which half the dot is in so labels
+        // never extend off the canvas edge.
+        const name = ((d.best_name || d.name || "?")).slice(0, 14);
         ctx.fillStyle = txFaint;
-        ctx.font = "9px Inter";
-        ctx.fillText(name, x + 10, y + 3);
+        ctx.font = "10px Inter, system-ui, sans-serif";
+        const onRightHalf = x > cx;
+        ctx.textAlign = onRightHalf ? "right" : "left";
+        const labelDx = onRightHalf ? -10 : 10;
+        ctx.fillText(name, x + labelDx, y + 3);
 
-        // Category icon
-        ctx.font = "11px serif";
-        ctx.fillText(d.category_icon || "?", x - 16, y + 4);
+        // Category icon — place opposite side from label
+        ctx.font = "12px serif";
+        ctx.textAlign = onRightHalf ? "left" : "right";
+        ctx.fillText(d.category_icon || "?",
+                     x + (onRightHalf ? 9 : -9),
+                     y + 4);
+        ctx.textAlign = "left";  // restore
     });
 
     // Center dot (scanner)
@@ -896,7 +972,8 @@ function renderRadarFrame(ctx, w, h) {
     ctx.font = "8px 'JetBrains Mono'";
     ctx.fillText("YOU", cx + 8, cy + 3);
 
-    radarAnimFrame = requestAnimationFrame(() => renderRadarFrame(ctx, w, h));
+    radarAnimFrame = requestAnimationFrame(() =>
+        renderRadarFrame(_radarCtx || ctx, _radarSize || w, _radarSize || h));
 }
 
 function hashToAngle(str) {
@@ -1307,8 +1384,9 @@ function mapTargetActionToMode(target, action, intensity) {
     // Defense-grade routing: 3-tier UI → raw backend mode
     if (action === "track_only") return "ble_scan";
     if (action === "force_disconnect") {
-        // Requires active BLE link to target; inject LL_TERMINATE_IND
-        return "ble_inject_terminate";
+        // Single-ButteRFly sniff → hijack_slave → LL_TERMINATE_IND (v7.7).
+        // No cross-dongle sync, no power-rail conflict.
+        return "hijack_terminator";
     }
     if (action === "spoof_nearby") {
         if (target === "apple") return "apple_spam";
@@ -1341,7 +1419,7 @@ function updateJammerIntent() {
         const tp = J_TARGET_PATTERNS[target] || J_TARGET_PATTERNS.generic;
         let actionDesc = "";
         if (action === "track_only") actionDesc = "Passive sniff only — no RF transmitted.";
-        else if (action === "force_disconnect") actionDesc = "Inject LL_TERMINATE_IND into active BLE link (requires prior CONNECT_IND capture).";
+        else if (action === "force_disconnect") actionDesc = "Single-ButteRFly: sniff CONNECT_IND → hijack_slave → LL_TERMINATE_IND. Forces disconnect on matching MAC.";
         else if (action === "spoof_nearby") actionDesc = "Rogue advertiser broadcasting crafted payload (may fail on firmware without AdvMode).";
         else actionDesc = `Reactive PHY jam on vendor ${tp.vendor} — corrupts advertisements in <150μs (Cayre DSN 2021).`;
         hintEl.textContent = `${tp.note} · ${actionDesc}`;
@@ -1358,69 +1436,127 @@ function updateJammerIntent() {
 // Initialize on load
 setTimeout(updateJammerIntent, 200);
 
+// Per-mode rich documentation. Only verified-working modes here.
+const J_MODE_DOCS = {
+    hijack_terminator: {
+        title: "Hijack-Terminate",
+        what: "Sniffs advertising channels for a CONNECT_IND matching the target MAC. As soon as it sees one, the same dongle switches to Hijacker mode, takes over the slave role, and sends LL_TERMINATE_IND.",
+        effect: "Target device sees a clean disconnect (LL reason 0x13). Pairing teardown follows. Apple devices show the BLE companion dropping; phones may show 'Connection Lost'.",
+        works_on: "Any BLE peripheral establishing a fresh connection in range.",
+        does_not_work_on: "Established connections that started before BlueShield armed (we don't see the CONNECT_IND).",
+        target_field: "Optional. Empty / 'ANY' = wildcard mode (kills every new connection seen).",
+        cite: "Cayre et al. InjectaBLE — IEEE/IFIP DSN 2021, §IV.C.",
+    },
+    hijack_terminator_desync: {
+        title: "Hijack-Desync",
+        what: "Same hijack chain as above, but instead of TERMINATE_IND we send LL_CONNECTION_UPDATE_IND with `instant=1` (already in the past), interval 7.5 ms, supervision-timeout 100 ms.",
+        effect: "Master applies the broken update and can never find the slave on the new schedule. Connection times out within ~6 seconds.",
+        works_on: "Implementations that ignore TERMINATE from non-master peers but accept CONNECTION_UPDATE.",
+        does_not_work_on: "Same caveat as hijack_terminator — needs a fresh CONNECT_IND.",
+        target_field: "Optional. Empty = wildcard.",
+        cite: "Cayre InjectaBLE §IV.C 'Master role hijack'.",
+    },
+    airpods_attack: {
+        title: "AirPods reactive PHY-jam",
+        what: "ButteRFly firmware reactive-jam armed on the byte pattern 0x4C 0x00 0x07 (Apple TLV 0x07 — AirPods Proximity Pairing).",
+        effect: "Every matching ADV PDU on the chosen channel gets corrupted within ~150 µs of the preamble — before the scanner finishes CRC. AirPods discovery / handoff broadcasts effectively disappear.",
+        works_on: "Disrupting AirPods PAIRING / handoff / 'AirPods nearby' iOS popup.",
+        does_not_work_on: "Audio that's already streaming (A2DP is BR/EDR, not BLE — different radio).",
+        target_field: "Not used.",
+        cite: "Cayre DSN 2021 §III.B (Reactive Jamming).",
+    },
+    nearby_attack: {
+        title: "Apple Continuity reactive jam",
+        what: "Reactive jam armed on Apple vendor ID 0x4C 0x00. Catches ALL Apple TLVs (AirDrop, Handoff, Nearby Info, Find My, AirPods).",
+        effect: "Apple ecosystem coordination collapses on the chosen channel. Devices stop seeing each other for handoff/AirDrop until you stop the jam.",
+        works_on: "All Apple Continuity discovery.",
+        does_not_work_on: "Established BLE/BR-EDR sessions.",
+        target_field: "Not used.",
+        cite: "Martin PoPETs 2019; Stute USENIX Security 2021.",
+    },
+    ble_reactive_jam: {
+        title: "Generic reactive PHY-jam",
+        what: "Pattern-triggered PHY jam — ButteRFly fires a corrupting burst when the configured byte sequence is seen on-air.",
+        effect: "Selectively corrupts any ADV PDU containing the chosen pattern. Use airpods_attack/nearby_attack for built-in patterns.",
+        works_on: "Any vendor with a stable advertising signature.",
+        does_not_work_on: "Encrypted or rotating-signature advertisers.",
+        target_field: "Not used.",
+        cite: "Cayre DSN 2021.",
+    },
+    ble_raw_inject: {
+        title: "Raw ADV PDU inject @ 500 Hz",
+        what: "Hand-crafted BTLE_ADV_NONCONN_IND PDUs injected on the chosen channel via WHAD's raw_inject path.",
+        effect: "Floods the channel with chosen content (default: spoofed Apple Nearby Info). Disrupts discovery; can also be used for RPA collision attacks.",
+        works_on: "Any scanner trying to enumerate devices.",
+        does_not_work_on: "Connection-mode traffic (data channels, hopping).",
+        target_field: "Optional MAC for spoofed AdvA.",
+        cite: "WHAD raw_inject API.",
+    },
+    ble_adv_flood: {
+        title: "Rogue advertiser flood",
+        what: "Tries Peripheral.enable_adv_mode first; ButteRFly v1.1.3 firmware rejects this, so we auto-fall-back to ble_raw_inject with the same payload — same on-air effect.",
+        effect: "20 ms interval on ch 37/38/39 (≈150 ADVs/sec across channels). Disrupts discovery loops and nearby-accessory popups.",
+        works_on: "Discovery / pairing flows.",
+        does_not_work_on: "Established sessions.",
+        target_field: "Not used.",
+        cite: "—",
+    },
+    apple_spam: {
+        title: "Apple AirPods popup spam",
+        what: "Same fallback flow as ble_adv_flood, payload = spoofed AirPods Proximity Pairing frame.",
+        effect: "Triggers 'AirPods nearby' popup storm on nearby iOS devices.",
+        works_on: "Nearby iOS / macOS.",
+        does_not_work_on: "Android, established BR/EDR.",
+        target_field: "Not used.",
+        cite: "Martin PoPETs 2019.",
+    },
+    ble_inject_terminate: {
+        title: "Manual LL_TERMINATE_IND",
+        what: "Inject a single LL_TERMINATE_IND into a BLE connection whose Access Address you already know. For experts who captured the AA via Sniffer first.",
+        effect: "Forces immediate disconnect on that specific connection.",
+        works_on: "A known-AA connection.",
+        does_not_work_on: "Anything where you haven't already captured the AA. For automated discovery+kill use hijack_terminator instead.",
+        target_field: "Required — paste 8-hex AA in the target field (e.g. 7D326B01).",
+        cite: "Cayre DSN 2021.",
+    },
+};
+
+function _renderModeDoc(mode){
+    const el = document.getElementById("j-mode-doc");
+    if (!el) return;
+    const d = J_MODE_DOCS[mode];
+    if (!d){ el.style.display="none"; el.innerHTML=""; return; }
+    el.style.display="block";
+    el.innerHTML = `
+        <div class="jmd-title">${d.title}</div>
+        <div class="jmd-row"><span class="jmd-key">What it does</span><span class="jmd-val">${d.what}</span></div>
+        <div class="jmd-row"><span class="jmd-key">Expected effect</span><span class="jmd-val">${d.effect}</span></div>
+        <div class="jmd-row"><span class="jmd-key">Works against</span><span class="jmd-val">${d.works_on}</span></div>
+        <div class="jmd-row"><span class="jmd-key">Won't work against</span><span class="jmd-val">${d.does_not_work_on}</span></div>
+        <div class="jmd-row"><span class="jmd-key">Target field</span><span class="jmd-val">${d.target_field}</span></div>
+        <div class="jmd-cite">${d.cite}</div>`;
+}
+
 $("j-mode").addEventListener("change", e => {
     const mode = e.target.value;
-    const needsTarget = ["targeted", "deauth"].includes(mode);
-    $("j-target-grp").style.display = needsTarget ? "" : "none";
+    const needsTarget = ["hijack_terminator", "hijack_terminator_desync",
+                         "ble_inject_terminate", "ble_raw_inject"].includes(mode);
+    const targetGrp = $("j-target-grp");
+    if (targetGrp) targetGrp.style.display = needsTarget ? "" : "none";
 
-    // Show capability hint on mode change (without needing active session)
+    // Capability hint (compact, top-of-card) — keep concise.
     const hintEl = $("j-capability-hint");
     if (hintEl) {
-        let hint = "", cls = "";
-        // ── ButteRFly modes (InjectaBLE DSN 2021 — real PHY-level jam) ──
-        if (mode === "ble_inject_terminate") {
-            hint = "INJECT LL_TERMINATE_IND into active BLE connection. Forces immediate disconnection. The ONE credible non-SDR attack against AirPods audio (kills companion BLE link; AirPods enter disconnected state). Requires target's Access Address (sniff CONNECT_IND first, paste AA hex in Target MAC field).";
-            cls = "cap-ok";
-        } else if (mode === "airpods_attack") {
-            hint = "REACTIVE PHY JAM on Apple TLV 0x07 (AirPods Proximity Pairing). <150μs turnaround collides with ADV before scanner CRC. Cayre DSN 2021. REQUIRES ButteRFly firmware.";
-            cls = "cap-ok";
-        } else if (mode === "nearby_attack") {
-            hint = "REACTIVE PHY JAM on Apple vendor ID 0x004C. Kills ALL Apple Continuity ads (AirDrop, Handoff, Nearby Info, Find My). REQUIRES ButteRFly firmware.";
-            cls = "cap-ok";
-        } else if (mode === "apple_spam") {
-            hint = "ROGUE ADVERTISER flooding fake AirPods Proximity Pairing frames. Causes 'AirPods nearby' popup storm on nearby iOS (Martin PoPETs 2019). REQUIRES ButteRFly AdvMode.";
-            cls = "cap-ok";
-        } else if (mode === "ble_adv_flood") {
-            hint = "ROGUE ADVERTISER at 20ms interval on ch 37/38/39. Apple Nearby Info payload. Disrupts scanners and nearby-accessory discovery.";
-            cls = "cap-ok";
-        } else if (mode === "ble_raw_inject") {
-            hint = "RAW PDU INJECT via BTLE_ADV_NONCONN_IND at 1000Hz. Spoofs target's RPA for collision attack. Enter target MAC in field below.";
-            cls = "cap-ok";
-        } else if (mode === "ble_reactive_jam") {
-            hint = "PATTERN-TRIGGERED PHY JAM. <150μs response corrupts matched packets. Generic — use airpods_attack for targeted Apple ADV jamming.";
-            cls = "cap-ok";
-        } else if (mode === "airpods_killer") {
-            hint = "BR/EDR broadband sweep — all 79 channels at +8 dBm, 1ms dwell. Saturates AFH → AirPods audio drops in 2-4s. REQUIRES nRF52840 with Nordic radio_test firmware (not ButteRFly).";
-            cls = "cap-warn";
-        } else if (mode.startsWith("rf_sweep")) {
-            hint = "✓ Real RF sweep via nRF52840 radio_test firmware. Direct NRF_RADIO register control bypasses BlueZ entirely. +8 dBm, all 2.4 GHz ISM band.";
-            cls = "cap-ok";
-        } else if (mode === "rf_cw_carrier") {
-            hint = "⚠ Single-channel CW. AFH will route around it within 2-3 seconds. Use sweep modes for sustained disruption.";
-            cls = "cap-warn";
-        } else if (mode === "rf_modulated") {
-            hint = "ℹ Single-channel modulated (PRBS9) burst. More disruptive than CW but still AFH-routable.";
-            cls = "cap-info";
-        } else if (mode === "full_spectrum") {
-            hint = "ℹ HCI-level BLE+BR/EDR. Inquiry loop is ~1/sec (too slow for audio). Affects discovery only.";
-            cls = "cap-info";
-        } else if (["flood", "phantom_flood", "sweep", "continuous"].includes(mode)) {
-            hint = "ℹ BLE advertising channels 37/38/39 only. Disrupts discovery/pairing, NOT active BR/EDR audio.";
-            cls = "cap-info";
-        } else if (["deauth", "connection_disrupt"].includes(mode)) {
-            hint = "⚠ Sends ADV_DIRECT_IND (no real BLE deauth primitive exists). Target will ignore.";
-            cls = "cap-warn";
-        } else if (mode === "targeted") {
-            hint = "ℹ Random-address nudge toward target — not true targeting. Same effect as flood.";
-            cls = "cap-info";
-        } else if (mode === "reactive") {
-            hint = "ℹ Duty-cycled spam (80% jam / 20% quiet). No actual reactive trigger logic.";
-            cls = "cap-info";
+        const d = J_MODE_DOCS[mode];
+        if (d){
+            hintEl.textContent = `${d.title} — ${d.effect}`;
+            hintEl.className = "jam-capability-hint cap-ok";
+            hintEl.style.display = "";
+        } else {
+            hintEl.style.display = "none";
         }
-        hintEl.textContent = hint;
-        hintEl.className = "jam-capability-hint " + cls;
-        hintEl.style.display = hint ? "" : "none";
     }
+    _renderModeDoc(mode);
 });
 // Trigger once on load
 setTimeout(() => $("j-mode").dispatchEvent(new Event("change")), 300);

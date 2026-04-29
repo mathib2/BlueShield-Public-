@@ -152,6 +152,11 @@ def check_auth():
         return None
     if request.path.startswith("/socket.io"):
         return None  # socket.io handles its own auth
+    # v7.7: public-URL + local-URLs endpoints must be reachable on the
+    # login page so the audience can see the demo URL + QR codes before
+    # they authenticate.
+    if request.path in ("/api/system/public-url", "/api/system/local-urls"):
+        return None
     if not session.get("logged_in"):
         if request.is_json or request.path.startswith("/api/"):
             return jsonify({"error": "Unauthorized"}), 401
@@ -969,6 +974,85 @@ def api_platform():
     return jsonify(platform_info)
 
 
+@app.route("/api/system/public-url")
+def api_public_url():
+    """Return the live public URL set by the remote-access tunnel
+    (Tailscale Funnel or Cloudflare Quick Tunnel). The setup script
+    writes this file. The dashboard reads it to display a QR code so
+    the audience can scan it on their phone during the demo. Public —
+    no auth required so the URL can render on the login page."""
+    url_file = Path("/etc/blueshield/public-url")
+    if not url_file.exists():
+        return jsonify({"url": None, "available": False,
+                        "hint": "run tools/setup_remote_access.sh"})
+    try:
+        url = url_file.read_text().strip()
+    except Exception as e:
+        return jsonify({"url": None, "available": False, "error": str(e)})
+    if not url or not url.startswith("http"):
+        return jsonify({"url": None, "available": False})
+    return jsonify({"url": url, "available": True})
+
+
+@app.route("/api/system/local-urls")
+def api_local_urls():
+    """Return every URL the dashboard is reachable at right now from
+    the local network. Used by the login page to render QR codes for
+    the audience. Public — no auth, by design.
+
+    Order of preference (best first for demo day):
+      1. AP IP (10.42.0.1) when BlueShield-AP profile is active
+      2. mDNS hostname (blueshield.local)
+      3. Live LAN IP (whatever DHCP handed us)
+    """
+    import socket as _sock
+    urls = []
+    seen = set()
+
+    def add(url, label):
+        if url and url not in seen:
+            urls.append({"url": url, "label": label})
+            seen.add(url)
+
+    # 1. AP IP — known fixed when BlueShield-AP is up
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "addr", "show", "wlan0"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout
+        if "10.42.0.1" in out:
+            add("http://10.42.0.1:8080", "BlueShield WiFi (AP)")
+    except Exception:
+        pass
+
+    # 2. mDNS hostname (avahi)
+    try:
+        host = _sock.gethostname()
+        if host:
+            add(f"http://{host}.local:8080", "mDNS (any device)")
+    except Exception:
+        pass
+
+    # 3. Whatever IPv4 LAN IP we currently hold (excluding the AP IP we
+    # already added, link-local 169.254.x.x, and any IPv6).
+    try:
+        out = subprocess.run(
+            ["hostname", "-I"], capture_output=True, text=True, timeout=2,
+        ).stdout
+        import re as _re
+        v4 = _re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+        for ip in out.split():
+            if not v4.match(ip):
+                continue
+            if ip == "10.42.0.1" or ip.startswith("169.254.") or ip == "127.0.0.1":
+                continue
+            add(f"http://{ip}:8080", f"LAN ({ip})")
+    except Exception:
+        pass
+
+    return jsonify({"urls": urls, "count": len(urls)})
+
+
 # ── New v4 API endpoints ─────────────────────────────────────────────────────
 
 @app.route("/api/system")
@@ -1326,10 +1410,14 @@ def api_adapters():
                 current = {
                     "name": name,
                     "role": roles.get(name, "Unassigned"),
-                    "up": "UP RUNNING" in line,
+                    "up": False,
                     "details": line.strip(),
                 }
             elif current and line.strip():
+                # hciconfig prints "UP RUNNING" on an indented continuation line,
+                # not on the header — flag must be set while we're inside the block
+                if "UP RUNNING" in line:
+                    current["up"] = True
                 if "BD Address" in line:
                     current["address"] = line.split("BD Address:")[1].split()[0]
                 if "Name:" in line:
@@ -2109,6 +2197,50 @@ def _merge_nrf_devices_to_scanner():
 
 # ── Entry Point ──────────────────────────────────────────────────────────────
 
+# ── HCI helpers (v7.7) ──
+# hci numbers re-enumerate across boots, so banner labels can't be hard-coded.
+# Resolve a runtime label from `hciconfig -a` + manufacturer info.
+_HCI_CACHE: dict = {}
+
+def _describe_hci(name: str) -> str:
+    """Return a human label like 'Realtek BT5.4 USB' for an hciX adapter.
+    Cached for the life of the process; falls back to 'unknown' on error."""
+    if not name:
+        return "unknown"
+    if name in _HCI_CACHE:
+        return _HCI_CACHE[name]
+    try:
+        import subprocess as _sp
+        out = _sp.run(["hciconfig", name, "version"],
+                      capture_output=True, text=True, timeout=2).stdout
+        ver = ""
+        manu = ""
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("HCI Version:"):
+                ver = line.split(":", 1)[1].strip().split()[0]
+            if line.startswith("Manufacturer:"):
+                manu = line.split(":", 1)[1].strip()
+                # "Realtek Semiconductor Corporation (93)" -> "Realtek"
+                if "(" in manu: manu = manu.split("(")[0].strip()
+                manu = manu.replace("Semiconductor Corporation", "").strip()
+        bus = "USB"
+        try:
+            base = _sp.run(["hciconfig", name], capture_output=True,
+                           text=True, timeout=2).stdout
+            if "Bus: UART" in base: bus = "UART"
+        except Exception:
+            pass
+        if not manu and bus == "UART":
+            manu = "Broadcom"  # Pi onboard chip
+        label_parts = [p for p in [manu, f"BT{ver}" if ver else "", bus] if p]
+        label = " ".join(label_parts) or "unknown"
+    except Exception:
+        label = "unknown"
+    _HCI_CACHE[name] = label
+    return label
+
+
 def main():
     global scanner, jammer, logger, config, scan_interval, platform_info
     global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
@@ -2163,13 +2295,14 @@ def main():
     else:
         print("[BlueShield] Using REAL hardware scanner")
         scanner = BluetoothScanner(config)
-        print(f"[BlueShield] Scanner    → {config.get('interface', 'hci2')} (Feasycom BP119, BT5.4)")
+        scan_iface = config.get('interface', 'hci2')
+        print(f"[BlueShield] Scanner    → {scan_iface} ({_describe_hci(scan_iface)})")
         if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
             jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
             jammer = BluetoothJammer(jammer_cfg)
             sec = config.get("jammer_secondary_interface", "hci3")
-            print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} (Realtek BT5.4, Primary)")
-            print(f"[BlueShield] Jammer 2   → {sec} (Realtek BT5.3, Secondary / Dual-adapter)")
+            print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} ({_describe_hci(jammer_cfg['interface'])})")
+            print(f"[BlueShield] Jammer 2   → {sec} ({_describe_hci(sec)})")
         else:
             # Real jammer requires Linux + hcitool. Do NOT silently fall back
             # to simulated — that produces fake PPS counts in the UI.
@@ -2196,7 +2329,7 @@ def main():
                 chained_log.append({
                     "event": "session_start",
                     "operator": "admin",
-                    "blueshield_version": "7.5",
+                    "blueshield_version": "7.7",
                 })
             else:
                 print("[BlueShield] Evidence integrity: cryptography not available")
@@ -2219,14 +2352,20 @@ def main():
     gatt_inspector = make_gatt_inspector(sim=args.sim)
     crackle_runner = CrackleRunner(output_dir=str(Path(pcap_dir) / "crackle"))
 
-    # Be explicit about whether Sniffle is real hardware vs unavailable
+    # Be explicit about which sniffer backend is actually live
+    backend_name = type(sniffer_engine).__name__  # SniffleEngine / WhadSniffleEngine / SimulatedSniffleEngine
+    backend_label = {
+        "SniffleEngine": "Sniffle / TI CC1352 BLE PDU capture",
+        "WhadSniffleEngine": "WHAD / nRF52840 ButteRFly v1.1.3 BLE adv-channel sniff",
+        "SimulatedSniffleEngine": "SIMULATED — no real hardware",
+    }.get(backend_name, backend_name)
     if args.sim:
         sniffer_status = "SIMULATED (--sim flag explicit)"
     elif sniffer_engine.hardware_available:
         sniffer_status = "HARDWARE"
     else:
-        sniffer_status = "UNAVAILABLE (no TI CC1352 on serial port)"
-    print(f"[BlueShield] Sniffer engine  : {sniffer_status} (Sniffle / TI CC1352 BLE PDU capture)")
+        sniffer_status = "UNAVAILABLE (no compatible sniffer on serial port)"
+    print(f"[BlueShield] Sniffer engine  : {sniffer_status} ({backend_label})")
     print(f"[BlueShield] GATT inspector  : {'simulated (--sim)' if args.sim else 'bleak'}")
     print(f"[BlueShield] Crackle runner  : {'binary: ' + crackle_runner._binary if crackle_runner.binary_available() else 'Python fallback'}")
 
@@ -2262,7 +2401,7 @@ def main():
     scan_thread = threading.Thread(target=background_scan_loop, daemon=True)
     scan_thread.start()
 
-    print(f"[BlueShield] Dashboard v5.6 starting at http://localhost:{args.port}")
+    print(f"[BlueShield] Dashboard v7.7 starting at http://localhost:{args.port}")
     socketio.run(app, host=args.host, port=args.port, debug=False, allow_unsafe_werkzeug=True)
 
 

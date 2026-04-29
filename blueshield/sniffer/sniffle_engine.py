@@ -750,9 +750,20 @@ def make_sniffer(
         eng._is_simulated_explicit = True
         return eng
 
-    # Try real hardware; if unavailable, return a disabled real engine
-    # (NOT a silent simulator) so the UI can show unavailable status.
-    eng = SniffleEngine(serial_port=serial_port, pcap_dir=pcap_dir)
-    # Even if hardware_available is False, return the real engine so
-    # the dashboard can distinguish "hardware missing" from "simulated".
-    return eng
+    # Prefer Sniffle-firmware if installed; otherwise fall back to ButteRFly
+    # via WHAD (this is what we ship with — see whad_sniffer_engine.py).
+    sniffle_eng = SniffleEngine(serial_port=serial_port, pcap_dir=pcap_dir)
+    if sniffle_eng.hardware_available:
+        return sniffle_eng
+
+    try:
+        from .whad_sniffer_engine import WhadSniffleEngine
+        whad_eng = WhadSniffleEngine(serial_port=serial_port, pcap_dir=pcap_dir)
+        if whad_eng.hardware_available:
+            return whad_eng
+    except Exception:
+        pass
+
+    # Neither backend available — return the Sniffle engine so the UI can
+    # surface hardware_available=False (never silently switch to sim).
+    return sniffle_eng

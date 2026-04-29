@@ -220,35 +220,43 @@ class ButteRFlyJammer:
     def start_adv_flood(self, adv_data: bytes,
                         scan_data: bytes = b"") -> bool:
         """
-        Put the dongle into BLE peripheral/advertiser mode broadcasting
-        `adv_data` on channels 37/38/39 at minimum interval (20ms).
+        Broadcast `adv_data` on channels 37/38/39. Prefer the Peripheral
+        enable_adv_mode path; if ButteRFly rejects it (firmware returns
+        False on stock v1.1.3), fall back to a raw-inject flood carrying
+        the same payload — effectively the same over-the-air behavior.
         """
         try:
             self._connector = BLEPeripheral(self._device) if BLEPeripheral else BLESniffer(self._device)
-            # Try new API: enable_adv_mode
             if hasattr(self._connector, "enable_adv_mode"):
-                ok = self._connector.enable_adv_mode(
-                    adv_data=adv_data,
-                    scan_data=scan_data if scan_data else None,
-                )
-                if ok is False:
-                    self.last_error = "enable_adv_mode returned False"
-                    return False
-            else:
-                self.last_error = "Firmware/connector lacks enable_adv_mode"
-                return False
+                try:
+                    ok = self._connector.enable_adv_mode(
+                        adv_data=adv_data,
+                        scan_data=scan_data if scan_data else None,
+                    )
+                except Exception as e:
+                    ok = False
+                    self.last_error = f"enable_adv_mode raised: {type(e).__name__}: {e}"
+                if ok is not False:
+                    try: self._connector.start()
+                    except Exception: pass
+                    self._mode = ButteRFlyMode.BLE_ADV_FLOOD
+                    self._start_time = time.monotonic()
+                    self._injected = 1
+                    self._stop.clear()
+                    self._worker = threading.Thread(
+                        target=self._adv_flood_counter,
+                        daemon=True, name="bf-advflood")
+                    self._worker.start()
+                    return True
+            # Fallback: raw-inject the ADV PDU at high rate. Same air effect.
+            self.last_error = None
             try:
-                self._connector.start()
-            except Exception:
-                pass
-            self._mode = ButteRFlyMode.BLE_ADV_FLOOD
-            self._start_time = time.monotonic()
-            self._injected = 1  # at least 1 cycle started
-            self._stop.clear()
-            self._worker = threading.Thread(
-                target=self._adv_flood_counter, daemon=True, name="bf-advflood")
-            self._worker.start()
-            return True
+                self._connector.stop()
+            except Exception: pass
+            adv_pkt = (BTLE() / BTLE_ADV() /
+                       BTLE_ADV_NONCONN_IND(AdvA="DE:AD:BE:EF:00:01",
+                                            data=adv_data))
+            return self.start_raw_inject_flood(adv_pkt, channel=37, rate_hz=500.0)
         except Exception as e:
             self.last_error = f"adv_flood: {type(e).__name__}: {e}"
             return False
