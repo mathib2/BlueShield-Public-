@@ -1,0 +1,45 @@
+[Unit]
+Description=BlueShield Tactical BLE Intelligence Console
+Documentation=https://github.com/pineconegoat/BlueShield
+# Wait for Bluetooth + network so HCI adapters are enumerated and the AP /
+# Cloudflare tunnel can bind to a working interface.
+After=bluetooth.target network-online.target
+Wants=bluetooth.target network-online.target
+
+[Service]
+Type=simple
+
+# BlueShield needs raw HCI sockets to drive the jammer and to read PCAP-shaped
+# adapter state. Running as root is the path-of-least-resistance; the
+# install.sh setcap step lets it run as `pi` for the BLE-scan-only path if
+# you prefer (set User=pi below + drop CAP_NET_ADMIN if you don't use the
+# jammer).
+User=root
+
+# Working directory + venv binding. The installer places everything under
+# /opt/blueshield and creates a venv there.
+WorkingDirectory=/opt/blueshield
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+
+ExecStart=/opt/blueshield/venv/bin/python -m blueshield --port 8080
+Restart=on-failure
+RestartSec=5
+
+# Resource limits — keep the dashboard from runaway memory on small Pis.
+MemoryHigh=400M
+MemoryMax=600M
+TasksMax=200
+
+# Log to journald (read with `journalctl -u blueshield -f`).
+StandardOutput=journal
+StandardError=journal
+
+# Hardening (systemd defaults Bookworm 252+ are fine; we add a couple extras).
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=false   # We need setcap or root for HCI raw access
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

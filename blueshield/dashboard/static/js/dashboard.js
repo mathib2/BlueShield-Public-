@@ -143,7 +143,6 @@ socket.on("scan_result", data => {
     $("pill-scan").classList.remove("scanning");
     $("scan-text").textContent = `${data.total_devices || 0} found`;
     addTimelineEvent("scan", `Scan #${data.scan_id}: ${data.total_devices} devices, ${data.new_devices} new`);
-    simulateChannelActivity(data.total_devices || 0);
 });
 
 socket.on("device_update", data => {
@@ -223,6 +222,8 @@ function switchTab(tab) {
     if (tab === "following") renderFollowingGrid();
     if (tab === "shadows") renderShadowGrid();
     if (tab === "live") { renderLiveDemo(); fetchTimeTravel(); }
+    if (tab === "heatmap") openHeatmap();
+    else if (typeof _hmStopLive === "function") _hmStopLive();
     healthTabActive = (tab === "health");
     if (tab === "health") fetchSystemHealth();
 }
@@ -355,7 +356,23 @@ function renderDeviceTable() {
     }
 
     if (!devs.length) {
-        tbody.innerHTML = '<tr class="empty-row"><td colspan="10">Waiting for first scan...</td></tr>';
+        // Skeleton rows while scanning, empty state otherwise (taste-skill: skeleton over spinner)
+        if (autoScan) {
+            const skel = `
+                <td><span class="skel skel-circle"></span></td>
+                <td><span class="skel skel-line w70"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>
+                <td><span class="skel skel-line w50"></span></td>`;
+            tbody.innerHTML = `<tr class="skel-row">${skel}</tr><tr class="skel-row">${skel}</tr><tr class="skel-row">${skel}</tr>`;
+        } else {
+            tbody.innerHTML = '<tr class="empty-row"><td colspan="10"><div class="empty-state"><div class="empty-state-icon">' + ICO.radio + '</div><div class="empty-state-title">No devices</div><div class="empty-state-msg">Press Scan to begin BLE telemetry capture.</div></div></td></tr>';
+        }
         return;
     }
 
@@ -392,9 +409,65 @@ function renderClusteredRow(d) {
     const eco = d.ecosystem ? `<span class="eco-badge eco-${d.ecosystem || 'other'}">${d.ecosystem}</span>` : "";
     const macBadge = macCount > 1 ? `<span class="mac-badge">${macCount} MACs</span>` : (isRandomMac ? `<span class="mac-badge random">RND</span>` : "");
 
+    // Multi-vendor BLE fingerprint sub-line.
+    // Apple Continuity provides AirPods state/battery; the unified resolver
+    // adds Galaxy Buds, Fast Pair, GATT-service, and vendor-specific decodes.
+    const ai = d.apple_info || {};
+    const rs = d.resolved || {};
+    let appleSub = "";
+    const bits = [];
+    if (ai.model) {
+        bits.push(`<strong style="color:var(--accent)">${escHtml(ai.model)}</strong>`);
+    } else if (rs.model) {
+        bits.push(`<strong style="color:var(--accent)">${escHtml(rs.model)}</strong>`);
+    }
+    if (ai.battery_left != null || ai.battery_right != null) {
+        const L = ai.battery_left != null ? `${ai.battery_left}%` : "?";
+        const R = ai.battery_right != null ? `${ai.battery_right}%` : "?";
+        bits.push(`L:${L} R:${R}`);
+    }
+    if (ai.battery_case != null) bits.push(`Case:${ai.battery_case}%`);
+    if (ai.airpods_state) bits.push(escHtml(ai.airpods_state));
+    if (ai.user_activity) bits.push(escHtml(ai.user_activity));
+    if (!ai.model && !ai.user_activity && rs.vendor) {
+        bits.push(`<span style="color:var(--tx-3)">${escHtml(rs.vendor)}</span>`);
+    }
+    if (rs.service_match && rs.service_match.service_label && rs.confidence >= 0.7) {
+        bits.push(`<span class="tag tag-ok" style="font-size:.55rem">${escHtml(rs.service_match.service_label)}</span>`);
+    }
+    // OUI vendor — only show if it adds new info beyond what rs.vendor already has
+    if (rs.oui_info && rs.oui_info.vendor_short) {
+        const ouiName = rs.oui_info.vendor_short;
+        const alreadyShown = (rs.vendor || "").toLowerCase().includes(ouiName.toLowerCase());
+        if (!alreadyShown) {
+            const bits_count = rs.oui_info.oui_bits || 24;
+            bits.push(`<span title="IEEE OUI ${bits_count}-bit: ${escHtml(rs.oui_info.vendor_full || "")}" style="color:var(--tx-3)">OUI: ${escHtml(ouiName)}</span>`);
+        }
+    }
+    // Address-type — RPA / static-random / NRPA tells the operator whether
+    // the MAC is a stable identifier or a privacy-rotated one.
+    const addrType = rs.address_type;
+    if (addrType && addrType !== "public") {
+        const addrLabel = { rpa: "RPA", static_random: "STATIC", nrpa: "NRPA", unknown: "UNK" }[addrType] || addrType.toUpperCase();
+        const addrTip = {
+            rpa:           "Resolvable Private Address — rotates ~every 15 min for privacy",
+            static_random: "Random Static — fixed for device lifetime, no IRK pairing",
+            nrpa:          "Non-Resolvable Private Address — rotates, untraceable",
+        }[addrType] || "";
+        bits.push(`<span title="${escHtml(addrTip)}" class="addr-type addr-${addrType}" style="font-size:.55rem">${addrLabel}</span>`);
+    }
+    if (rs.confidence) {
+        const conf = Math.round(rs.confidence * 100);
+        const confColor = conf >= 90 ? "var(--green)" : conf >= 60 ? "var(--accent)" : "var(--tx-3)";
+        bits.push(`<span title="${(rs.sources || []).join(' + ')}" style="color:${confColor};font-size:.6rem">conf ${conf}%</span>`);
+    }
+    if (bits.length) {
+        appleSub = `<br><span class="apple-sub" style="font-size:.66rem;color:var(--tx-2);font-family:var(--font-mono)">${bits.join(" · ")}</span>`;
+    }
+
     return `<tr class="${rowCls} ${sel} ${followCls} ${multiMacCls}" onclick="selectDevice('${id}')">
         <td>${d.category_icon || ICO.unknown}</td>
-        <td><strong>${escHtml(d.best_name || "Unknown")}</strong> ${eco} ${macBadge}<br><span class="mono" style="font-size:.62rem;color:var(--tx-3)">${id}</span></td>
+        <td><strong>${escHtml(d.best_name || "Unknown")}</strong> ${eco} ${macBadge}${appleSub}<br><span class="mono" style="font-size:.62rem;color:var(--tx-3)">${id}</span></td>
         <td><span class="cat-pill">${d.category_icon || "?"} ${d.category || "?"}</span></td>
         <td>${riskBadge}</td>
         <td>${motion}</td>
@@ -478,6 +551,62 @@ function renderDetailPanel() {
     html += detailRow("Duration", d.duration_display || "0s");
     html += detailRow("Observations", d.observation_count || d.seen_count || 0);
     html += `</div>`;
+
+    // BLE Fingerprint (multi-vendor resolver decode)
+    const rs = d.resolved || {};
+    const ai = d.apple_info || {};
+    if (rs.confidence > 0 || ai.label || ai.model) {
+        html += `<div class="detail-section"><div class="detail-section-title">BLE Fingerprint</div>`;
+        const fpLabel = rs.label || ai.label || "?";
+        const fpClass = rs.device_class || ai.device_class || "?";
+        const fpConf = Math.round((rs.confidence || ai.confidence || 0) * 100);
+        html += detailRow("Identified as", `<strong style="color:var(--accent)">${escHtml(fpLabel)}</strong>`);
+        html += detailRow("Device class", fpClass);
+        if (rs.vendor) html += detailRow("Vendor", escHtml(rs.vendor));
+        if (rs.model || ai.model) html += detailRow("Model", escHtml(rs.model || ai.model));
+        html += detailRow("Decode confidence", `${fpConf}%`);
+        if (rs.sources && rs.sources.length) {
+            html += detailRow("Sources", rs.sources.map(s => `<span class="tag" style="font-size:.55rem">${escHtml(s)}</span>`).join(" "));
+        }
+        if (rs.service_match) {
+            html += detailRow("GATT service", `${escHtml(rs.service_match.service_label)} (UUID ${escHtml(rs.service_match.matched_uuid)})`);
+            if (rs.service_match.hint) html += detailRow("Service hint", escHtml(rs.service_match.hint));
+        }
+        // Apple Continuity rich fields
+        if (ai.airpods_state) html += detailRow("AirPods state", escHtml(ai.airpods_state));
+        if (ai.battery_left != null || ai.battery_right != null || ai.battery_case != null) {
+            const L = ai.battery_left != null ? `${ai.battery_left}%` : "?";
+            const R = ai.battery_right != null ? `${ai.battery_right}%` : "?";
+            const C = ai.battery_case != null ? `${ai.battery_case}%` : "?";
+            html += detailRow("Battery", `L:${L} · R:${R} · Case:${C}`);
+        }
+        if (ai.charging_left || ai.charging_right || ai.charging_case) {
+            const ch = [ai.charging_left && "Left", ai.charging_right && "Right", ai.charging_case && "Case"].filter(Boolean).join(", ");
+            html += detailRow("Charging", ch);
+        }
+        if (ai.user_activity) html += detailRow("User activity", escHtml(ai.user_activity));
+        if (ai.is_primary_device) html += detailRow("Primary device", "yes (this is the user's main device)");
+        if (ai.airdrop_receiving) html += detailRow("AirDrop", "receiving on");
+        if (ai.airpods_connected) html += detailRow("AirPods linked", "yes (this iPhone has AirPods active)");
+        if (ai.wifi_on != null) html += detailRow("Wi-Fi", ai.wifi_on ? "on" : "off");
+        if (ai.findmy_separated != null) html += detailRow("Find My", ai.findmy_separated ? "separated key (lost mode)" : "owner connected");
+        if (ai.tlv_types && ai.tlv_types.length) {
+            html += detailRow("Continuity TLVs", ai.tlv_types.map(t => `0x${t.toString(16).toUpperCase().padStart(2,'0')}`).join(", "));
+        }
+        // Samsung-specific
+        const ss = rs.samsung_info || {};
+        if (ss.is_smarttag) html += detailRow("SmartTag", "yes");
+        if (ss.is_buds) html += detailRow("Galaxy Buds", "yes");
+        // Microsoft-specific
+        const ms = rs.microsoft_info || {};
+        if (ms.is_swiftpair) html += detailRow("Swift Pair", "yes (advertising for pairing)");
+        if (ms.is_cdp) html += detailRow("Cross-Device Platform", "yes");
+        // Fast Pair
+        const fp = rs.fastpair_info || {};
+        if (fp.in_pairing_mode) html += detailRow("Fast Pair", `pairing mode${fp.model_id ? ` (id 0x${fp.model_id.toString(16).toUpperCase()})` : ""}`);
+        else if (fp.model_id != null || fp.label) html += detailRow("Fast Pair", "subsequent-pair (already bonded)");
+        html += `</div>`;
+    }
 
     // AI Classification
     const cls = classifications[d.fingerprint_id || ""];
@@ -784,9 +913,6 @@ function deriveChannelActivityFromDevices() {
     if (channelStats[38] === 0) channelStats[38] = Math.floor(total / 3);
     if (channelStats[39] === 0) channelStats[39] = total - channelStats[37] - channelStats[38];
 }
-
-// Legacy no-op stub.
-function simulateChannelActivity(devCount) { /* v7 no fake data */ }
 
 function renderChannelGrid() {
     const el = $("ch-grid");
@@ -1220,24 +1346,93 @@ function renderConversationGraph() {
     if ($("graph-info")) $("graph-info").textContent = `${nodes.length} nodes, ${edges.length} connections`;
 }
 
-/* ── Advanced Mode Toggle ─────────────────────────────────── */
-function updateAdvancedModeBtn() {
+/* ── Settings dropdown + Advanced mode (v7.7.2) ──────────────── */
+// The gear icon now opens a real settings menu instead of being a hidden
+// toggle that did nothing visible. Menu items: theme toggle, advanced
+// mode, jump to config, sign out.
+
+function _smSetTagOnOff(id, on){
+    const tag = $(id);
+    if (!tag) return;
+    tag.textContent = on ? "ON" : "OFF";
+    const item = tag.closest(".sm-item");
+    if (item) item.classList.toggle("is-on", on);
+}
+
+function _smSetThemeTag(){
+    const t = document.documentElement.getAttribute("data-theme") || "dark";
+    const tag = $("sm-theme-tag");
+    if (tag) tag.textContent = t.toUpperCase();
+}
+
+function updateAdvancedModeBtn(){
+    _smSetTagOnOff("sm-adv-tag", advancedMode);
+}
+
+function _closeSettingsMenu(){
+    const menu = $("settings-menu");
     const btn = $("btn-advanced");
-    if (!btn) return;
-    btn.classList.toggle("active", advancedMode);
-    btn.title = advancedMode ? "Advanced Mode: ON" : "Advanced Mode: OFF";
-    // Show/hide advanced-only nav items
-    const advTabs = ["following", "shadows"];
-    advTabs.forEach(tab => {
-        const navItem = document.querySelector(`.nav-item[data-tab="${tab}"]`);
-        if (navItem) navItem.style.display = advancedMode ? "" : "";
+    if (!menu || !btn) return;
+    menu.classList.remove("open");
+    menu.setAttribute("aria-hidden","true");
+    btn.setAttribute("aria-expanded","false");
+}
+
+function _toggleSettingsMenu(e){
+    e?.stopPropagation();
+    const menu = $("settings-menu");
+    const btn = $("btn-advanced");
+    if (!menu || !btn) return;
+    const open = !menu.classList.contains("open");
+    menu.classList.toggle("open", open);
+    menu.setAttribute("aria-hidden", open ? "false" : "true");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open){
+        // sync operator info from the topbar strip
+        const opUser = $("op-user")?.textContent || "admin";
+        const opSid  = $("op-sid")?.textContent  || "----";
+        if ($("sm-name")) $("sm-name").textContent = opUser;
+        if ($("sm-sid"))  $("sm-sid").textContent  = opSid;
+        _smSetThemeTag();
+        updateAdvancedModeBtn();
+    }
+}
+
+if ($("btn-advanced")){
+    $("btn-advanced").addEventListener("click", _toggleSettingsMenu);
+}
+document.addEventListener("click", e => {
+    const wrap = e.target.closest(".settings-wrap");
+    if (!wrap) _closeSettingsMenu();
+});
+document.addEventListener("keydown", e => {
+    if (e.key === "Escape") _closeSettingsMenu();
+});
+
+// Menu actions
+if ($("sm-toggle-theme")){
+    $("sm-toggle-theme").addEventListener("click", () => {
+        $("btn-theme")?.click();
+        setTimeout(_smSetThemeTag, 30);
     });
 }
-if ($("btn-advanced")) {
-    $("btn-advanced").addEventListener("click", async () => {
+if ($("sm-toggle-advanced")){
+    $("sm-toggle-advanced").addEventListener("click", async () => {
         advancedMode = !advancedMode;
         updateAdvancedModeBtn();
-        try { await fetch("/api/advanced-mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: advancedMode }) }); } catch {}
+        try {
+            await fetch("/api/advanced-mode",{
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({enabled: advancedMode}),
+            });
+        } catch {}
+    });
+}
+if ($("sm-open-config")){
+    $("sm-open-config").addEventListener("click", () => {
+        _closeSettingsMenu();
+        if (typeof switchTab === "function") switchTab("config");
     });
 }
 
@@ -2058,7 +2253,7 @@ function renderHealthTab(d) {
                         <span style="font-size:.64rem;color:var(--tx-3);margin-left:auto">BLE Sniffer</span>
                     </div>
                     <div style="font-family:var(--font-mono);font-size:.66rem;color:var(--cyan)">${nrf.port}</div>
-                    <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">${nrf.simulated ? "Simulated" : "Hardware"} — ${nrf.running ? "Scanning" : "Idle"}</div>
+                    <div style="font-size:.62rem;color:var(--tx-3);margin-top:2px">Hardware — ${nrf.running ? "Scanning" : "Idle"}</div>
                 </div>`;
             }
         }
@@ -2101,11 +2296,10 @@ setInterval(() => { if (healthTabActive) fetchSystemHealth(); }, 15000);
 
 /* ── Sniffer State ─────────────────────────────────────────── */
 let snifferRunning    = false;
-let snifferPackets    = [];     // all raw packet dicts (capped at 2000)
+let snifferPackets    = [];     // all raw packet dicts (no cap — only Stop or Clear empties this)
 let snifferFiltered   = [];     // after type + search filter
 let snifferConnections = [];
 let snifferPairings   = [];
-let snifferSimulated  = false;
 let _snfPendingCrackleSession = null;
 
 const SNF_MAX_LOG = 500;        // rows rendered in table at once
@@ -2113,7 +2307,8 @@ const SNF_MAX_LOG = 500;        // rows rendered in table at once
 /* ── Socket.IO — sniffer events ────────────────────────────── */
 socket.on("sniffer_packet", pkt => {
     snifferPackets.push(pkt);
-    if (snifferPackets.length > 2000) snifferPackets.shift();
+    // No cap — packet log keeps growing until the operator hits Stop or Clear.
+    // The DOM table is bounded separately by SNF_MAX_LOG (last N rendered).
     _snfUpdateCounters();
     if (document.getElementById("tab-sniffer")?.classList.contains("active")) {
         _snfAppendRow(pkt);
@@ -2134,7 +2329,7 @@ socket.on("sniffer_pairing", session => {
     _snfUpdateCounters();
     _snfRenderPairings();
     // Show crackle card if a crackable session appeared
-    if (session.crackable && !snifferSimulated) {
+    if (session.crackable) {
         _snfPendingCrackleSession = session;
         const card = $("snf-crackle-card");
         if (card) card.style.display = "";
@@ -2143,8 +2338,7 @@ socket.on("sniffer_pairing", session => {
 
 socket.on("sniffer_state", data => {
     const state = data.state || "IDLE";
-    snifferSimulated = !!data.simulated;
-    snifferRunning   = (state === "SCANNING" || state === "CONNECTED");
+    snifferRunning = (state === "SCANNING" || state === "CONNECTED");
     _snfUpdateControlState(state);
 });
 
@@ -2178,7 +2372,6 @@ function _snfOnTabOpen() {
         .then(data => {
             if (data.running !== undefined) {
                 snifferRunning = data.running;
-                snifferSimulated = !!data.simulated;
             }
             if (data.connections)    snifferConnections = data.connections;
             if (data.pairing_sessions) snifferPairings  = data.pairing_sessions;
@@ -2200,17 +2393,42 @@ function _snfOnTabOpen() {
 
 /* ── Controls ──────────────────────────────────────────────── */
 async function snifferToggle() {
-    if (snifferRunning) {
-        await fetch("/api/sniffer/stop", { method: "POST" });
-    } else {
-        const mac    = ($("snf-target-mac")?.value || "").trim() || null;
-        const rssi   = parseInt($("snf-rssi-min")?.value || "-100");
-        const coded  = $("snf-phy")?.value === "coded";
-        await fetch("/api/sniffer/start", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ target_mac: mac, rssi_min: rssi, coded_phy: coded }),
-        });
+    const btn = $("snf-start-btn");
+    const lbl = $("snf-btn-label");
+    if (btn) btn.disabled = true;            // optimistic: lock the button so double-clicks don't queue
+    const wasRunning = snifferRunning;
+    if (lbl) lbl.textContent = wasRunning ? "Stopping…" : "Starting…";
+    try {
+        if (wasRunning) {
+            const res = await fetch("/api/sniffer/stop", { method: "POST" });
+            if (res.ok) {
+                // Trust the API response — don't wait on the socket event,
+                // it might be delayed or dropped. Update UI immediately.
+                _snfUpdateControlState("IDLE");
+            } else {
+                if (lbl) lbl.textContent = "Stop Capture";
+                console.warn("[sniffer] stop returned", res.status);
+            }
+        } else {
+            const mac    = ($("snf-target-mac")?.value || "").trim() || null;
+            const rssi   = parseInt($("snf-rssi-min")?.value || "-100");
+            const coded  = $("snf-phy")?.value === "coded";
+            const res = await fetch("/api/sniffer/start", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ target_mac: mac, rssi_min: rssi, coded_phy: coded }),
+            });
+            if (res.ok) {
+                _snfUpdateControlState("SCANNING");
+            } else {
+                if (lbl) lbl.textContent = "Start Capture";
+            }
+        }
+    } catch (err) {
+        console.error("[sniffer] toggle failed:", err);
+        if (lbl) lbl.textContent = wasRunning ? "Stop Capture" : "Start Capture";
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -2701,8 +2919,8 @@ function _snfUpdateControlState(state) {
     }
 
     if (badge) {
-        badge.textContent = snifferSimulated ? "SIM" : "LIVE";
-        badge.className   = "snf-badge " + (snifferRunning ? (snifferSimulated ? "snf-badge--active" : "snf-badge--live") : "");
+        badge.textContent = "LIVE";
+        badge.className   = "snf-badge " + (snifferRunning ? "snf-badge--live" : "");
     }
     if (navBdg) {
         navBdg.style.display  = snifferRunning ? "" : "none";
@@ -2721,11 +2939,22 @@ function _escHtml(s) {
 
 function updateCorrelatorBar() {
     const s = correlatorStats || {};
-    animateCounter("cb-physical", s.total_clusters || 0);
-    animateCounter("cb-macs", s.total_macs_tracked || 0);
-    animateCounter("cb-merges", s.merges || 0);
-    animateCounter("cb-random", s.random_mac_devices || 0);
-    animateCounter("cb-train", (s.model && s.model.train_samples) || 0);
+    const physical = s.total_clusters || 0;
+    const macs = s.total_macs_tracked || 0;
+    const merges = s.merges || 0;
+    const random = s.random_mac_devices || 0;
+    const train = (s.model && s.model.train_samples) || 0;
+    animateCounter("cb-physical", physical);
+    animateCounter("cb-macs", macs);
+    animateCounter("cb-merges", merges);
+    animateCounter("cb-random", random);
+    animateCounter("cb-train", train);
+    // Awaiting state: toggle desaturated styling when no telemetry has arrived yet
+    const bar = $("correlator-bar");
+    if (bar) {
+        const awaiting = (physical + macs + merges + random + train) === 0;
+        bar.classList.toggle("awaiting", awaiting);
+    }
 }
 
 /* Animated number counter with anime.js (falls back to direct set) */
@@ -2958,3 +3187,1121 @@ document.addEventListener("DOMContentLoaded", () => {
         btn.disabled = false;
     });
 });
+
+/* ════════════════════════════════════════════════════════════════════════════
+   BLE-Map heatmap v2 — patrick-wied/heatmap.js + perceptual colormaps
+   + floor-plan overlay + realtime locator + coverage stats.
+   Adapted technique from jantman/python-wifi-survey-heatmap (RBF + cmap +
+   floor-plan + contours) — re-implemented client-side using heatmap.js for
+   the smooth radial-blur rendering layer.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+let _hmGrid = null;        // { rows, cols, label, cell_size_m, samples, device_index, walls, rooms }
+let _hmSelectedFp = "";    // currently picked device fingerprint id
+let _hmHoverCell = null;   // [r, c]
+let _hmFocusCell = null;   // [r, c] — most recently sampled cell, opens detail
+let _hmCanvas = null;      // overlay canvas (grid lines + cell labels + locator)
+let _hmCtx = null;
+let _hmDpr = 1;
+let _hmHeat = null;        // heatmap.js instance
+let _hmHeatContainer = null;
+let _hmFloorplanDataUrl = null;     // localStorage-backed image data URL
+let _hmShowGrid = true;
+let _hmShowContours = false;
+let _hmShowLocator = false;
+let _hmShowFloorplan = true;
+let _hmShowWalls = true;
+let _hmShowPins = true;
+let _hmCmap = "rdylgn";
+let _hmLastWidth = 0;
+
+// Mode + editor state
+let _hmMode = "survey";     // "survey" | "live" | "edit"
+let _hmEditTool = "wall";   // "wall" | "room" | "erase" | "clear-walls" | "clear-rooms"
+let _hmDragStart = null;    // [colFrac, rowFrac] — first corner during a drag
+let _hmDragEnd = null;      // current cursor pos during drag
+
+// Live radar state
+let _hmLivePins = [];        // [{fingerprint_id, best_name, category, cell:{row,col}, live_rssi, confidence, age_sec, ...}]
+let _hmLiveTimer = null;     // setInterval handle
+let _hmLiveFrame = null;     // RAF handle for pulsing animation
+let _hmModeNotes = {
+    survey: "// WALK · TAP · MAP — record signal at each cell",
+    live:   "// LIVE RADAR — device pins update every scan",
+    edit:   "// DRAW WALLS + ROOMS — drag to add, click to erase",
+};
+
+/* ── Perceptual color palettes (heatmap.js gradient stops) ─────────────────────
+   Turbo / Viridis / Inferno are the modern matplotlib-style perceptually
+   uniform maps. RdYlGn is the classic WiFi-survey green=good red=bad. Heat
+   is iOS-style. BLE Amber is the dashboard's signature accent. */
+const _HM_GRADIENTS = {
+    turbo:   { 0.00: "#30123b", 0.25: "#4145ab", 0.45: "#3ac3a0", 0.60: "#a4fc3c", 0.75: "#fed83d", 0.90: "#fa6e1e", 1.00: "#7a0402" },
+    viridis: { 0.00: "#440154", 0.25: "#3b528b", 0.50: "#21918c", 0.75: "#5ec962", 1.00: "#fde725" },
+    inferno: { 0.00: "#000004", 0.25: "#420a68", 0.50: "#932667", 0.75: "#dd513a", 0.90: "#fbb61a", 1.00: "#fcffa4" },
+    rdylgn:  { 0.00: "#a50026", 0.20: "#d73027", 0.40: "#f46d43", 0.55: "#fdae61", 0.70: "#fee08b", 0.82: "#a6d96a", 0.92: "#66bd63", 1.00: "#1a9850" },
+    heat:    { 0.00: "#000000", 0.25: "#7a0000", 0.55: "#ff4400", 0.80: "#ffaa00", 1.00: "#ffffff" },
+    ble:     { 0.00: "rgba(255,176,0,0.05)", 0.40: "rgba(255,176,0,0.5)", 0.70: "rgba(255,200,80,0.85)", 1.00: "#FFE9B0" },
+};
+const _HM_LABELS = {
+    turbo: "Turbo", viridis: "Viridis", inferno: "Inferno",
+    rdylgn: "RdYlGn (WiFi)", heat: "Heat", ble: "BLE Amber",
+};
+
+async function openHeatmap() {
+    _hmCanvas = document.getElementById("hm-canvas");
+    if (!_hmCanvas) return;
+    _hmCtx = _hmCanvas.getContext("2d");
+    _hmDpr = Math.max(1, window.devicePixelRatio || 1);
+    _hmHeatContainer = document.getElementById("hm-heat");
+
+    if (!_hmCanvas._wired) {
+        _hmCanvas.addEventListener("click", _hmOnCanvasClick);
+        _hmCanvas.addEventListener("mousemove", _hmOnCanvasMove);
+        _hmCanvas.addEventListener("mouseleave", () => { _hmHoverCell = null; _hmDrawOverlay(); });
+        _hmCanvas.addEventListener("touchend", _hmOnCanvasTouch, { passive: false });
+
+        document.getElementById("hm-grid-config").addEventListener("click", _hmOpenConfigModal);
+        document.getElementById("hm-clear-all").addEventListener("click", _hmClearAll);
+        document.getElementById("hm-cell-clear").addEventListener("click", _hmClearFocusCell);
+        document.getElementById("hm-cfg-cancel").addEventListener("click", () => document.getElementById("hm-grid-modal").classList.remove("open"));
+        document.getElementById("hm-cfg-save").addEventListener("click", _hmSaveConfig);
+        document.getElementById("hm-device-picker").addEventListener("change", e => {
+            _hmSelectedFp = e.target.value;
+            _hmRender();
+            _hmUpdateInfoBar();
+            _hmUpdateLocator();
+        });
+        document.getElementById("hm-cmap-picker").addEventListener("change", e => {
+            _hmCmap = e.target.value;
+            document.getElementById("hm-cmap-name").textContent = _HM_LABELS[_hmCmap] || _hmCmap;
+            _hmRender();
+            _hmDrawLegend();
+            try { localStorage.setItem("hm-cmap", _hmCmap); } catch(_){}
+        });
+        document.getElementById("hm-toggle-grid").addEventListener("change", e => { _hmShowGrid = e.target.checked; _hmDrawOverlay(); });
+        document.getElementById("hm-toggle-contours").addEventListener("change", e => { _hmShowContours = e.target.checked; _hmDrawOverlay(); });
+        document.getElementById("hm-toggle-locator").addEventListener("change", e => {
+            _hmShowLocator = e.target.checked;
+            document.getElementById("hm-locator-panel").style.display = _hmShowLocator ? "" : "none";
+            _hmUpdateLocator();
+            _hmDrawOverlay();
+        });
+        document.getElementById("hm-toggle-floorplan").addEventListener("change", e => {
+            _hmShowFloorplan = e.target.checked;
+            document.getElementById("hm-floorplan").style.opacity = _hmShowFloorplan ? "1" : "0";
+        });
+        document.getElementById("hm-floorplan-upload").addEventListener("click", () => document.getElementById("hm-floorplan-file").click());
+        document.getElementById("hm-floorplan-file").addEventListener("change", _hmOnFloorPlanPicked);
+        document.getElementById("hm-toggle-walls").addEventListener("change", e => { _hmShowWalls = e.target.checked; _hmDrawOverlay(); });
+        document.getElementById("hm-toggle-pins").addEventListener("change", e => { _hmShowPins = e.target.checked; _hmDrawOverlay(); });
+
+        // Mode-switcher buttons
+        document.querySelectorAll(".hm-mode-btn").forEach(btn => {
+            btn.addEventListener("click", () => _hmSwitchMode(btn.dataset.mode));
+        });
+        // Edit-tool buttons
+        document.querySelectorAll(".hm-edit-btn").forEach(btn => {
+            btn.addEventListener("click", () => _hmPickEditTool(btn.dataset.tool));
+        });
+        // Mouse events for the edit-mode drag-to-draw
+        _hmCanvas.addEventListener("mousedown", _hmOnEditDown);
+        window.addEventListener("mousemove", _hmOnEditMove);
+        window.addEventListener("mouseup",   _hmOnEditUp);
+        _hmCanvas.addEventListener("touchstart", _hmOnEditDown, { passive: false });
+        window.addEventListener("touchmove",  _hmOnEditMove,  { passive: false });
+        window.addEventListener("touchend",   _hmOnEditUp);
+
+        window.addEventListener("resize", _hmResize);
+        _hmCanvas._wired = true;
+
+        // Restore prefs
+        try {
+            const cm = localStorage.getItem("hm-cmap");
+            if (cm && _HM_GRADIENTS[cm]) {
+                _hmCmap = cm;
+                document.getElementById("hm-cmap-picker").value = cm;
+                document.getElementById("hm-cmap-name").textContent = _HM_LABELS[cm];
+            }
+            const fp = localStorage.getItem("hm-floorplan");
+            if (fp) {
+                _hmFloorplanDataUrl = fp;
+                document.getElementById("hm-floorplan").src = fp;
+                document.getElementById("hm-floorplan").hidden = false;
+            }
+        } catch(_) {}
+    }
+
+    await _hmRefresh();
+    _hmDrawLegend();
+    _hmResize();
+}
+
+function _hmOnFloorPlanPicked(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+        _hmFloorplanDataUrl = ev.target.result;
+        const img = document.getElementById("hm-floorplan");
+        img.src = _hmFloorplanDataUrl;
+        img.hidden = false;
+        try { localStorage.setItem("hm-floorplan", _hmFloorplanDataUrl); } catch(_){}
+        document.getElementById("hm-toggle-floorplan").checked = true;
+        _hmShowFloorplan = true;
+    };
+    reader.readAsDataURL(file);
+}
+
+async function _hmRefresh() {
+    try {
+        const res = await fetch("/api/heatmap");
+        if (!res.ok) return;
+        _hmGrid = await res.json();
+        _hmRebuildPicker();
+        // _hmResize() sizes the canvas + heat container, THEN renders. Doing
+        // render-first here would catch a 0-height container before layout
+        // settles (heatmap.js can't be created against a 0-sized container).
+        _hmResize();
+        _hmUpdateInfoBar();
+        _hmUpdateLocator();
+        _hmRefreshFocusCellPanel();
+    } catch (e) {
+        console.error("[heatmap] refresh failed", e);
+    }
+}
+
+function _hmRebuildPicker() {
+    const sel = document.getElementById("hm-device-picker");
+    if (!sel || !_hmGrid) return;
+    const idx = JSON.parse(JSON.stringify(_hmGrid.device_index || {}));
+    const known = new Set(Object.keys(idx));
+    const live = currentClustered || [];
+    live.forEach(d => {
+        if (d.fingerprint_id && !known.has(d.fingerprint_id)) {
+            idx[d.fingerprint_id] = {
+                best_name: d.best_name || "Unknown",
+                category: d.category || "unknown",
+                sample_count: 0,
+            };
+        }
+    });
+    const entries = Object.entries(idx).sort((a, b) => {
+        if (b[1].sample_count !== a[1].sample_count) return b[1].sample_count - a[1].sample_count;
+        return (a[1].best_name || "").localeCompare(b[1].best_name || "");
+    });
+    const prevValue = sel.value;
+    sel.innerHTML = '<option value="">Pick a device…</option>' + entries.map(([fp, meta]) => {
+        const label = `${meta.best_name || "Unknown"} (${meta.category || "?"}, ${meta.sample_count} cells)`;
+        return `<option value="${escHtml(fp)}">${escHtml(label)}</option>`;
+    }).join("");
+    if (prevValue && entries.find(e => e[0] === prevValue)) sel.value = prevValue;
+}
+
+function _hmUpdateInfoBar() {
+    if (!_hmGrid) return;
+    document.getElementById("hm-pill-grid").textContent = `${_hmGrid.rows} × ${_hmGrid.cols}`;
+    const sampledCells = Object.keys(_hmGrid.samples || {}).length;
+    const totalCells = _hmGrid.rows * _hmGrid.cols;
+    document.getElementById("hm-pill-cells").textContent = `${sampledCells} / ${totalCells} cells sampled`;
+    document.getElementById("hm-pill-devices").textContent = `${Object.keys(_hmGrid.device_index || {}).length} devices in survey`;
+    const sel = document.getElementById("hm-device-picker");
+    const selectedText = sel.options[sel.selectedIndex]?.text || "No device selected";
+    document.getElementById("hm-pill-selected").textContent = selectedText.length > 60 ? selectedText.slice(0, 57) + "…" : selectedText;
+}
+
+function _hmResize() {
+    if (!_hmCanvas || !_hmGrid) return;
+    requestAnimationFrame(() => {
+        const cssW = _hmCanvas.clientWidth || _hmCanvas.parentElement?.clientWidth || 600;
+        if (cssW < 32) return;
+        const aspect = _hmGrid.cols / _hmGrid.rows;
+        const maxH = Math.max(280, window.innerHeight - 230);
+        let cssH = Math.min(cssW / aspect, maxH);
+        if (cssH < 240 && cssW > 600) cssH = 240;
+        _hmCanvas.style.height = cssH + "px";
+        _hmCanvas.width  = Math.max(64, Math.round(cssW * _hmDpr));
+        _hmCanvas.height = Math.max(64, Math.round(cssH * _hmDpr));
+        // Frame the heatmap.js container to match
+        if (_hmHeatContainer) {
+            _hmHeatContainer.style.height = cssH + "px";
+        }
+        _hmLastWidth = cssW;
+        _hmRender();
+    });
+}
+
+function _hmCellRect(r, c) {
+    const cw = _hmCanvas.width / _hmGrid.cols;
+    const ch = _hmCanvas.height / _hmGrid.rows;
+    return { x: c * cw, y: r * ch, w: cw, h: ch };
+}
+
+function _hmCellAt(clientX, clientY) {
+    const rect = _hmCanvas.getBoundingClientRect();
+    const xCss = clientX - rect.left;
+    const yCss = clientY - rect.top;
+    const c = Math.floor((xCss / rect.width) * _hmGrid.cols);
+    const r = Math.floor((yCss / rect.height) * _hmGrid.rows);
+    if (r < 0 || c < 0 || r >= _hmGrid.rows || c >= _hmGrid.cols) return null;
+    return [r, c];
+}
+
+function _hmCellRssi(row, col, fp) {
+    if (!fp) return null;
+    const cell = (_hmGrid.samples || {})[`${row},${col}`];
+    if (!cell || !cell.length) return null;
+    let best = null;
+    for (const s of cell) {
+        if (s.fingerprint_id !== fp) continue;
+        if (!best || s.timestamp > best.timestamp) best = s;
+    }
+    return best ? best.rssi : null;
+}
+
+/* ── Heatmap.js render (the smooth radial-blur magic) ─────────────────────────
+   We feed each sampled cell as a heat point with value normalised to 0-1 from
+   the RSSI range -100..-30. heatmap.js draws a radial gradient template per
+   point and runs them through a 256-color palette. The result is a smooth
+   surface like an Ekahau/NetSpot WiFi survey. */
+function _hmEnsureHeatInstance() {
+    // Heat container is position:absolute;inset:0. Its clientHeight reads 0
+    // before the offsetParent's layout has settled, so fall back to the grid
+    // canvas's CSS height (always set by _hmResize()).
+    let cssW = _hmHeatContainer.clientWidth;
+    let cssH = _hmHeatContainer.clientHeight;
+    if ((!cssW || !cssH) && _hmCanvas) {
+        cssW = _hmCanvas.clientWidth || cssW;
+        cssH = _hmCanvas.clientHeight || cssH;
+    }
+    if (!cssW || !cssH) return null;
+    // Force the heat container's dimensions so the heatmap.js injected canvas
+    // matches even when the offsetParent's content height is still 0.
+    _hmHeatContainer.style.width = cssW + "px";
+    _hmHeatContainer.style.height = cssH + "px";
+    if (_hmHeat && _hmHeat._w === cssW && _hmHeat._h === cssH && _hmHeat._cmap === _hmCmap) return _hmHeat;
+    // Wipe + recreate (heatmap.js doesn't support live gradient swap, container
+    // resize, or absolute-positioned containers without explicit dims).
+    _hmHeatContainer.innerHTML = "";
+    if (typeof h337 === "undefined") {
+        console.warn("[heatmap] h337 (heatmap.js) not loaded; skipping render");
+        return null;
+    }
+    // Inject our own canvas so we control its dimensions — this is heatmap.js's
+    // documented "bring your own canvas" path. Without this, h337 reads
+    // getComputedStyle(container).width which returns "0" or "auto" for
+    // position:absolute containers and silently no-ops the canvas creation.
+    const canvas = document.createElement("canvas");
+    canvas.width  = cssW;
+    canvas.height = cssH;
+    canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none";
+    _hmHeatContainer.appendChild(canvas);
+
+    const cellW = cssW / Math.max(1, _hmGrid.cols);
+    const cellH = cssH / Math.max(1, _hmGrid.rows);
+    // Each heat point covers ~3 cells in each direction. With heavy blur, this
+    // means adjacent samples blend into a smooth interpolated surface — no
+    // more checkerboard of separated blobs.
+    const radius = Math.max(60, Math.round(Math.max(cellW, cellH) * 2.4));
+    _hmHeat = h337.create({
+        container: _hmHeatContainer,
+        canvas,
+        width: cssW,
+        height: cssH,
+        radius,
+        maxOpacity: 0.78,
+        minOpacity: 0.04,
+        blur: 0.99,
+        gradient: _HM_GRADIENTS[_hmCmap],
+    });
+    _hmHeat._w = cssW;
+    _hmHeat._h = cssH;
+    _hmHeat._cmap = _hmCmap;
+    return _hmHeat;
+}
+
+function _hmRender() {
+    if (!_hmCtx || !_hmGrid) return;
+    const heat = _hmEnsureHeatInstance();
+    const fp = _hmSelectedFp;
+
+    // Build heatmap.js dataset from sampled cells
+    let coverage = { good: 0, mid: 0, bad: 0, total: 0 };
+    // Same fallback as in _hmEnsureHeatInstance — the heat container is
+    // absolute-positioned and may read 0 height before layout settles.
+    let cssW = _hmHeatContainer ? _hmHeatContainer.clientWidth : 0;
+    let cssH = _hmHeatContainer ? _hmHeatContainer.clientHeight : 0;
+    if ((!cssW || !cssH) && _hmCanvas) {
+        cssW = _hmCanvas.clientWidth || cssW;
+        cssH = _hmCanvas.clientHeight || cssH;
+    }
+    if (heat && cssW && cssH) {
+        const cw = cssW / _hmGrid.cols;
+        const ch = cssH / _hmGrid.rows;
+        const points = [];
+        if (fp) {
+            for (let r = 0; r < _hmGrid.rows; r++) {
+                for (let c = 0; c < _hmGrid.cols; c++) {
+                    const rssi = _hmCellRssi(r, c, fp);
+                    if (rssi == null) continue;
+                    // Normalise -100..-30 to 0..1
+                    const v = Math.max(0, Math.min(1, (rssi + 100) / 70));
+                    points.push({
+                        x: Math.round(c * cw + cw / 2),
+                        y: Math.round(r * ch + ch / 2),
+                        value: v,
+                    });
+                    coverage.total++;
+                    if (rssi >= -65) coverage.good++;
+                    else if (rssi >= -80) coverage.mid++;
+                    else coverage.bad++;
+                }
+            }
+        }
+        heat.setData({ max: 1, min: 0, data: points });
+    }
+
+    _hmDrawOverlay();
+    _hmUpdateCoverageStats(coverage);
+}
+
+function _hmUpdateCoverageStats(cov) {
+    const elGood = document.getElementById("hm-cov-good");
+    const elMid  = document.getElementById("hm-cov-mid");
+    const elBad  = document.getElementById("hm-cov-bad");
+    const totalCells = _hmGrid ? _hmGrid.rows * _hmGrid.cols : 0;
+    if (!elGood) return;
+    const t = cov.total || 1;
+    const pctGood = Math.round((cov.good / t) * 100);
+    const pctMid  = Math.round((cov.mid  / t) * 100);
+    const pctBad  = Math.round((cov.bad  / t) * 100);
+    elGood.textContent = cov.total ? `${pctGood}% (${cov.good})` : "—";
+    elMid.textContent  = cov.total ? `${pctMid}% (${cov.mid})`  : "—";
+    elBad.textContent  = cov.total ? `${pctBad}% (${cov.bad})`  : "—";
+    document.getElementById("hm-cov-bar-good").style.width = (cov.total ? pctGood : 0) + "%";
+    document.getElementById("hm-cov-bar-mid").style.width  = (cov.total ? pctMid  : 0) + "%";
+    document.getElementById("hm-cov-bar-bad").style.width  = (cov.total ? pctBad  : 0) + "%";
+    const covPill = document.getElementById("hm-pill-cov");
+    if (cov.total) {
+        covPill.textContent = `coverage: ${pctGood}% strong / ${pctMid}% ok / ${pctBad}% weak (${cov.total}/${totalCells} cells)`;
+    } else {
+        covPill.textContent = "— coverage";
+    }
+}
+
+/* ── Overlay canvas: grid lines, cell labels, contour lines, locator pulse ──── */
+function _hmDrawOverlay() {
+    if (!_hmCtx || !_hmGrid) return;
+    const ctx = _hmCtx;
+    const w = _hmCanvas.width, h = _hmCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Render order (bottom → top):
+    //   rooms → grid → contours → walls → sample points → live pins → locator → hover/focus → drag preview
+    if (_hmShowWalls) _hmDrawRooms(ctx, w, h);
+    if (_hmShowGrid && _hmMode !== "live") _hmDrawGrid(ctx, w, h);
+    if (_hmShowContours && _hmSelectedFp && _hmMode !== "live") _hmDrawContours(ctx, w, h);
+    if (_hmShowWalls) _hmDrawWalls(ctx, w, h);
+    if (_hmMode === "survey" || _hmMode === "edit") _hmDrawSamplePoints(ctx, w, h);
+    if (_hmMode === "live" && _hmShowPins) _hmDrawLivePins(ctx, w, h);
+    if (_hmShowLocator && _hmSelectedFp && _hmMode !== "live") _hmDrawLocator(ctx, w, h);
+    if (_hmMode === "edit" && _hmDragStart && _hmDragEnd) _hmDrawDragPreview(ctx, w, h);
+    _hmDrawHoverFocus(ctx);
+}
+
+function _hmDrawGrid(ctx, w, h) {
+    const cw = w / _hmGrid.cols;
+    const ch = h / _hmGrid.rows;
+    ctx.strokeStyle = "rgba(255,255,255,0.10)";
+    ctx.lineWidth = 1;
+    for (let c = 0; c <= _hmGrid.cols; c++) {
+        ctx.beginPath();
+        ctx.moveTo(c * cw, 0); ctx.lineTo(c * cw, h);
+        ctx.stroke();
+    }
+    for (let r = 0; r <= _hmGrid.rows; r++) {
+        ctx.beginPath();
+        ctx.moveTo(0, r * ch); ctx.lineTo(w, r * ch);
+        ctx.stroke();
+    }
+    // Cell coordinate label in corner
+    ctx.fillStyle = "rgba(255,255,255,0.32)";
+    ctx.font = `${Math.round(10 * _hmDpr)}px JetBrains Mono, monospace`;
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    for (let r = 0; r < _hmGrid.rows; r++) {
+        for (let c = 0; c < _hmGrid.cols; c++) {
+            ctx.fillText(`${r},${c}`, c * cw + 4 * _hmDpr, r * ch + 4 * _hmDpr);
+        }
+    }
+}
+
+function _hmDrawSamplePoints(ctx, w, h) {
+    const cw = w / _hmGrid.cols;
+    const ch = h / _hmGrid.rows;
+    const samples = _hmGrid.samples || {};
+    for (const key of Object.keys(samples)) {
+        const [r, c] = key.split(",").map(Number);
+        const cx = c * cw + cw / 2;
+        const cy = r * ch + ch / 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.max(3, 4 * _hmDpr), 0, 2 * Math.PI);
+        ctx.fillStyle = _hmSelectedFp && _hmCellRssi(r, c, _hmSelectedFp) == null
+            ? "rgba(255,255,255,0.35)"      // sampled cell but device not seen here
+            : "rgba(255,255,255,0.85)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+}
+
+function _hmDrawContours(ctx, w, h) {
+    // Three coverage bands — pull cells whose RSSI falls into each band and
+    // outline them. This is the JS equivalent of jantman's matplotlib contour.
+    const fp = _hmSelectedFp;
+    const cw = w / _hmGrid.cols;
+    const ch = h / _hmGrid.rows;
+    const bands = [
+        { thresh: -65, color: "rgba(46,204,113,0.85)", label: "≥-65" },
+        { thresh: -80, color: "rgba(243,156,18,0.85)", label: "-65..-80" },
+    ];
+    for (const band of bands) {
+        ctx.strokeStyle = band.color;
+        ctx.lineWidth = 2 * _hmDpr;
+        ctx.setLineDash([6 * _hmDpr, 4 * _hmDpr]);
+        for (let r = 0; r < _hmGrid.rows; r++) {
+            for (let c = 0; c < _hmGrid.cols; c++) {
+                const rssi = _hmCellRssi(r, c, fp);
+                if (rssi == null) continue;
+                if (rssi >= band.thresh) {
+                    // Outline the cell to mark band membership
+                    ctx.strokeRect(c * cw + 2, r * ch + 2, cw - 4, ch - 4);
+                }
+            }
+        }
+        ctx.setLineDash([]);
+    }
+}
+
+function _hmDrawLocator(ctx, w, h) {
+    // Realtime locator: pulse the cell whose stored RSSI for the picked device
+    // is closest to the live RSSI we're reading right now. Approximates "where
+    // the device is sitting in the room" given the survey.
+    const cell = _hmLocatorCell;
+    if (!cell) return;
+    const cw = w / _hmGrid.cols;
+    const ch = h / _hmGrid.rows;
+    const cx = cell[1] * cw + cw / 2;
+    const cy = cell[0] * ch + ch / 2;
+    const t = (Date.now() / 600) % 1;       // 0..1
+    const r1 = Math.max(cw, ch) * 0.35;
+    const r2 = r1 + (Math.max(cw, ch) * 0.35) * t;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r2, 0, 2 * Math.PI);
+    ctx.strokeStyle = `rgba(255,176,0,${1 - t})`;
+    ctx.lineWidth = 3 * _hmDpr;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r1, 0, 2 * Math.PI);
+    ctx.fillStyle = "rgba(255,176,0,0.85)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+}
+
+function _hmDrawHoverFocus(ctx) {
+    if (_hmHoverCell) {
+        const [r, c] = _hmHoverCell;
+        const rect = _hmCellRect(r, c);
+        ctx.strokeStyle = "rgba(255,176,0,0.85)";
+        ctx.lineWidth = 2 * _hmDpr;
+        ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
+    }
+    if (_hmFocusCell) {
+        const [r, c] = _hmFocusCell;
+        const rect = _hmCellRect(r, c);
+        ctx.strokeStyle = "rgba(255,176,0,1)";
+        ctx.lineWidth = 3 * _hmDpr;
+        ctx.strokeRect(rect.x + 1.5, rect.y + 1.5, rect.w - 3, rect.h - 3);
+    }
+}
+
+/* ── Realtime locator: estimate device's likely current cell ──────────────────
+   For the picked device, find the cell whose stored RSSI is closest to its
+   current avg RSSI in the live scan. That's the room location whose
+   propagation environment best matches what the receiver is hearing now. */
+let _hmLocatorCell = null;
+let _hmLocatorRaf = null;
+
+function _hmUpdateLocator() {
+    const body = document.getElementById("hm-locator-body");
+    if (!body) return;
+    if (!_hmShowLocator || !_hmSelectedFp) {
+        _hmLocatorCell = null;
+        if (_hmLocatorRaf) { cancelAnimationFrame(_hmLocatorRaf); _hmLocatorRaf = null; }
+        body.textContent = _hmShowLocator ? "Pick a device above to locate it." : "Toggle locator on to enable.";
+        return;
+    }
+    const live = (currentClustered || []).find(d => d.fingerprint_id === _hmSelectedFp);
+    if (!live) {
+        _hmLocatorCell = null;
+        body.innerHTML = `<em>${escHtml(_HM_LABELS[_hmCmap] || "")} </em>This device is not currently visible — locator idle.`;
+        return;
+    }
+    const liveRssi = Math.round(live.avg_rssi || -100);
+    let best = null, bestDiff = Infinity;
+    for (let r = 0; r < _hmGrid.rows; r++) {
+        for (let c = 0; c < _hmGrid.cols; c++) {
+            const rssi = _hmCellRssi(r, c, _hmSelectedFp);
+            if (rssi == null) continue;
+            const diff = Math.abs(rssi - liveRssi);
+            if (diff < bestDiff) { bestDiff = diff; best = { r, c, rssi }; }
+        }
+    }
+    _hmLocatorCell = best ? [best.r, best.c] : null;
+    if (best) {
+        const conf = Math.max(0, Math.min(100, Math.round(100 - bestDiff * 8)));
+        body.innerHTML = `Live RSSI: <b>${liveRssi} dBm</b><br>Best match cell: <b>(${best.r}, ${best.c})</b> at <b>${best.rssi} dBm</b><br>Match confidence: <b>${conf}%</b>`;
+    } else {
+        body.textContent = "No matching survey cell yet — sample more first.";
+    }
+    if (!_hmLocatorRaf) {
+        const tick = () => { _hmDrawOverlay(); _hmLocatorRaf = requestAnimationFrame(tick); };
+        _hmLocatorRaf = requestAnimationFrame(tick);
+    }
+}
+
+/* ── Legend canvas ────────────────────────────────────────────────────────────*/
+function _hmDrawLegend() {
+    const c = document.getElementById("hm-legend-canvas");
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    const grad = ctx.createLinearGradient(0, 0, c.width, 0);
+    const stops = _HM_GRADIENTS[_hmCmap] || _HM_GRADIENTS.rdylgn;
+    for (const k of Object.keys(stops)) grad.addColorStop(parseFloat(k), stops[k]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, c.width, c.height);
+}
+
+/* ── Interactions ─────────────────────────────────────────────────────────────*/
+function _hmOnCanvasMove(e) {
+    const cell = _hmCellAt(e.clientX, e.clientY);
+    if (!cell) { _hmHoverCell = null; _hmDrawOverlay(); return; }
+    if (!_hmHoverCell || _hmHoverCell[0] !== cell[0] || _hmHoverCell[1] !== cell[1]) {
+        _hmHoverCell = cell;
+        _hmDrawOverlay();
+    }
+}
+
+async function _hmOnCanvasClick(e) {
+    // Sampling only happens in Survey mode — Edit and Live have their own handlers.
+    if (_hmMode !== "survey") return;
+    const cell = _hmCellAt(e.clientX, e.clientY);
+    if (!cell) return;
+    await _hmSampleCell(cell[0], cell[1]);
+    _hmFocusCell = cell;
+    await _hmRefresh();
+}
+
+async function _hmOnCanvasTouch(e) {
+    if (_hmMode !== "survey") return;
+    e.preventDefault();
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    const cell = _hmCellAt(t.clientX, t.clientY);
+    if (!cell) return;
+    await _hmSampleCell(cell[0], cell[1]);
+    _hmFocusCell = cell;
+    await _hmRefresh();
+}
+
+async function _hmSampleCell(row, col) {
+    try {
+        const res = await fetch("/api/heatmap/sample", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ row, col }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            console.warn("[heatmap] sample failed:", err);
+            return;
+        }
+    } catch (e) {
+        console.error("[heatmap] sample error:", e);
+    }
+}
+
+function _hmRefreshFocusCellPanel() {
+    const panel = document.getElementById("hm-cell-detail");
+    if (!panel) return;
+    if (!_hmFocusCell) { panel.style.display = "none"; return; }
+    const [r, c] = _hmFocusCell;
+    const samples = (_hmGrid.samples || {})[`${r},${c}`] || [];
+    if (samples.length === 0) { panel.style.display = "none"; return; }
+
+    document.getElementById("hm-cell-detail-head").textContent = `Cell (${r},${c}) — ${samples.length} sample${samples.length === 1 ? "" : "s"}`;
+    const byFp = {};
+    samples.forEach(s => {
+        if (!byFp[s.fingerprint_id] || s.timestamp > byFp[s.fingerprint_id].timestamp) byFp[s.fingerprint_id] = s;
+    });
+    const rows = Object.values(byFp).sort((a, b) => b.rssi - a.rssi);
+    const body = rows.map(s => {
+        const norm = Math.max(0, Math.min(1, (s.rssi + 100) / 70));
+        const stops = _HM_GRADIENTS[_hmCmap] || _HM_GRADIENTS.rdylgn;
+        // Pick nearest stop for chip background
+        let chosen = "#888";
+        let best = 99;
+        for (const k of Object.keys(stops)) {
+            const d = Math.abs(parseFloat(k) - norm);
+            if (d < best) { best = d; chosen = stops[k]; }
+        }
+        const swatch = `<span class="hm-rssi-chip" style="background:${chosen}">${Math.round(s.rssi)}</span>`;
+        const cat = s.category ? `<span class="tag" style="font-size:.55rem">${escHtml(s.category)}</span>` : "";
+        return `<div class="hm-cell-row" onclick="document.getElementById('hm-device-picker').value='${escHtml(s.fingerprint_id)}';document.getElementById('hm-device-picker').dispatchEvent(new Event('change'))">${swatch}<span class="hm-cell-name">${escHtml(s.best_name || "Unknown")}</span>${cat}</div>`;
+    }).join("");
+    document.getElementById("hm-cell-detail-body").innerHTML = body || '<div style="color:var(--tx-3);font-size:.75rem">No samples</div>';
+    panel.style.display = "";
+}
+
+async function _hmClearFocusCell() {
+    if (!_hmFocusCell) return;
+    const [r, c] = _hmFocusCell;
+    if (!confirm(`Clear all samples in cell (${r},${c})?`)) return;
+    await fetch(`/api/heatmap/cell/${r}/${c}`, { method: "DELETE" });
+    _hmFocusCell = null;
+    await _hmRefresh();
+}
+
+async function _hmClearAll() {
+    if (!confirm("Wipe ALL heatmap samples? Grid dimensions will be kept.")) return;
+    await fetch("/api/heatmap/clear", { method: "POST" });
+    _hmFocusCell = null;
+    await _hmRefresh();
+}
+
+function _hmOpenConfigModal() {
+    document.getElementById("hm-cfg-rows").value = _hmGrid.rows;
+    document.getElementById("hm-cfg-cols").value = _hmGrid.cols;
+    document.getElementById("hm-cfg-cellsize").value = _hmGrid.cell_size_m || 1.0;
+    document.getElementById("hm-cfg-label").value = _hmGrid.label || "Room";
+    document.getElementById("hm-grid-modal").classList.add("open");
+}
+
+async function _hmSaveConfig() {
+    const rows = parseInt(document.getElementById("hm-cfg-rows").value, 10);
+    const cols = parseInt(document.getElementById("hm-cfg-cols").value, 10);
+    const cell_size_m = parseFloat(document.getElementById("hm-cfg-cellsize").value) || 1.0;
+    const label = document.getElementById("hm-cfg-label").value || "Room";
+    if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows < 1 || cols < 1 || rows > 50 || cols > 50) {
+        alert("Rows and cols must be 1–50.");
+        return;
+    }
+    await fetch("/api/heatmap/grid", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ rows, cols, cell_size_m, label }),
+    });
+    document.getElementById("hm-grid-modal").classList.remove("open");
+    _hmFocusCell = null;
+    _hmHeat = null;   // force recreate so radius matches new cell size
+    await _hmRefresh();
+    _hmResize();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Mode switcher — Survey / Live Radar / Edit
+   ════════════════════════════════════════════════════════════════════════════ */
+function _hmSwitchMode(mode) {
+    if (!["survey", "live", "edit"].includes(mode)) return;
+    _hmMode = mode;
+    document.querySelectorAll(".hm-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+    document.getElementById("hm-edit-tools").hidden = mode !== "edit";
+    document.getElementById("hm-live-status").hidden = mode !== "live";
+    document.getElementById("hm-pins-panel").style.display = mode === "live" ? "" : "none";
+    const note = document.getElementById("hm-mode-note");
+    if (note) note.textContent = _hmModeNotes[mode] || "";
+    // Cursor hints per mode
+    if (_hmCanvas) {
+        _hmCanvas.style.cursor = mode === "edit" ? "crosshair" : (mode === "live" ? "default" : "crosshair");
+    }
+    // Live radar lifecycle
+    if (mode === "live") {
+        _hmStartLive();
+    } else {
+        _hmStopLive();
+    }
+    _hmDrawOverlay();
+}
+
+function _hmPickEditTool(tool) {
+    if (tool === "clear-walls") {
+        if (!confirm("Wipe all walls?")) return;
+        _hmGrid.walls = [];
+        _hmPersistGeometry();
+        _hmDrawOverlay();
+        return;
+    }
+    if (tool === "clear-rooms") {
+        if (!confirm("Wipe all rooms?")) return;
+        _hmGrid.rooms = [];
+        _hmPersistGeometry();
+        _hmDrawOverlay();
+        return;
+    }
+    _hmEditTool = tool;
+    document.querySelectorAll(".hm-edit-btn").forEach(b => {
+        if (b.dataset.tool === "clear-walls" || b.dataset.tool === "clear-rooms") return;
+        b.classList.toggle("active", b.dataset.tool === tool);
+    });
+}
+
+async function _hmPersistGeometry() {
+    try {
+        await fetch("/api/heatmap/geometry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ walls: _hmGrid.walls || [], rooms: _hmGrid.rooms || [] }),
+        });
+    } catch (e) {
+        console.error("[heatmap] persist geometry failed", e);
+    }
+}
+
+/* ── Edit-mode drag handlers ─────────────────────────────────────────────────
+   In Edit mode, the operator drags on the canvas to draw a wall (line) or
+   room (rectangle). Coordinates are stored in cell-fractions so the geometry
+   survives grid resizes proportionally. */
+function _hmCellFraction(clientX, clientY) {
+    if (!_hmCanvas || !_hmGrid) return null;
+    const rect = _hmCanvas.getBoundingClientRect();
+    const x = (clientX - rect.left) / rect.width  * _hmGrid.cols;
+    const y = (clientY - rect.top)  / rect.height * _hmGrid.rows;
+    return [x, y];
+}
+
+function _hmOnEditDown(e) {
+    if (_hmMode !== "edit") return;
+    e.preventDefault?.();
+    const t = e.touches ? e.touches[0] : e;
+    const pt = _hmCellFraction(t.clientX, t.clientY);
+    if (!pt) return;
+
+    if (_hmEditTool === "erase") {
+        _hmEraseAt(pt[0], pt[1]);
+        return;
+    }
+    _hmDragStart = pt;
+    _hmDragEnd = pt;
+    _hmDrawOverlay();
+}
+
+function _hmOnEditMove(e) {
+    if (_hmMode !== "edit" || !_hmDragStart) return;
+    const t = e.touches ? e.touches[0] : e;
+    if (!t) return;
+    const pt = _hmCellFraction(t.clientX, t.clientY);
+    if (!pt) return;
+    _hmDragEnd = pt;
+    _hmDrawOverlay();
+}
+
+async function _hmOnEditUp(e) {
+    if (_hmMode !== "edit" || !_hmDragStart) return;
+    const t = (e.changedTouches && e.changedTouches[0]) || e;
+    const end = _hmCellFraction(t.clientX, t.clientY) || _hmDragEnd || _hmDragStart;
+    const [x1, y1] = _hmDragStart;
+    const [x2, y2] = end;
+    _hmDragStart = null;
+    _hmDragEnd = null;
+    const dist = Math.hypot(x2 - x1, y2 - y1);
+    if (dist < 0.15) {                    // ignore taps that produced no drag
+        _hmDrawOverlay();
+        return;
+    }
+    if (_hmEditTool === "wall") {
+        _hmGrid.walls = _hmGrid.walls || [];
+        _hmGrid.walls.push({
+            id: "w" + Date.now(),
+            x1, y1, x2, y2,
+        });
+    } else if (_hmEditTool === "room") {
+        const x = Math.min(x1, x2), y = Math.min(y1, y2);
+        const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+        if (w < 0.5 || h < 0.5) { _hmDrawOverlay(); return; }   // ignore tiny rooms
+        const label = prompt("Room label?", "Room") || "";
+        _hmGrid.rooms = _hmGrid.rooms || [];
+        _hmGrid.rooms.push({
+            id: "r" + Date.now(),
+            x, y, w, h, label,
+        });
+    }
+    _hmDrawOverlay();
+    _hmPersistGeometry();
+}
+
+function _hmEraseAt(x, y) {
+    // Erase: remove the wall whose midpoint is closest, OR the room whose
+    // rectangle contains the click. Prefer rooms (they're bigger targets).
+    let removedSomething = false;
+    if (_hmGrid.rooms && _hmGrid.rooms.length) {
+        for (let i = _hmGrid.rooms.length - 1; i >= 0; i--) {
+            const r = _hmGrid.rooms[i];
+            if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+                _hmGrid.rooms.splice(i, 1);
+                removedSomething = true;
+                break;
+            }
+        }
+    }
+    if (!removedSomething && _hmGrid.walls && _hmGrid.walls.length) {
+        // Distance from point to wall segment
+        let bestIdx = -1, bestDist = Infinity;
+        for (let i = 0; i < _hmGrid.walls.length; i++) {
+            const w = _hmGrid.walls[i];
+            const d = _segDist(x, y, w.x1, w.y1, w.x2, w.y2);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+        }
+        if (bestIdx >= 0 && bestDist < 0.4) {
+            _hmGrid.walls.splice(bestIdx, 1);
+            removedSomething = true;
+        }
+    }
+    if (removedSomething) {
+        _hmDrawOverlay();
+        _hmPersistGeometry();
+    }
+}
+
+function _segDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-6) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Live radar — pulsing pins per visible device, refreshed each scan
+   ════════════════════════════════════════════════════════════════════════════ */
+function _hmStartLive() {
+    _hmStopLive();
+    _hmFetchLivePins();
+    _hmLiveTimer = setInterval(_hmFetchLivePins, 3500);
+    if (!_hmLiveFrame) {
+        const tick = () => { if (_hmMode === "live") _hmDrawOverlay(); _hmLiveFrame = requestAnimationFrame(tick); };
+        _hmLiveFrame = requestAnimationFrame(tick);
+    }
+}
+
+function _hmStopLive() {
+    if (_hmLiveTimer) { clearInterval(_hmLiveTimer); _hmLiveTimer = null; }
+    if (_hmLiveFrame) { cancelAnimationFrame(_hmLiveFrame); _hmLiveFrame = null; }
+}
+
+async function _hmFetchLivePins() {
+    try {
+        const res = await fetch("/api/heatmap/live");
+        if (!res.ok) return;
+        const data = await res.json();
+        _hmLivePins = (data.pins || []).filter(p => p && p.cell);   // need a survey-cell match to plot
+        const placeable = _hmLivePins.length;
+        const total = (data.pins || []).length;
+        document.getElementById("hm-live-text").textContent =
+            `Live radar — ${placeable} placed / ${total - placeable} unplaced (no survey)`;
+        _hmRenderPinsList(data.pins || []);
+        _hmDrawOverlay();
+    } catch (e) {
+        console.error("[heatmap] live fetch failed", e);
+    }
+}
+
+function _hmRenderPinsList(pins) {
+    const el = document.getElementById("hm-pins-list");
+    if (!el) return;
+    if (!pins.length) {
+        el.innerHTML = '<div style="color:var(--tx-3);font-size:.74rem">No devices visible.</div>';
+        return;
+    }
+    const sorted = pins.slice().sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    el.innerHTML = sorted.slice(0, 20).map(p => {
+        const dot = `<span class="hm-pin-dot hm-pin-cat-${escHtml(p.category || "unknown")}"></span>`;
+        const cellTxt = p.cell ? `(${p.cell.row},${p.cell.col}) ${p.confidence}%` : "no survey";
+        const knownTag = p.is_known ? '<span class="tag tag-ok" style="font-size:.55rem">trusted</span>' : "";
+        const trackerTag = p.is_tracker ? '<span class="tag tag-bad" style="font-size:.55rem">tracker</span>' : "";
+        return `<div class="hm-pin-row" onclick="(()=>{const s=document.getElementById('hm-device-picker');s.value='${escHtml(p.fingerprint_id)}';s.dispatchEvent(new Event('change'));})()">
+            ${dot}<span class="hm-pin-name">${escHtml(p.best_name || "Unknown")}</span>
+            <span class="hm-pin-meta">${escHtml(p.live_rssi)} dBm · ${escHtml(cellTxt)}</span>
+            ${knownTag}${trackerTag}
+        </div>`;
+    }).join("");
+}
+
+function _hmCategoryColor(cat) {
+    const map = {
+        phone: "#58A6FF", tablet: "#58A6FF", computer: "#9C9D63",
+        watch: "#FF7B00", audio: "#FFB000", input: "#A5D6A7",
+        tracker: "#F85149", medical: "#26C6DA", iot: "#8B00FF",
+        fitness: "#3FB950", camera: "#FF9F43", proximity: "#A1A1AA",
+        gaming: "#D29922", tv: "#5C6BC0", vehicle: "#E91E63",
+        generic: "#888", unknown: "#666",
+    };
+    return map[cat] || map.unknown;
+}
+
+/* ── Walls / rooms render (cell-fraction → backing pixels) ──────────────────*/
+function _hmFracToPx(fx, fy, w, h) {
+    return [
+        (fx / _hmGrid.cols) * w,
+        (fy / _hmGrid.rows) * h,
+    ];
+}
+
+function _hmDrawRooms(ctx, w, h) {
+    const rooms = _hmGrid.rooms || [];
+    for (const r of rooms) {
+        const [x, y] = _hmFracToPx(r.x, r.y, w, h);
+        const [x2, y2] = _hmFracToPx(r.x + r.w, r.y + r.h, w, h);
+        const rw = x2 - x, rh = y2 - y;
+        ctx.save();
+        // Subtle filled rect with a thin tinted border
+        ctx.fillStyle = "rgba(255,176,0,0.05)";
+        ctx.fillRect(x, y, rw, rh);
+        ctx.strokeStyle = "rgba(255,176,0,0.55)";
+        ctx.setLineDash([8 * _hmDpr, 6 * _hmDpr]);
+        ctx.lineWidth = 1.5 * _hmDpr;
+        ctx.strokeRect(x + 1, y + 1, rw - 2, rh - 2);
+        ctx.setLineDash([]);
+        // Label
+        if (r.label) {
+            ctx.fillStyle = "rgba(255,176,0,0.92)";
+            ctx.font = `bold ${Math.round(11 * _hmDpr)}px JetBrains Mono, monospace`;
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            const padX = 6 * _hmDpr, padY = 4 * _hmDpr;
+            const text = r.label.toUpperCase();
+            const m = ctx.measureText(text);
+            ctx.fillStyle = "rgba(10,14,22,0.85)";
+            ctx.fillRect(x + 4, y + 4, m.width + padX * 2, 16 * _hmDpr);
+            ctx.fillStyle = "rgba(255,176,0,0.92)";
+            ctx.fillText(text, x + 4 + padX, y + 4 + padY);
+        }
+        ctx.restore();
+    }
+}
+
+function _hmDrawWalls(ctx, w, h) {
+    const walls = _hmGrid.walls || [];
+    if (!walls.length) return;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.shadowColor = "rgba(255,255,255,0.18)";
+    ctx.shadowBlur = 4 * _hmDpr;
+    for (const wall of walls) {
+        const [x1, y1] = _hmFracToPx(wall.x1, wall.y1, w, h);
+        const [x2, y2] = _hmFracToPx(wall.x2, wall.y2, w, h);
+        ctx.strokeStyle = "rgba(255,255,255,0.92)";
+        ctx.lineWidth = 4 * _hmDpr;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(0,0,0,0.45)";
+        ctx.lineWidth = 1.2 * _hmDpr;
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.shadowColor = "rgba(255,255,255,0.18)";
+        ctx.shadowBlur = 4 * _hmDpr;
+    }
+    ctx.restore();
+}
+
+function _hmDrawDragPreview(ctx, w, h) {
+    if (!_hmDragStart || !_hmDragEnd) return;
+    const [x1, y1] = _hmFracToPx(_hmDragStart[0], _hmDragStart[1], w, h);
+    const [x2, y2] = _hmFracToPx(_hmDragEnd[0],   _hmDragEnd[1],   w, h);
+    ctx.save();
+    if (_hmEditTool === "wall") {
+        ctx.strokeStyle = "rgba(255,176,0,0.95)";
+        ctx.lineWidth = 4 * _hmDpr;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+    } else if (_hmEditTool === "room") {
+        const x = Math.min(x1, x2), y = Math.min(y1, y2);
+        const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+        ctx.strokeStyle = "rgba(255,176,0,0.95)";
+        ctx.fillStyle = "rgba(255,176,0,0.10)";
+        ctx.lineWidth = 2 * _hmDpr;
+        ctx.setLineDash([6 * _hmDpr, 4 * _hmDpr]);
+        ctx.fillRect(x, y, rw, rh);
+        ctx.strokeRect(x, y, rw, rh);
+        ctx.setLineDash([]);
+    }
+    ctx.restore();
+}
+
+/* ── Live radar pins — pulsing dots at survey-derived positions ─────────────*/
+function _hmDrawLivePins(ctx, w, h) {
+    if (!_hmLivePins.length) return;
+    const cw = w / _hmGrid.cols;
+    const ch = h / _hmGrid.rows;
+    const t = (Date.now() / 600) % 1;
+    for (const pin of _hmLivePins) {
+        if (!pin.cell) continue;
+        const cx = pin.cell.col * cw + cw / 2;
+        const cy = pin.cell.row * ch + ch / 2;
+        const colorRaw = _hmCategoryColor(pin.category);
+        const conf = Math.max(0, Math.min(1, (pin.confidence || 0) / 100));
+        const minR = Math.max(7, Math.min(cw, ch) * 0.15);
+        const ringR = minR + (Math.max(cw, ch) * 0.45) * t;
+
+        // Outer pulse ring
+        ctx.save();
+        ctx.strokeStyle = colorRaw;
+        ctx.globalAlpha = (1 - t) * (0.4 + 0.6 * conf);
+        ctx.lineWidth = 2.5 * _hmDpr;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringR, 0, 2 * Math.PI);
+        ctx.stroke();
+        // Solid dot core
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = colorRaw;
+        ctx.beginPath();
+        ctx.arc(cx, cy, minR, 0, 2 * Math.PI);
+        ctx.fill();
+        // Outline
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.lineWidth = 1.5 * _hmDpr;
+        ctx.stroke();
+        // Selected device gets an extra glow ring
+        if (pin.fingerprint_id === _hmSelectedFp) {
+            ctx.strokeStyle = "rgba(255,176,0,0.95)";
+            ctx.lineWidth = 3 * _hmDpr;
+            ctx.beginPath();
+            ctx.arc(cx, cy, minR + 4 * _hmDpr, 0, 2 * Math.PI);
+            ctx.stroke();
+        }
+        // Label
+        const txt = (pin.best_name || "Unknown").slice(0, 22);
+        ctx.font = `${Math.round(10 * _hmDpr)}px JetBrains Mono, monospace`;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        const m = ctx.measureText(txt);
+        const lx = cx + minR + 6 * _hmDpr;
+        const ly = cy;
+        ctx.fillStyle = "rgba(10,14,22,0.78)";
+        ctx.fillRect(lx - 3 * _hmDpr, ly - 8 * _hmDpr, m.width + 8 * _hmDpr, 14 * _hmDpr);
+        ctx.fillStyle = "rgba(232,232,235,0.95)";
+        ctx.fillText(txt, lx + 1 * _hmDpr, ly);
+        ctx.restore();
+    }
+}

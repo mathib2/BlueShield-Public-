@@ -4,7 +4,7 @@ BlueShield Terminal Dashboard
 Rich terminal-based dashboard for monitoring Bluetooth activity.
 Bash-style CLI interface with real-time updates using curses.
 
-Run: python -m blueshield.dashboard.terminal_ui [--sim]
+Run: python -m blueshield.dashboard.terminal_ui
 """
 
 import os
@@ -20,8 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from blueshield.config.settings import load_config
-from blueshield.scanner.bt_scanner import BluetoothScanner, SimulatedScanner
-from blueshield.jammer.bt_jammer import BluetoothJammer, SimulatedJammer
+from blueshield.scanner.bt_scanner import BluetoothScanner
+from blueshield.jammer.bt_jammer import BluetoothJammer
 from blueshield.logs.logger import BlueShieldLogger
 
 
@@ -277,7 +277,7 @@ def draw_rssi_bars(win, y, x, w, devices):
         safe_addstr(win, row, x + 34, f" {rssi}dBm", curses.color_pair(C_DIM))
 
 
-async def dashboard_main(stdscr, use_sim=False):
+async def dashboard_main(stdscr):
     """Main dashboard loop."""
     curses.curs_set(0)
     stdscr.nodelay(True)
@@ -285,13 +285,8 @@ async def dashboard_main(stdscr, use_sim=False):
     init_colors()
 
     config = load_config()
-
-    if use_sim:
-        scanner = SimulatedScanner(config)
-        jammer = SimulatedJammer(config)
-    else:
-        scanner = BluetoothScanner(config)
-        jammer = BluetoothJammer(config)
+    scanner = BluetoothScanner(config)
+    jammer = BluetoothJammer(config)
 
     logger = BlueShieldLogger(config)
     scroll_offset = 0
@@ -416,11 +411,10 @@ async def dashboard_main(stdscr, use_sim=False):
 
 def main():
     parser = argparse.ArgumentParser(description="BlueShield Terminal Dashboard")
-    parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware needed)")
-    args = parser.parse_args()
+    parser.parse_args()
 
     def run(stdscr):
-        asyncio.run(dashboard_main(stdscr, use_sim=args.sim))
+        asyncio.run(dashboard_main(stdscr))
 
     curses.wrapper(run)
 

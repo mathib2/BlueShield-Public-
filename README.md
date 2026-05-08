@@ -26,125 +26,75 @@ Raspberry Pi-based Bluetooth sniffing and jamming system with a real-time web da
 - Login authentication (default: admin / admin123)
 - JSON audit logging for compliance and incident response
 
-## Quick Start (Raspberry Pi)
+## Quick Start
 
-### 1. Clone and Install
+**Tested on Raspberry Pi 3B+ / 4 / 5 with Debian 12 (Bookworm).**
 
-```bash
-git clone https://github.com/mathib2/BlueShield-Public-.git
-cd BlueShield-Public-
-
-# Install system packages
-sudo apt update && sudo apt install -y python3-pip python3-venv bluetooth bluez libbluetooth-dev
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2. Grant Bluetooth Permissions
+### One-line install
 
 ```bash
-sudo setcap 'cap_net_raw,cap_net_admin=eip' $(readlink -f $(which python3))
+curl -fsSL https://raw.githubusercontent.com/pineconegoat/BlueShield/master/scripts/install.sh | sudo bash
 ```
 
-### 3. Run BlueShield
+That's it. The installer:
+1. Sanity-checks your Pi model + Debian version + Python (≥ 3.10).
+2. `apt`-installs system deps (BlueZ, build tools, libcap, cloudflared).
+3. Clones the repo into `/opt/blueshield`.
+4. Creates a venv + pip-installs `requirements.txt` (Bleak, scapy, WHAD, Flask, etc.).
+5. Drops the udev rules so nRF52 dongles work without sudo.
+6. Adds your user to `dialout` + grants raw-HCI capabilities to the venv Python.
+7. Installs the systemd unit + starts the service.
+8. Prints the LAN URL and login.
+
+After ~2 minutes (mostly pip), open the LAN URL it printed.
+
+### From a clone
 
 ```bash
-source venv/bin/activate
-sudo venv/bin/python -m blueshield --port 8080
+git clone https://github.com/pineconegoat/BlueShield.git
+cd BlueShield
+sudo bash scripts/install.sh
 ```
 
-Open your browser to `http://<pi-ip>:8080`
+### Default credentials
 
-**Default login:** `admin` / `admin123`
+`admin` / `admin123` — **change this** in Config → Operators before exposing the
+dashboard to anyone you don't trust. The login page also surfaces a Cloudflare
+quick-tunnel URL (third QR code) you can share for off-LAN access.
 
-### 4. Using an External Bluetooth Antenna
+### Service control
 
-If your Raspberry Pi has an external USB Bluetooth adapter (e.g., TP-Link UB500, ASUS USB-BT500), BlueShield will use it automatically if it's the active HCI interface.
+```bash
+sudo systemctl status blueshield     # is it running?
+sudo journalctl -u blueshield -f     # tail logs
+sudo systemctl restart blueshield    # after code changes
+sudo bash /opt/blueshield/scripts/uninstall.sh    # clean removal
+```
 
-To check which adapter is active:
+### External BLE adapters (recommended for sniffer / jammer)
+
+The Pi's onboard Bluetooth radio works for the dashboard's basic BLE scanner,
+but for the **sniffer** and **jammer** BlueShield expects:
+
+| Hardware | Role | Notes |
+|---|---|---|
+| Realtek BT 5.x USB dongle | Scanner / jammer | Cheap (~$5–10), 4–5 dBm tx |
+| nRF52840 dongle (ButteRFly firmware) | Sniffer + injection | [Flash guide](https://github.com/whad-team/butterfly) |
+| nRF52840 dongle (Sniffle firmware) | Sniffer | [Flash guide](https://github.com/nccgroup/Sniffle) |
+
+The installer's udev rules cover both `c0ff:eeee` (ButteRFly) and `1915:520f`
+(Sniffle) USB IDs out of the box.
+
+To check which HCI adapter is which:
 ```bash
 hciconfig -a
 ```
 
-If your external adapter is `hci1` instead of `hci0`, update the config:
+If your scanner is `hci1` instead of the default `hci2`, set it from the
+running dashboard:
 ```bash
-# Edit blueshield/config/blueshield_config.json
-{
-  "interface": "hci1"
-}
-```
-
-To verify your adapter is being used and check its capabilities:
-```bash
-# Check adapter info (look for Bus: USB = external adapter)
-hciconfig hci0 -a
-
-# Check if it supports LE (required for BLE scanning)
-sudo hcitool -i hci0 lescan --duplicates
-```
-
-## Auto-Start on Boot (Never Turns Off)
-
-Set up BlueShield to start automatically when the Raspberry Pi powers on and restart automatically if it crashes:
-
-### Step 1: Create the systemd service
-
-```bash
-sudo tee /etc/systemd/system/blueshield.service > /dev/null <<'EOF'
-[Unit]
-Description=BlueShield Bluetooth Security Monitor
-After=bluetooth.target network.target
-Wants=bluetooth.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/home/anon/BlueShield-Public-
-ExecStartPre=/bin/sleep 5
-ExecStart=/home/anon/BlueShield-Public-/venv/bin/python -m blueshield --port 8080
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-> **Note:** Change `/home/anon/BlueShield-Public-` to your actual path if different.
-
-### Step 2: Enable and start
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable blueshield
-sudo systemctl start blueshield
-```
-
-### Step 3: Verify it's running
-
-```bash
-sudo systemctl status blueshield
-```
-
-### Useful commands
-
-```bash
-# View live logs
-sudo journalctl -u blueshield -f
-
-# Restart after code changes
-sudo systemctl restart blueshield
-
-# Stop temporarily
-sudo systemctl stop blueshield
-
-# Disable auto-start
-sudo systemctl disable blueshield
+curl -X POST -d '{"interface":"hci1"}' -H 'Content-Type: application/json' \
+    http://localhost:8080/api/config
 ```
 
 ## Platform Support

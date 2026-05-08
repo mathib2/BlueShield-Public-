@@ -355,132 +355,13 @@ class GATTInspector:
         return None
 
 
-# ── Simulated GATT inspector (no hardware) ───────────────────────────────────
-
-class SimulatedGATTInspector(GATTInspector):
-    """Returns plausible fake GATT data for UI/testing when no hardware is present."""
-
-    def _run_inspection(self, mac, on_result, adapter, read_values, timeout):
-        time.sleep(1.5)   # simulate connection delay
-
-        services = [
-            {
-                "uuid": "00001800-0000-1000-8000-00805f9b34fb",
-                "short_uuid": "1800",
-                "name": "Generic Access",
-                "handle": 1,
-                "characteristics": [
-                    {
-                        "uuid": "00002a00-0000-1000-8000-00805f9b34fb",
-                        "short_uuid": "2a00",
-                        "name": "Device Name",
-                        "handle": 3,
-                        "properties": ["read"],
-                        "value_hex": "426c756553686965" + "6c64",
-                        "value_text": "BlueShield Demo",
-                        "value_decoded": None,
-                        "error": None,
-                        "descriptors": [],
-                    },
-                    {
-                        "uuid": "00002a01-0000-1000-8000-00805f9b34fb",
-                        "short_uuid": "2a01",
-                        "name": "Appearance",
-                        "handle": 5,
-                        "properties": ["read"],
-                        "value_hex": "4000",
-                        "value_text": None,
-                        "value_decoded": {"appearance_code": 64, "description": "Phone"},
-                        "error": None,
-                        "descriptors": [],
-                    },
-                ],
-            },
-            {
-                "uuid": "0000180a-0000-1000-8000-00805f9b34fb",
-                "short_uuid": "180a",
-                "name": "Device Information",
-                "handle": 10,
-                "characteristics": [
-                    {
-                        "uuid": "00002a29-0000-1000-8000-00805f9b34fb",
-                        "short_uuid": "2a29",
-                        "name": "Manufacturer Name String",
-                        "handle": 12,
-                        "properties": ["read"],
-                        "value_hex": bytes("BlueShield Inc", "utf-8").hex(),
-                        "value_text": "BlueShield Inc",
-                        "value_decoded": None,
-                        "error": None,
-                        "descriptors": [],
-                    },
-                    {
-                        "uuid": "00002a26-0000-1000-8000-00805f9b34fb",
-                        "short_uuid": "2a26",
-                        "name": "Firmware Revision String",
-                        "handle": 14,
-                        "properties": ["read"],
-                        "value_hex": bytes("5.5.0", "utf-8").hex(),
-                        "value_text": "5.5.0",
-                        "value_decoded": None,
-                        "error": None,
-                        "descriptors": [],
-                    },
-                ],
-            },
-            {
-                "uuid": "0000180f-0000-1000-8000-00805f9b34fb",
-                "short_uuid": "180f",
-                "name": "Battery Service",
-                "handle": 20,
-                "characteristics": [
-                    {
-                        "uuid": "00002a19-0000-1000-8000-00805f9b34fb",
-                        "short_uuid": "2a19",
-                        "name": "Battery Level",
-                        "handle": 22,
-                        "properties": ["read", "notify"],
-                        "value_hex": "5a",
-                        "value_text": None,
-                        "value_decoded": {"battery_pct": 90},
-                        "error": None,
-                        "descriptors": [
-                            {"uuid": "00002902-0000-1000-8000-00805f9b34fb",
-                             "handle": 23, "name": "Client Characteristic Configuration",
-                             "value_hex": "0000"},
-                        ],
-                    },
-                ],
-            },
-        ]
-
-        result = {
-            "mac":          mac,
-            "name":         "BlueShield Demo Device",
-            "connected_at": time.time(),
-            "duration_ms":  1500,
-            "services":     services,
-            "error":        None,
-            "adapter":      "simulated",
-        }
-
-        with self._lock:
-            self._last_result[mac] = result
-            self._active.pop(mac, None)
-        on_result(result)
-
-
-def make_gatt_inspector(sim: bool = False) -> GATTInspector:
-    """Return GATT inspector — REAL by default, sim only if explicit."""
-    if sim:
-        inst = SimulatedGATTInspector()
-        inst._is_simulated_explicit = True
-        return inst
+def make_gatt_inspector() -> GATTInspector:
+    """Return a real GATT inspector. Real hardware only."""
     try:
         import bleak  # noqa: F401
     except ImportError:
         raise RuntimeError(
-            "bleak required for real GATT inspector but not installed. "
-            "Install: pip install bleak. Pass sim=True to use simulated mode."
+            "bleak required for the GATT inspector but not installed. "
+            "Install: pip install bleak."
         )
     return GATTInspector()

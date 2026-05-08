@@ -1,22 +1,26 @@
-# BlueShield - Bluetooth Security Monitor
-# Core (cross-platform)
-bleak>=0.21.0          # BLE scanning (Windows/Linux/macOS)
-bluetooth-numbers>=1.0.0  # Bluetooth SIG company/service ID resolution
+# BlueShield runtime dependencies
+# Tested on Raspberry Pi 3B+ / Pi 4 / Pi 5 with Debian 12 (Bookworm),
+# Python 3.11. install.sh handles all of this automatically.
 
-# Web Dashboard
+# ── Core BLE stack ──
+bleak>=0.21.0           # Cross-platform BLE scanner (Windows/Linux/macOS)
+dbus-fast>=2.0.0        # Bleak's BlueZ transport — included for explicitness
+pyserial>=3.5           # nRF52840 sniffer + WHAD serial transport
+bluetooth-numbers>=1.0.0  # SIG company/service id reference (optional fallback)
+
+# ── Sniffer + injection (WHAD nRF52840 ButteRFly firmware) ──
+whad>=1.2.0             # Romain Cayre's BLE sniff/inject framework
+scapy>=2.5.0            # Packet crafting + parsing (BLE PDUs, SMP, etc.)
+
+# ── Web dashboard ──
 flask>=3.0.0
 flask-socketio>=5.3.0
-eventlet>=0.36.0       # Async socket backend for Flask-SocketIO
+eventlet>=0.36.0        # Async socket backend for Flask-SocketIO
+python-socketio>=5.10.0
+python-engineio>=4.5.0
 
-# BLE Sniffer (nRF52840 dongle)
-pyserial>=3.5          # Serial communication with nRF52 sniffer
+# ── Evidence integrity (Ed25519 audit log signing) ──
+cryptography>=42.0.0
 
-# Network / packet analysis
-scapy>=2.5.0           # Packet crafting and analysis
-
-# Linux/Raspberry Pi only (uncomment on RPi)
-# pybluez2>=0.46        # Classic Bluetooth scanning
-# PyBluez>=0.23         # Alternate classic BT library
-
-# Terminal dashboard fallback (--terminal flag)
+# ── Windows-only (only used when running --terminal on Windows) ──
 windows-curses>=2.3.1; sys_platform == "win32"

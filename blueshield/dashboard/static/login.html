@@ -5,250 +5,376 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>BlueShield — Operator Sign-in</title>
     <link rel="icon" href="/static/img/blueshield-sigil.svg" type="image/svg+xml">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <!-- QR code generator (vanilla JS, no deps, MIT) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
-        *{box-sizing:border-box;margin:0;padding:0}
-        :root{
-            --bg-0:#070A10;
-            --bg-1:#0C1019;
-            --bg-2:#121724;
-            --bg-3:#1A2030;
-            --line:rgba(140,160,200,0.10);
-            --line-hi:rgba(255,176,0,0.32);
-            --tx-1:#E8EEF8;
-            --tx-2:#9BA7BB;
-            --tx-3:#5A6478;
-            --accent:#FFB000;
-            --accent-soft:rgba(255,176,0,0.10);
-            --ok:#3FB950;
-            --crit:#F85149;
-            --grad: linear-gradient(135deg,#0E1320 0%,#0A0E16 100%);
-        }
-        html,body{height:100%}
-        body{
-            font-family:'Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
-            background:var(--bg-0);
-            color:var(--tx-1);
-            min-height:100vh;
-            -webkit-font-smoothing:antialiased;
-            background-image:
-                radial-gradient(900px 600px at 80% 0%, rgba(255,176,0,0.04), transparent 60%),
-                radial-gradient(700px 500px at 0% 100%, rgba(63,185,80,0.03), transparent 55%),
-                radial-gradient(800px 600px at 50% 50%, rgba(88,166,255,0.025), transparent 60%);
-        }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
-        /* Top status bar */
-        .top-bar{
-            display:flex;align-items:center;justify-content:space-between;
-            padding:10px 18px;
-            border-bottom:1px solid var(--line);
-            background:rgba(7,10,16,0.72);
-            backdrop-filter:saturate(140%) blur(10px);
-            -webkit-backdrop-filter:saturate(140%) blur(10px);
-        }
-        .brand-mark{display:flex;align-items:center;gap:10px}
-        .brand-mark svg{color:var(--accent)}
-        .brand-mark .name{font-weight:700;letter-spacing:1px;font-size:14px}
-        .brand-mark .ver{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tx-3);padding:2px 6px;border:1px solid var(--line);border-radius:3px;margin-left:4px}
-        .top-bar .meta{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:1.5px}
-        .top-bar .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);margin-right:5px;box-shadow:0 0 6px rgba(63,185,80,.6)}
-        @media(max-width:600px){
-            .top-bar .meta .hide-sm{display:none}
-        }
+    :root{
+        /* Canvas — OKLCH, tinted neutrals (impeccable rule) */
+        --bg-0:#05070C;
+        --bg-1:#0A0E16;
+        --bg-2:#0E131D;
+        --bg-3:#141A26;
+        --bg-4:#1C2333;
 
-        /* Main two-column layout */
-        main{
-            display:grid;
-            grid-template-columns: 1fr 1fr;
-            gap:32px;
-            padding:32px;
-            max-width:1280px;
-            margin:0 auto;
-            min-height:calc(100vh - 90px);
-            align-items:center;
-        }
-        @media(max-width:920px){
-            main{grid-template-columns:1fr;padding:18px;gap:18px}
-        }
+        --line:    rgba(139,148,158,0.10);
+        --line-b:  rgba(139,148,158,0.20);
+        --line-hi: rgba(255,176,0,0.30);
 
-        /* Left: sign-in card */
-        .signin-card{
-            background:var(--grad);
-            border:1px solid var(--line);
-            border-top:2px solid var(--accent);
-            border-radius:6px;
-            padding:36px 30px;
-            box-shadow:0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.02);
-        }
-        .signin-head{margin-bottom:22px}
-        .signin-eyebrow{
-            font-family:'JetBrains Mono',monospace;
-            font-size:10px;letter-spacing:2.5px;color:var(--accent);
-            text-transform:uppercase;margin-bottom:6px;
-        }
-        .signin-title{font-size:22px;font-weight:700;letter-spacing:.5px}
-        .signin-sub{margin-top:4px;color:var(--tx-2);font-size:13px}
+        --tx-1:#E6EDF3;
+        --tx-2:#8B949E;
+        --tx-3:#586069;
+        --tx-4:#3D444C;
 
-        .field{margin-bottom:14px}
-        .field label{
-            display:block;font-size:11px;font-weight:600;
-            color:var(--tx-2);text-transform:uppercase;
-            letter-spacing:1.5px;margin-bottom:6px;
-            font-family:'JetBrains Mono',monospace;
-        }
-        .field input{
-            width:100%;padding:11px 13px;
-            background:var(--bg-3);
-            border:1px solid var(--line);
-            border-radius:4px;
-            color:var(--tx-1);
-            font-family:'JetBrains Mono',monospace;
-            font-size:14px;letter-spacing:.5px;
-            outline:none;
-            transition:border-color .12s, background .12s, box-shadow .12s;
-        }
-        .field input:focus{
-            border-color:var(--accent);
-            background:var(--bg-2);
-            box-shadow:0 0 0 3px rgba(255,176,0,0.10);
-        }
-        .field input::placeholder{color:var(--tx-3)}
+        --accent:     #FFB000;
+        --accent-dim: #B57F00;
+        --accent-bg:  rgba(255,176,0,0.08);
 
-        .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 16px}
-        .check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--tx-2);cursor:pointer;user-select:none}
-        .check input{accent-color:var(--accent)}
+        --ok:  #3FB950;
+        --warn:#D29922;
+        --crit:#F85149;
 
-        .btn-primary{
-            width:100%;padding:13px;
-            background:var(--accent);color:#0A0A0A;
-            border:none;border-radius:4px;
-            font-family:'Inter',sans-serif;
-            font-weight:700;font-size:13px;letter-spacing:1.5px;
-            text-transform:uppercase;
-            cursor:pointer;
-            transition:transform .08s, box-shadow .15s, filter .15s;
-            box-shadow:0 6px 16px rgba(255,176,0,0.18);
-        }
-        .btn-primary:hover{filter:brightness(1.07);box-shadow:0 8px 22px rgba(255,176,0,.28)}
-        .btn-primary:active{transform:translateY(1px)}
-        .btn-primary:disabled{opacity:0.5;cursor:not-allowed}
+        --r-1:2px;
+        --r-2:3px;
+        --r-3:4px;
 
-        .err{
-            display:none;
-            padding:10px 12px;margin-bottom:14px;
-            background:rgba(248,81,73,0.08);
-            border-left:3px solid var(--crit);
-            color:var(--crit);
-            font-family:'JetBrains Mono',monospace;
-            font-size:12px;letter-spacing:.3px;border-radius:3px;
-        }
-        .err.show{display:block}
+        /* Motion — exponential easing only (impeccable + taste-skill) */
+        --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+        --ease-snap: cubic-bezier(0.25, 1, 0.25, 1);
+        --dur-fast: 120ms;
+        --dur-mid:  240ms;
 
-        .signin-foot{
-            margin-top:18px;padding-top:14px;
-            border-top:1px solid var(--line);
-            display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;
-            font-family:'JetBrains Mono',monospace;
-            font-size:10px;color:var(--tx-3);
-            letter-spacing:1px;text-transform:uppercase;
-        }
+        --fs-xs: 10px;
+        --fs-sm: 11.5px;
+        --fs-md: 13px;
+        --fs-lg: 15px;
+        --fs-xl: 22px;
 
-        /* Right: connection panel — QR codes */
-        .conn-panel{
-            background:var(--grad);
-            border:1px solid var(--line);
-            border-radius:6px;
-            padding:26px 24px;
-            box-shadow:0 24px 60px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.02);
-        }
-        .conn-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-        .conn-title{font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx-2);font-family:'JetBrains Mono',monospace}
-        .conn-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--line);border-radius:11px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--tx-2)}
-        .conn-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--tx-3)}
-        .conn-pill.live .dot{background:var(--ok);box-shadow:0 0 6px rgba(63,185,80,.6)}
-        .conn-pill.live{color:var(--tx-1);border-color:rgba(63,185,80,0.35)}
+        /* Font stacks — Geist body, Space Grotesk display, JBM mono */
+        --font-body: 'Geist','Geist Sans',system-ui,-apple-system,sans-serif;
+        --font-display: 'Space Grotesk','Geist',system-ui,sans-serif;
+        --font-mono: 'JetBrains Mono','Fira Mono',ui-monospace,monospace;
+    }
 
-        .qr-grid{display:grid;grid-template-columns:1fr;gap:12px}
-        .qr-card{
-            display:grid;grid-template-columns: 110px 1fr;gap:14px;
-            padding:14px;
-            background:var(--bg-2);
-            border:1px solid var(--line);
-            border-radius:5px;
-            transition:border-color .15s, background .15s;
-        }
-        .qr-card:hover{border-color:var(--line-hi)}
-        .qr-img{
-            width:110px;height:110px;
-            background:#fff;border-radius:3px;
-            display:flex;align-items:center;justify-content:center;
-            padding:6px;
-        }
-        .qr-img canvas, .qr-img img{display:block;max-width:100%;height:auto}
-        .qr-empty{font-family:'JetBrains Mono',monospace;font-size:9px;color:#888;text-align:center;line-height:1.4}
-        .qr-meta{display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0}
-        .qr-label{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent);letter-spacing:1.5px;text-transform:uppercase}
-        .qr-url{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--tx-1);word-break:break-all;line-height:1.45}
-        .qr-hint{font-size:11px;color:var(--tx-3);line-height:1.4;margin-top:2px}
+    html,body{height:100%}
+    body{
+        font-family:var(--font-body);
+        background:var(--bg-0);
+        color:var(--tx-1);
+        min-height:100dvh;
+        font-feature-settings:'cv11','ss01','ss03';
+        -webkit-font-smoothing:antialiased;
+        -moz-osx-font-smoothing:grayscale;
+        background-image:
+            radial-gradient(1100px 700px at 85% -10%, rgba(255,176,0,0.04), transparent 60%),
+            linear-gradient(rgba(139,148,158,0.025) 1px,transparent 1px),
+            linear-gradient(90deg,rgba(139,148,158,0.025) 1px,transparent 1px);
+        background-size: 100% 100%, 64px 64px, 64px 64px;
+    }
 
-        .conn-help{
-            margin-top:14px;padding:10px 12px;
-            border-left:2px solid var(--accent);
-            background:var(--accent-soft);
-            border-radius:0 3px 3px 0;
-            font-size:11px;color:var(--tx-2);line-height:1.55;
-        }
-        .conn-help b{color:var(--tx-1)}
+    /* ── Top bar ─────────────────────────────────────────────── */
+    .topbar{
+        display:flex;align-items:center;justify-content:space-between;
+        padding:10px 20px;
+        border-bottom:1px solid var(--line);
+        background:var(--bg-1);
+    }
+    .brand{display:flex;align-items:center;gap:11px}
+    .brand svg{color:var(--accent);flex-shrink:0}
+    .brand-name{
+        font-family:var(--font-display);
+        font-weight:700;letter-spacing:2px;font-size:13px;
+        color:var(--tx-1);
+    }
+    .brand-ver{
+        font-family:var(--font-mono);font-size:9px;color:var(--tx-3);
+        padding:2px 6px;border:1px solid var(--line);border-radius:var(--r-1);
+        font-weight:500;letter-spacing:.5px;
+    }
+    .topbar-meta{
+        display:flex;align-items:center;gap:16px;
+        font-family:var(--font-mono);font-size:var(--fs-xs);
+        color:var(--tx-3);text-transform:uppercase;letter-spacing:1.4px;
+    }
+    .topbar-meta .dot{
+        display:inline-block;width:5px;height:5px;border-radius:50%;
+        background:var(--ok);margin-right:6px;
+        box-shadow:0 0 5px rgba(63,185,80,.6);
+    }
+    @media(max-width:640px){
+        .topbar-meta .hide-sm{display:none}
+        .topbar{padding:9px 14px}
+    }
 
-        @media(max-width:520px){
-            .qr-card{grid-template-columns:90px 1fr}
-            .qr-img{width:90px;height:90px}
-        }
+    /* ── Layout grid ─────────────────────────────────────────── */
+    main{
+        display:grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+        gap:24px;
+        padding:32px 28px;
+        max-width:1180px;
+        margin:0 auto;
+        min-height:calc(100dvh - 86px);
+        align-items:center;
+    }
+    @media(max-width:920px){
+        main{grid-template-columns:1fr;padding:20px 16px;gap:16px;align-items:start}
+    }
 
-        /* Bottom strip */
-        footer{
-            position:fixed;left:0;right:0;bottom:0;
-            padding:8px 14px;
-            font-family:'JetBrains Mono',monospace;
-            font-size:9.5px;color:var(--tx-3);
-            letter-spacing:1.5px;text-transform:uppercase;
-            text-align:center;
-            border-top:1px solid var(--line);
-            background:rgba(7,10,16,0.7);
-            backdrop-filter:blur(10px);
-        }
+    /* ── Sign-in card ────────────────────────────────────────── */
+    .signin{
+        background:var(--bg-2);
+        border:1px solid var(--line);
+        border-radius:var(--r-3);
+        padding:36px 32px;
+        position:relative;
+    }
+    .signin::before{
+        content:'';position:absolute;inset:0 0 auto 0;height:1px;
+        background:linear-gradient(90deg,transparent,rgba(255,176,0,0.4),transparent);
+    }
+
+    .eyebrow{
+        display:inline-flex;align-items:center;gap:7px;
+        font-family:var(--font-mono);font-size:var(--fs-xs);
+        letter-spacing:2.4px;color:var(--accent);text-transform:uppercase;
+        font-weight:600;margin-bottom:14px;
+    }
+    .eyebrow::before{
+        content:'';display:inline-block;width:5px;height:5px;border-radius:50%;
+        background:var(--accent);box-shadow:0 0 5px var(--accent);
+    }
+    h1{
+        font-family:var(--font-display);
+        font-size:28px;font-weight:700;letter-spacing:-0.02em;
+        color:var(--tx-1);line-height:1.1;
+    }
+    .lede{
+        margin-top:8px;color:var(--tx-2);font-size:var(--fs-md);
+        line-height:1.55;max-width:38ch;
+    }
+
+    form{margin-top:26px}
+    .field{margin-bottom:14px}
+    .field label{
+        display:block;
+        font-family:var(--font-mono);font-size:10.5px;font-weight:600;
+        color:var(--tx-2);text-transform:uppercase;letter-spacing:1.4px;
+        margin-bottom:7px;
+    }
+    .field input{
+        width:100%;padding:12px 14px;
+        background:var(--bg-3);
+        border:1px solid var(--line);
+        border-radius:var(--r-1);
+        color:var(--tx-1);
+        font-family:var(--font-mono);
+        font-size:14px;letter-spacing:.4px;
+        outline:none;
+        transition:border-color var(--dur-fast) var(--ease-out),
+                   background var(--dur-fast) var(--ease-out),
+                   box-shadow var(--dur-fast) var(--ease-out);
+    }
+    .field input:focus{
+        border-color:var(--accent);
+        background:var(--bg-2);
+        box-shadow:0 0 0 3px rgba(255,176,0,0.12);
+    }
+    .field input::placeholder{color:var(--tx-4)}
+
+    .row{
+        display:flex;align-items:center;justify-content:space-between;
+        gap:8px;margin:6px 0 16px;
+    }
+    .check{
+        display:inline-flex;align-items:center;gap:8px;
+        font-size:var(--fs-sm);color:var(--tx-2);cursor:pointer;
+        user-select:none;
+    }
+    .check input{accent-color:var(--accent);width:14px;height:14px}
+
+    .btn-primary{
+        width:100%;padding:13px 16px;
+        background:var(--accent);color:#0A0A0A;
+        border:none;border-radius:var(--r-1);
+        font-family:var(--font-body);
+        font-weight:600;font-size:13.5px;letter-spacing:.2px;
+        cursor:pointer;
+        display:inline-flex;align-items:center;justify-content:center;gap:8px;
+        transition:transform var(--dur-fast) var(--ease-snap),
+                   filter var(--dur-fast) var(--ease-out),
+                   box-shadow var(--dur-mid) var(--ease-out);
+        box-shadow:0 4px 14px rgba(255,176,0,0.18);
+    }
+    .btn-primary svg{width:14px;height:14px;transition:transform var(--dur-fast) var(--ease-snap)}
+    .btn-primary:hover{filter:brightness(1.05);box-shadow:0 8px 22px rgba(255,176,0,.28)}
+    .btn-primary:hover svg{transform:translateX(2px)}
+    .btn-primary:active{transform:translateY(1px)}
+    .btn-primary:disabled{opacity:.55;cursor:not-allowed;transform:none}
+
+    .err{
+        display:none;padding:10px 12px;margin-bottom:14px;
+        background:rgba(248,81,73,0.08);
+        border:1px solid rgba(248,81,73,0.22);
+        color:var(--crit);
+        font-family:var(--font-mono);
+        font-size:var(--fs-sm);letter-spacing:.2px;border-radius:var(--r-1);
+    }
+    .err.show{display:block;animation:slip-in var(--dur-mid) var(--ease-out)}
+
+    .signin-foot{
+        margin-top:20px;padding-top:16px;
+        border-top:1px solid var(--line);
+        display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;
+        font-family:var(--font-mono);
+        font-size:var(--fs-xs);color:var(--tx-3);
+        letter-spacing:1px;text-transform:uppercase;
+    }
+
+    /* ── Connection panel (right column) ─────────────────────── */
+    .conn{
+        background:var(--bg-2);
+        border:1px solid var(--line);
+        border-radius:var(--r-3);
+        padding:24px 22px;
+    }
+    .conn-head{
+        display:flex;align-items:center;justify-content:space-between;
+        margin-bottom:16px;
+    }
+    .conn-title{
+        font-family:var(--font-mono);
+        font-size:11px;font-weight:700;letter-spacing:1.6px;
+        text-transform:uppercase;color:var(--tx-2);
+    }
+    .conn-pill{
+        display:inline-flex;align-items:center;gap:6px;
+        padding:3px 10px;
+        border:1px solid var(--line);border-radius:var(--r-1);
+        font-family:var(--font-mono);
+        font-size:var(--fs-xs);color:var(--tx-3);
+        background:transparent;
+        text-transform:uppercase;letter-spacing:.6px;
+    }
+    .conn-pill .dot{width:5px;height:5px;border-radius:50%;background:var(--tx-4);transition:background var(--dur-mid) var(--ease-out)}
+    .conn-pill.live .dot{background:var(--ok);box-shadow:0 0 6px rgba(63,185,80,.7)}
+    .conn-pill.live{color:var(--ok);border-color:rgba(63,185,80,0.30)}
+
+    .qr-grid{display:grid;grid-template-columns:1fr;gap:10px}
+    .qr-card{
+        display:grid;grid-template-columns:88px 1fr;gap:14px;
+        padding:12px;
+        background:var(--bg-3);
+        border:1px solid var(--line);
+        border-radius:var(--r-2);
+        transition:border-color var(--dur-fast) var(--ease-out),
+                   background var(--dur-fast) var(--ease-out);
+    }
+    .qr-card:hover{
+        border-color:var(--line-b);
+        background:var(--bg-4);
+    }
+    .qr-img{
+        width:88px;height:88px;
+        background:#fff;border-radius:var(--r-1);
+        display:flex;align-items:center;justify-content:center;
+        padding:5px;
+    }
+    .qr-img canvas, .qr-img img{display:block;max-width:100%;height:auto}
+    .qr-meta{display:flex;flex-direction:column;justify-content:center;gap:3px;min-width:0}
+    .qr-label{
+        font-family:var(--font-mono);
+        font-size:var(--fs-xs);color:var(--accent);
+        letter-spacing:1.4px;text-transform:uppercase;font-weight:600;
+    }
+    .qr-url{
+        font-family:var(--font-mono);
+        font-size:11px;color:var(--tx-1);
+        word-break:break-all;line-height:1.45;
+    }
+    .qr-hint{font-size:11px;color:var(--tx-3);line-height:1.4;margin-top:1px}
+
+    /* Skeleton loader for QR cards while detecting */
+    .qr-skel{
+        display:grid;grid-template-columns:88px 1fr;gap:14px;
+        padding:12px;
+        background:var(--bg-3);
+        border:1px solid var(--line);
+        border-radius:var(--r-2);
+    }
+    .qr-skel-img{width:88px;height:88px;border-radius:var(--r-1);background:linear-gradient(90deg,var(--bg-3) 0%,var(--bg-4) 50%,var(--bg-3) 100%);background-size:200% 100%;animation:shimmer 1.4s linear infinite}
+    .qr-skel-meta{display:flex;flex-direction:column;justify-content:center;gap:8px;min-width:0}
+    .qr-skel-line{height:9px;border-radius:2px;background:linear-gradient(90deg,var(--bg-3) 0%,var(--bg-4) 50%,var(--bg-3) 100%);background-size:200% 100%;animation:shimmer 1.4s linear infinite}
+    .qr-skel-line.w70{width:70%}
+    .qr-skel-line.w90{width:90%}
+    .qr-skel-line.w50{width:50%}
+
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    @keyframes slip-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+
+    .conn-help{
+        margin-top:14px;padding:11px 14px;
+        background:var(--accent-bg);
+        border:1px solid rgba(255,176,0,0.18);
+        border-radius:var(--r-1);
+        font-size:11.5px;color:var(--tx-2);line-height:1.6;
+    }
+    .conn-help b{color:var(--tx-1);font-weight:600}
+    .conn-help kbd{
+        display:inline-block;padding:1px 6px;
+        background:var(--bg-4);
+        border:1px solid var(--line-b);
+        border-radius:var(--r-1);
+        font-family:var(--font-mono);
+        font-size:10.5px;color:var(--tx-1);
+    }
+
+    @media(max-width:520px){
+        .qr-card,.qr-skel{grid-template-columns:80px 1fr}
+        .qr-img,.qr-skel-img{width:80px;height:80px}
+    }
+
+    footer{
+        position:fixed;left:0;right:0;bottom:0;
+        padding:7px 14px;
+        font-family:var(--font-mono);
+        font-size:9.5px;color:var(--tx-3);
+        letter-spacing:1.4px;text-transform:uppercase;
+        text-align:center;
+        border-top:1px solid var(--line);
+        background:var(--bg-1);
+    }
+    @media(max-width:920px){footer{position:static;margin-top:14px}}
     </style>
 </head>
 <body>
-    <div class="top-bar">
-        <div class="brand-mark">
-            <svg width="22" height="22" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="miter">
+    <header class="topbar">
+        <div class="brand">
+            <svg width="22" height="22" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="miter" stroke-linecap="square">
                 <path d="M32 4 L56 18 L56 40 L32 58 L8 40 L8 18 Z"/>
                 <path d="M22 26 L32 22 L42 26"/>
                 <path d="M22 34 L32 30 L42 34"/>
                 <path d="M22 42 L32 38 L42 42"/>
             </svg>
-            <div class="name">BLUESHIELD</div>
-            <div class="ver">v7.7</div>
+            <span class="brand-name">BLUESHIELD</span>
+            <span class="brand-ver">v7.8</span>
         </div>
-        <div class="meta">
+        <div class="topbar-meta">
             <span><span class="dot"></span>SYSTEM ONLINE</span>
             <span class="hide-sm">UNCLASSIFIED · WSU AUTHORIZED</span>
         </div>
-    </div>
+    </header>
 
     <main>
-        <!-- Sign-in -->
-        <section class="signin-card">
-            <header class="signin-head">
-                <div class="signin-eyebrow">Operator sign-in</div>
-                <div class="signin-title">Tactical BLE Console</div>
-                <div class="signin-sub">Real-time Bluetooth threat intelligence and response.</div>
-            </header>
+        <section class="signin">
+            <div class="eyebrow">Operator sign-in</div>
+            <h1>Tactical BLE Console</h1>
+            <p class="lede">Real-time Bluetooth threat intelligence and response. Authenticate to engage scan, sniff, and countermeasure subsystems.</p>
 
-            <div class="err" id="error-msg">Access denied — invalid credentials</div>
+            <div class="err" id="error-msg" role="alert">Access denied. Invalid credentials.</div>
 
             <form id="login-form" autocomplete="on">
                 <div class="field">
@@ -262,7 +388,10 @@
                 <div class="row">
                     <label class="check"><input type="checkbox" id="remember" checked>Keep me signed in</label>
                 </div>
-                <button type="submit" class="btn-primary" id="btn-auth">Sign in</button>
+                <button type="submit" class="btn-primary" id="btn-auth">
+                    <span>Sign in</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                </button>
             </form>
 
             <div class="signin-foot">
@@ -271,63 +400,59 @@
             </div>
         </section>
 
-        <!-- Connection panel -->
-        <section class="conn-panel">
+        <section class="conn">
             <div class="conn-head">
                 <div class="conn-title">Open on any device</div>
-                <span class="conn-pill" id="conn-status"><span class="dot"></span><span id="conn-status-text">Detecting…</span></span>
+                <span class="conn-pill" id="conn-status"><span class="dot"></span><span id="conn-status-text">Detecting</span></span>
             </div>
 
             <div class="qr-grid" id="qr-grid">
-                <!-- Local AP / mDNS / LAN entries injected here -->
+                <!-- Skeleton placeholders during detection -->
+                <div class="qr-skel"><div class="qr-skel-img"></div><div class="qr-skel-meta"><div class="qr-skel-line w50"></div><div class="qr-skel-line w90"></div><div class="qr-skel-line w70"></div></div></div>
+                <div class="qr-skel"><div class="qr-skel-img"></div><div class="qr-skel-meta"><div class="qr-skel-line w50"></div><div class="qr-skel-line w90"></div><div class="qr-skel-line w70"></div></div></div>
             </div>
 
-            <div class="qr-card" id="qr-public" style="display:none">
+            <div class="qr-card" id="qr-public" style="display:none;margin-top:10px">
                 <div class="qr-img"><div id="qr-public-img"></div></div>
                 <div class="qr-meta">
                     <div class="qr-label" style="color:#3FB950">Public · over the internet</div>
                     <div class="qr-url" id="qr-public-url"></div>
-                    <div class="qr-hint">HTTPS tunnel — works on any phone with cellular.</div>
+                    <div class="qr-hint">HTTPS tunnel. Works on any phone with cellular.</div>
                 </div>
             </div>
 
             <div class="conn-help">
-                <b>Demo plan:</b> tell the audience to join the WiFi network <b>BlueShield</b>
-                (open). Then scan any code above with their phone camera and the BlueShield
-                console opens in their browser. Login is the same operator credentials.
+                <b>Demo workflow.</b> Audience joins WiFi <kbd>BlueShield</kbd> (open). They scan any QR with their phone camera and the console opens in their browser. Operator credentials are the same — share or screen-share as needed.
             </div>
         </section>
     </main>
 
-    <footer>UNCLASSIFIED · FOR RESEARCH USE · WSU SENIOR DESIGN · BLUESHIELD v7.7</footer>
+    <footer>UNCLASSIFIED · FOR RESEARCH USE · WSU SENIOR DESIGN · BLUESHIELD V7.8</footer>
 
     <script>
     (function(){
-        // ─ QR helper ────────────────────────────────────────────────────
         function makeQR(container, text, size){
-            // qrcode.js renders into a <div>; clear first
             while(container.firstChild) container.removeChild(container.firstChild);
             try {
                 new QRCode(container, {
                     text: text,
-                    width: size || 96,
-                    height: size || 96,
+                    width: size || 88,
+                    height: size || 88,
                     colorDark: "#000000",
                     colorLight: "#ffffff",
                     correctLevel: QRCode.CorrectLevel.M,
                 });
             } catch(e) {
-                container.innerHTML = '<div class="qr-empty">QR<br>render<br>error</div>';
+                container.textContent = "QR err";
             }
         }
 
-        // ─ Local URLs (AP / mDNS / LAN) ─────────────────────────────────
         function loadLocal(){
             return fetch("/api/system/local-urls").then(r=>r.json()).then(d => {
                 const grid = document.getElementById("qr-grid");
                 grid.innerHTML = "";
                 if (!d || !d.urls || d.urls.length === 0){
-                    grid.innerHTML = '<div class="conn-help">No local network paths detected. Plug in or join the BlueShield WiFi.</div>';
+                    grid.innerHTML = '<div class="conn-help" style="background:var(--bg-3);border-color:var(--line);color:var(--tx-2)">No local network paths detected. Plug in or join the BlueShield WiFi.</div>';
                     return false;
                 }
                 d.urls.forEach(entry => {
@@ -337,26 +462,25 @@
                     card.innerHTML = `
                         <div class="qr-img"><div class="qr-target"></div></div>
                         <div class="qr-meta">
-                            <div class="qr-label" style="${isAP?'color:#FFB000':''}">${entry.label}${isAP?' · primary':''}</div>
+                            <div class="qr-label" ${isAP?'style="color:#FFB000"':''}>${entry.label}${isAP?' · primary':''}</div>
                             <div class="qr-url">${entry.url}</div>
                             <div class="qr-hint">${isAP
-                                ? 'Audience joins WiFi “BlueShield”, then scans this code. No internet needed.'
+                                ? 'Audience joins WiFi "BlueShield", then scans this code. No internet needed.'
                                 : 'Reachable from any device on the same network.'}</div>
                         </div>`;
                     grid.appendChild(card);
-                    makeQR(card.querySelector(".qr-target"), entry.url, 96);
+                    makeQR(card.querySelector(".qr-target"), entry.url, 88);
                 });
                 return true;
             }).catch(()=>false);
         }
 
-        // ─ Public tunnel URL ────────────────────────────────────────────
         function loadPublic(){
             return fetch("/api/system/public-url").then(r=>r.json()).then(d => {
                 const card = document.getElementById("qr-public");
                 if (d && d.available && d.url){
                     document.getElementById("qr-public-url").textContent = d.url;
-                    makeQR(document.getElementById("qr-public-img"), d.url, 96);
+                    makeQR(document.getElementById("qr-public-img"), d.url, 88);
                     card.style.display = "";
                     return true;
                 }
@@ -365,7 +489,6 @@
             }).catch(()=>false);
         }
 
-        // ─ Connection status pill ───────────────────────────────────────
         function setStatus(localOK, publicOK){
             const pill = document.getElementById("conn-status");
             const text = document.getElementById("conn-status-text");
@@ -378,18 +501,16 @@
         }
 
         Promise.all([loadLocal(), loadPublic()]).then(([l,p]) => setStatus(l,p));
-        // Re-poll every 30s to pick up tunnel changes / new IPs
         setInterval(() => Promise.all([loadLocal(), loadPublic()])
                                 .then(([l,p]) => setStatus(l,p)), 30000);
 
-        // ─ Auth ─────────────────────────────────────────────────────────
         document.getElementById("login-form").addEventListener("submit", async (e) => {
             e.preventDefault();
             const btn = document.getElementById("btn-auth");
             const err = document.getElementById("error-msg");
+            const oldHTML = btn.innerHTML;
             btn.disabled = true;
-            const oldText = btn.textContent;
-            btn.textContent = "Signing in…";
+            btn.innerHTML = '<span>Authenticating</span>';
             err.classList.remove("show");
             try {
                 const res = await fetch("/login", {
@@ -402,20 +523,20 @@
                 });
                 const data = await res.json();
                 if (data.success){
-                    btn.textContent = "Signed in ✓";
+                    btn.innerHTML = '<span>Authenticated</span>';
                     btn.style.background = "var(--ok)";
                     btn.style.color = "#fff";
-                    setTimeout(() => { window.location.href = "/"; }, 250);
+                    setTimeout(() => { window.location.href = "/"; }, 220);
                     return;
                 }
-                err.textContent = "Access denied — " + (data.error || "invalid credentials");
+                err.textContent = "Access denied. " + (data.error || "Invalid credentials.");
                 err.classList.add("show");
             } catch(ex) {
-                err.textContent = "Access denied — connection error";
+                err.textContent = "Access denied. Connection error.";
                 err.classList.add("show");
             }
             btn.disabled = false;
-            btn.textContent = oldText;
+            btn.innerHTML = oldHTML;
         });
     })();
     </script>

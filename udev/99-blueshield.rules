@@ -1,0 +1,31 @@
+# BlueShield udev rules — grant non-root access to BLE sniffer dongles
+# Install: copy to /etc/udev/rules.d/, then `udevadm control --reload && udevadm trigger`
+#
+# After install you can scan/sniff without sudo. The setcap step in install.sh
+# handles raw-HCI permissions for Bleak; these rules cover the USB serial
+# devices that the WHAD ButteRFly + Sniffle firmwares enumerate as.
+
+# WHAD ButteRFly nRF52840 dongle (Romain Cayre's BLE inject/sniff firmware).
+# See https://github.com/whad-team/butterfly
+SUBSYSTEM=="tty", ATTRS{idVendor}=="c0ff", ATTRS{idProduct}=="eeee", \
+    MODE="0666", GROUP="dialout", SYMLINK+="butterfly%n", \
+    TAG+="uaccess", TAG+="systemd"
+
+# Nordic nRF52840 dongle running Sniffle firmware (NCC Group). Same VID/PID
+# is also used by stock Nordic firmware; either way this is just a TTY.
+# See https://github.com/nccgroup/Sniffle
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="520f", \
+    MODE="0666", GROUP="dialout", SYMLINK+="sniffle%n", \
+    TAG+="uaccess", TAG+="systemd"
+
+# Generic nRF52840 USB CDC (DFU bootloader / nrfutil flashing).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="521f", \
+    MODE="0666", GROUP="dialout", \
+    TAG+="uaccess", TAG+="systemd"
+
+# Generic CP210x / FT232 / CH340 USB-serial adapters (some Sniffle reflashes
+# use a separate UART bridge). Wide net, mode 0666 only — they're TTYs and
+# adding to dialout is enough.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0666", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0666", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666", GROUP="dialout"

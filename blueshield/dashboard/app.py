@@ -5,7 +5,7 @@ Flask + Socket.IO backend for the BlueShield Bluetooth security monitor.
 Serves a real-time web dashboard with BLE fingerprinting, risk scoring,
 tracker detection, proximity radar, and exposes REST/WebSocket APIs.
 
-Run: python -m blueshield [--sim] [--port 8080]
+Run: python -m blueshield [--port 8080]
 """
 
 import asyncio
@@ -26,8 +26,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from blueshield.config.settings import load_config, save_config, LOG_DIR
-from blueshield.scanner.bt_scanner import BluetoothScanner, SimulatedScanner
+from blueshield.scanner.bt_scanner import BluetoothScanner
 from blueshield.scanner.fingerprint import BLEFingerprintEngine
+from blueshield.scanner.heatmap import HeatmapStore, Sample as HeatmapSample
+from typing import Optional
 from blueshield.scanner.risk_engine import calculate_risk, calculate_rssi_trend
 from blueshield.scanner.tracker_detector import TrackerDetector
 from blueshield.scanner.ai_classifier import AIDeviceClassifier, estimate_people, calculate_safety_score, get_bluetooth_weather
@@ -35,7 +37,7 @@ from blueshield.scanner.advanced_analysis import (
     FollowingDetector, ShadowDeviceDetector, EnvironmentFingerprint,
     DeviceLifeStory, ConversationGraph, MovementTrailTracker,
 )
-from blueshield.jammer.bt_jammer import BluetoothJammer, SimulatedJammer
+from blueshield.jammer.bt_jammer import BluetoothJammer
 from blueshield.logs.logger import BlueShieldLogger
 # v7.5: evidence-integrity module (Ed25519 signatures + hash-chained event log)
 try:
@@ -61,6 +63,22 @@ from blueshield.core.device_correlator import DeviceCorrelator
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+
+# Aggressive no-cache for static assets — operators iterate on JS/CSS
+# constantly and stale cache is the #1 source of "I don't see your update"
+# bug reports. Production deployments still get gzip via the WSGI layer;
+# the cost is one re-download per visit, which is fine for an operator
+# console that's <300 KB total.
+@app.after_request
+def _no_static_cache(response):
+    try:
+        if request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return response
 # v7.5: secret key loaded from env or generated per-boot (never hardcoded in prod)
 import secrets as _secrets_mod
 _sk_path = Path(__file__).parent.parent / "keys" / "flask_secret.bin"
@@ -195,7 +213,9 @@ crackle_runner   = None
 nrf_sniffer      = None          # nRF52840 BLE sniffer instance #1 (/dev/ttyACM0)
 nrf_sniffer_2    = None          # nRF52840 BLE sniffer instance #2 (/dev/ttyACM1)
 _nrf_bridge_running = False      # controls the nRF→socketio bridge thread
-_sniffer_sim     = False         # set to True when running with --sim
+
+# ── Heatmap global state ─────────────────────────────────────────────────────
+heatmap_store: Optional[HeatmapStore] = None  # initialized in main() with the captures dir
 
 # Configurable alert rules
 alert_rules = [
@@ -358,6 +378,8 @@ def do_scan_and_emit():
                 payload_len = 0
                 mfr_data_bytes = b""
                 raw_adv_data = {}
+                apple_info = None
+                resolved = None
                 dev_obj = scanner.devices.get(addr.upper())
                 if dev_obj and hasattr(dev_obj, '_fingerprint_data'):
                     fp_data = dev_obj._fingerprint_data
@@ -365,6 +387,8 @@ def do_scan_and_emit():
                     payload_len = fp_data.get("payload_len", 0)
                     mfr_data_bytes = fp_data.get("mfr_data_bytes", b"")
                     raw_adv_data = fp_data.get("raw_adv_data", {})
+                    apple_info = fp_data.get("apple_info")
+                    resolved = fp_data.get("resolved")
 
                 fingerprint_engine.record_advertisement(
                     mac=addr,
@@ -379,6 +403,8 @@ def do_scan_and_emit():
                     manufacturer_name=manufacturer,
                     mfr_data_bytes=mfr_data_bytes,
                     raw_adv_data=raw_adv_data,
+                    apple_info=apple_info,
+                    resolved=resolved,
                 )
 
             # Run clustering
@@ -508,6 +534,7 @@ def do_scan_and_emit():
                     avg_rssi=fp.avg_rssi, is_known=fp.is_known,
                     tracker_suspect=fp.tracker_suspect,
                     mac_count=len(fp.mac_addresses),
+                    apple_info=getattr(fp, 'apple_info', None) or None,
                 )
                 classifications[fp_id] = cr.to_dict()
 
@@ -745,6 +772,192 @@ def api_devices_clustered():
 @app.route("/api/summary")
 def api_summary():
     return jsonify(scanner.get_device_summary())
+
+
+# ── BLE-Map (room heatmap) ────────────────────────────────────────────────────
+@app.route("/api/heatmap")
+@login_required
+def api_heatmap_get():
+    """Return the full grid + samples + device picker index."""
+    if heatmap_store is None:
+        return jsonify({"error": "heatmap not initialized"}), 503
+    return jsonify(heatmap_store.snapshot())
+
+
+@app.route("/api/heatmap/grid", methods=["POST"])
+@login_required
+def api_heatmap_reshape():
+    """Set grid dimensions. Body: { rows, cols, label?, cell_size_m? }.
+    Drops samples that fall outside the new dimensions."""
+    if heatmap_store is None:
+        return jsonify({"error": "heatmap not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        rows = int(data.get("rows", heatmap_store.grid.rows))
+        cols = int(data.get("cols", heatmap_store.grid.cols))
+    except (TypeError, ValueError):
+        return jsonify({"error": "rows and cols must be integers"}), 400
+    label = str(data.get("label", "") or "")
+    try:
+        cell_size_m = float(data.get("cell_size_m", heatmap_store.grid.cell_size_m))
+    except (TypeError, ValueError):
+        cell_size_m = heatmap_store.grid.cell_size_m
+    heatmap_store.reshape(rows=rows, cols=cols, label=label, cell_size_m=cell_size_m)
+    return jsonify(heatmap_store.snapshot())
+
+
+@app.route("/api/heatmap/sample", methods=["POST"])
+@login_required
+def api_heatmap_sample():
+    """Record a sample for a single cell. Body: { row, col }.
+
+    Snapshots all currently-visible clustered devices' avg_rssi at this moment
+    into the chosen cell, with a single timestamp shared across all devices
+    so the time-travel slider can replay the survey.
+    """
+    if heatmap_store is None:
+        return jsonify({"error": "heatmap not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    try:
+        row = int(data["row"])
+        col = int(data["col"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "row and col required"}), 400
+
+    grid = heatmap_store.grid
+    if not (0 <= row < grid.rows and 0 <= col < grid.cols):
+        return jsonify({"error": f"cell ({row},{col}) outside {grid.rows}x{grid.cols} grid"}), 400
+
+    if fingerprint_engine is None:
+        return jsonify({"error": "fingerprint engine not ready"}), 503
+
+    now = time.time()
+    samples: list[HeatmapSample] = []
+    # Allow ~2 scan windows of staleness so a walking operator who lingers
+    # between scans still gets all currently-clustered devices in the cell.
+    stale_cutoff = max(60, int((scan_interval or 15) * 2 + 10))
+    for fp_id, fp in fingerprint_engine.clusters.items():
+        if (now - (fp.last_seen or 0)) > stale_cutoff:
+            continue
+        samples.append(HeatmapSample(
+            fingerprint_id=fp_id,
+            rssi=float(fp.avg_rssi or -100),
+            timestamp=now,
+            best_name=fp.best_name or "Unknown",
+            category=fp.category or "unknown",
+        ))
+
+    n = heatmap_store.add_samples(row=row, col=col, samples=samples)
+    return jsonify({
+        "ok": True,
+        "row": row, "col": col,
+        "device_count": n,
+        "timestamp": round(now, 1),
+    })
+
+
+@app.route("/api/heatmap/cell/<int:row>/<int:col>", methods=["DELETE"])
+@login_required
+def api_heatmap_clear_cell(row, col):
+    """Delete all samples in a single cell."""
+    if heatmap_store is None:
+        return jsonify({"error": "heatmap not initialized"}), 503
+    n = heatmap_store.clear_cell(row, col)
+    return jsonify({"ok": True, "removed": n})
+
+
+@app.route("/api/heatmap/clear", methods=["POST"])
+@login_required
+def api_heatmap_clear():
+    """Wipe all heatmap samples (keeps grid dimensions)."""
+    if heatmap_store is None:
+        return jsonify({"error": "heatmap not initialized"}), 503
+    heatmap_store.clear_all()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/heatmap/geometry", methods=["POST"])
+@login_required
+def api_heatmap_geometry():
+    """Replace walls and/or rooms in one call.
+
+    Body: { walls: [{x1,y1,x2,y2[,id]}, ...], rooms: [{x,y,w,h,label[,id]}, ...] }
+    Coordinates are in *cell-fractions* (0..cols on x, 0..rows on y), so the
+    geometry survives grid-resizes proportionally.
+    """
+    if heatmap_store is None:
+        return jsonify({"error": "heatmap not initialized"}), 503
+    data = request.get_json(silent=True) or {}
+    if "walls" in data:
+        heatmap_store.set_walls(data.get("walls") or [])
+    if "rooms" in data:
+        heatmap_store.set_rooms(data.get("rooms") or [])
+    return jsonify(heatmap_store.snapshot())
+
+
+@app.route("/api/heatmap/live")
+@login_required
+def api_heatmap_live():
+    """Per-device best-match-cell estimates for the live radar view.
+
+    For every fingerprint cluster currently visible to the scanner, find the
+    surveyed cell whose stored RSSI for that device is closest to the live
+    avg_rssi reading. That's the operator-walkable approximation of "where
+    this device is right now in the room" without trilateration hardware.
+    """
+    if heatmap_store is None or fingerprint_engine is None:
+        return jsonify({"error": "heatmap or fingerprint not initialized"}), 503
+
+    grid = heatmap_store.grid
+    snapshot = grid.to_dict()
+    samples = grid.samples or {}
+    now = time.time()
+    fresh_window = max(60, int((scan_interval or 15) * 2 + 10))
+
+    pins = []
+    for fp_id, fp in fingerprint_engine.clusters.items():
+        last_seen = fp.last_seen or 0
+        # Skip devices that haven't been seen recently — stale RSSI is noise
+        if (now - last_seen) > fresh_window:
+            continue
+        live_rssi = float(fp.avg_rssi or -100)
+        # Search the survey for the closest-RSSI cell for this device
+        best = None
+        best_diff = float("inf")
+        for key, cell_samples in samples.items():
+            for s in cell_samples:
+                if s.fingerprint_id != fp_id:
+                    continue
+                diff = abs(s.rssi - live_rssi)
+                if diff < best_diff:
+                    best_diff = diff
+                    r, c = (int(x) for x in key.split(","))
+                    best = {"row": r, "col": c, "cell_rssi": s.rssi}
+        # Confidence: 100% at 0 dBm difference, drops linearly, floor 0%
+        confidence = max(0, min(100, int(100 - best_diff * 8))) if best else 0
+        category = fp.category or "unknown"
+        pins.append({
+            "fingerprint_id": fp_id,
+            "best_name": fp.best_name or "Unknown",
+            "category": category,
+            "ecosystem": fp.ecosystem or "",
+            "live_rssi": round(live_rssi, 1),
+            "age_sec": round(now - last_seen, 1),
+            "cell": best,            # None if no survey samples for this device
+            "confidence": confidence,
+            "is_known": bool(fp.is_known),
+            "is_tracker": bool(getattr(fp, "tracker_suspect", False)),
+        })
+
+    return jsonify({
+        "rows": grid.rows,
+        "cols": grid.cols,
+        "walls": snapshot["walls"],
+        "rooms": snapshot["rooms"],
+        "pins": pins,
+        "timestamp": round(now, 1),
+        "fresh_window_sec": fresh_window,
+    })
 
 
 @app.route("/api/cluster-summary")
@@ -1177,13 +1390,13 @@ def api_system():
         info["nrf_sniffer"] = {
             "port": nrf_sniffer.port,
             "running": getattr(nrf_sniffer, '_running', False),
-            "simulated": hasattr(nrf_sniffer, '_sim_loop'),
+            "simulated": False,
         }
     if nrf_sniffer_2:
         info["nrf_sniffer_2"] = {
             "port": nrf_sniffer_2.port,
             "running": getattr(nrf_sniffer_2, '_running', False),
-            "simulated": hasattr(nrf_sniffer_2, '_sim_loop'),
+            "simulated": False,
         }
     return jsonify(info)
 
@@ -1379,9 +1592,9 @@ def api_ghost():
             return jsonify({"error": str(e)}), 500
         return jsonify({"status": "shutting_down"})
     else:
-        # Simulated on non-Linux
-        socketio.emit("ghost_mode", {"status": "simulated"})
-        return jsonify({"status": "simulated", "message": "Ghost mode only available on Linux/RPi"})
+        # Ghost mode requires Linux/RPi for the underlying shutdown path.
+        socketio.emit("ghost_mode", {"status": "unavailable"})
+        return jsonify({"status": "unavailable", "message": "Ghost mode only available on Linux/RPi"})
 
 
 @app.route("/api/adapters")
@@ -1490,7 +1703,7 @@ def api_sniffer_status():
     if sniffer_engine is None:
         return jsonify({"running": False, "error": "Sniffer not initialised"})
     stats = sniffer_engine.get_stats()
-    stats["simulated"]   = _sniffer_sim
+    stats["simulated"]   = False
     stats["connections"] = sniffer_engine.get_connections()
     stats["pairing_sessions"] = (
         sniffer_engine.pairing_detector.get_active_sessions()
@@ -1513,8 +1726,8 @@ def api_sniffer_start():
     rssi_min   = int(data.get("rssi_min", -100))
     coded_phy  = bool(data.get("coded_phy", False))
     sniffer_engine.start(target_mac=target_mac, rssi_min=rssi_min, coded_phy=coded_phy)
-    socketio.emit("sniffer_state", {"state": "SCANNING", "simulated": _sniffer_sim})
-    return jsonify({"status": "started", "simulated": _sniffer_sim})
+    socketio.emit("sniffer_state", {"state": "SCANNING", "simulated": False})
+    return jsonify({"status": "started", "simulated": False})
 
 
 @app.route("/api/sniffer/stop", methods=["POST"])
@@ -1730,6 +1943,7 @@ def api_classify_device(device_id):
             avg_rssi=fp.avg_rssi, is_known=fp.is_known,
             tracker_suspect=fp.tracker_suspect,
             mac_count=len(fp.mac_addresses),
+            apple_info=getattr(fp, 'apple_info', None) or None,
         )
         return jsonify(cr.to_dict())
     return jsonify({"error": "device not found"}), 404
@@ -1832,7 +2046,7 @@ def _on_sniffer_pairing(session: PairingEvent):
 
 
 def _on_sniffer_state(state: str):
-    socketio.emit("sniffer_state", {"state": state, "simulated": _sniffer_sim})
+    socketio.emit("sniffer_state", {"state": state, "simulated": False})
 
 
 def _on_sniffer_error(msg: str):
@@ -1933,13 +2147,12 @@ def api_nrf_sniffer_status():
     if nrf_sniffer is None:
         return jsonify({"available": False, "reason": "nRF sniffer not initialized"})
 
-    is_sim = hasattr(nrf_sniffer, '_sim_loop')  # SimulatedNrfSniffer marker
     devices = nrf_sniffer.get_devices()
     connections = nrf_sniffer.get_connections()
 
     return jsonify({
         "available": True,
-        "simulated": is_sim,
+        "simulated": False,
         "running": getattr(nrf_sniffer, '_running', False),
         "port": nrf_sniffer.port,
         "device_count": len(devices),
@@ -1982,7 +2195,7 @@ def api_nrf_sniffer_start():
         bridge_t.start()
 
     socketio.emit("sniffer_state", {"state": "SCANNING", "source": "nrf"})
-    return jsonify({"status": "started", "simulated": hasattr(nrf_sniffer, '_sim_loop')})
+    return jsonify({"status": "started", "simulated": False})
 
 
 @app.route("/api/nrf-sniffer/stop", methods=["POST"])
@@ -2245,10 +2458,9 @@ def main():
     global scanner, jammer, logger, config, scan_interval, platform_info
     global auto_scan, fingerprint_engine, tracker_detector, ai_classifier
     global following_detector, shadow_detector, env_fingerprint, life_story, conversation_graph, trail_tracker
-    global sniffer_engine, gatt_inspector, crackle_runner, _sniffer_sim, nrf_sniffer, nrf_sniffer_2, _nrf_bridge_running
+    global sniffer_engine, gatt_inspector, crackle_runner, nrf_sniffer, nrf_sniffer_2, _nrf_bridge_running, heatmap_store
 
     parser = argparse.ArgumentParser(description="BlueShield Web Dashboard")
-    parser.add_argument("--sim", action="store_true", help="Use simulated scanner (no hardware)")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
     parser.add_argument("--host", default="0.0.0.0", help="Web server host")
     args = parser.parse_args()
@@ -2283,32 +2495,22 @@ def main():
     print("[BlueShield] Conversation graph engine active")
     print("[BlueShield] Movement trail tracker active")
 
-    _sniffer_sim = args.sim
-
-    if args.sim:
-        print("[BlueShield] *** SIMULATION MODE *** — no real hardware used")
-        print("[BlueShield] All metrics are synthetic. Do not use for research claims.")
-        scanner = SimulatedScanner(config)
-        jammer = SimulatedJammer(config)
-        scanner._is_simulated_explicit = True
-        jammer._is_simulated_explicit = True
+    print("[BlueShield] Using REAL hardware scanner")
+    scanner = BluetoothScanner(config)
+    scan_iface = config.get('interface', 'hci2')
+    print(f"[BlueShield] Scanner    -> {scan_iface} ({_describe_hci(scan_iface)})")
+    if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
+        jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
+        jammer = BluetoothJammer(jammer_cfg)
+        sec = config.get("jammer_secondary_interface", "hci3")
+        print(f"[BlueShield] Jammer     -> {jammer_cfg['interface']} ({_describe_hci(jammer_cfg['interface'])})")
+        print(f"[BlueShield] Jammer 2   -> {sec} ({_describe_hci(sec)})")
     else:
-        print("[BlueShield] Using REAL hardware scanner")
-        scanner = BluetoothScanner(config)
-        scan_iface = config.get('interface', 'hci2')
-        print(f"[BlueShield] Scanner    → {scan_iface} ({_describe_hci(scan_iface)})")
-        if platform_info["os"] == "Linux" and platform_info["has_hcitool"]:
-            jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
-            jammer = BluetoothJammer(jammer_cfg)
-            sec = config.get("jammer_secondary_interface", "hci3")
-            print(f"[BlueShield] Jammer     → {jammer_cfg['interface']} ({_describe_hci(jammer_cfg['interface'])})")
-            print(f"[BlueShield] Jammer 2   → {sec} ({_describe_hci(sec)})")
-        else:
-            # Real jammer requires Linux + hcitool. Do NOT silently fall back
-            # to simulated — that produces fake PPS counts in the UI.
-            print("[BlueShield] *** JAMMER UNAVAILABLE *** requires Linux + hcitool")
-            print("[BlueShield] Dashboard will show jammer as 'offline'. No jam commands will run.")
-            jammer = None
+        # Real jammer requires Linux + hcitool. The dashboard surfaces this as
+        # offline rather than emitting fake packet-per-second counts.
+        print("[BlueShield] *** JAMMER UNAVAILABLE *** requires Linux + hcitool")
+        print("[BlueShield] Dashboard will show jammer as 'offline'. No jam commands will run.")
+        jammer = None
 
     logger = BlueShieldLogger(config)
 
@@ -2338,8 +2540,14 @@ def main():
 
     # ── Initialise sniffer subsystem ─────────────────────────────────────────
     pcap_dir = str(Path(__file__).parent.parent.parent / "captures")
+
+    # ── BLE-Map heatmap store ────────────────────────────────────────────────
+    heatmap_path = str(Path(pcap_dir) / "heatmap.json")
+    heatmap_store = HeatmapStore(heatmap_path)
+    cell_count = sum(len(v) for v in heatmap_store.grid.samples.values())
+    print(f"[BlueShield] Heatmap store    : {heatmap_store.grid.rows}x{heatmap_store.grid.cols} grid, {cell_count} samples")
+
     sniffer_engine = make_sniffer(
-        sim=args.sim,
         serial_port=config.get("sniffle_port", "/dev/ttyACM0"),
         pcap_dir=pcap_dir,
     )
@@ -2349,47 +2557,33 @@ def main():
     sniffer_engine.on_state      = _on_sniffer_state
     sniffer_engine.on_error      = _on_sniffer_error
 
-    gatt_inspector = make_gatt_inspector(sim=args.sim)
+    gatt_inspector = make_gatt_inspector()
     crackle_runner = CrackleRunner(output_dir=str(Path(pcap_dir) / "crackle"))
 
     # Be explicit about which sniffer backend is actually live
-    backend_name = type(sniffer_engine).__name__  # SniffleEngine / WhadSniffleEngine / SimulatedSniffleEngine
+    backend_name = type(sniffer_engine).__name__  # SniffleEngine / WhadSniffleEngine
     backend_label = {
         "SniffleEngine": "Sniffle / TI CC1352 BLE PDU capture",
-        "WhadSniffleEngine": "WHAD / nRF52840 ButteRFly v1.1.3 BLE adv-channel sniff",
-        "SimulatedSniffleEngine": "SIMULATED — no real hardware",
+        "WhadSniffleEngine": "WHAD / nRF52840 ButteRFly BLE adv-channel sniff",
     }.get(backend_name, backend_name)
-    if args.sim:
-        sniffer_status = "SIMULATED (--sim flag explicit)"
-    elif sniffer_engine.hardware_available:
-        sniffer_status = "HARDWARE"
-    else:
-        sniffer_status = "UNAVAILABLE (no compatible sniffer on serial port)"
+    sniffer_status = "HARDWARE" if sniffer_engine.hardware_available else "UNAVAILABLE (no compatible sniffer on serial port)"
     print(f"[BlueShield] Sniffer engine  : {sniffer_status} ({backend_label})")
-    print(f"[BlueShield] GATT inspector  : {'simulated (--sim)' if args.sim else 'bleak'}")
+    print(f"[BlueShield] GATT inspector  : bleak")
     print(f"[BlueShield] Crackle runner  : {'binary: ' + crackle_runner._binary if crackle_runner.binary_available() else 'Python fallback'}")
 
     # ── Initialise nRF52840 BLE sniffers (dual-dongle) ─────────────────────
     nrf_port   = config.get("nrf_sniffer_port",   "/dev/ttyACM0")
     nrf_port_2 = config.get("nrf_sniffer_port_2", "/dev/ttyACM1")
     nrf_enabled = config.get("nrf_sniffer_enabled", False)
-    if nrf_enabled or args.sim:
-        nrf_sniffer = make_nrf_sniffer(
-            sim=args.sim,
-            port=nrf_port,
-        )
-        nrf_type = "SIMULATED" if args.sim else "HARDWARE"
-        print(f"[BlueShield] nRF52 sniffer #1: {nrf_type} → {nrf_port}")
+    if nrf_enabled:
+        nrf_sniffer = make_nrf_sniffer(port=nrf_port)
+        print(f"[BlueShield] nRF52 sniffer #1: HARDWARE -> {nrf_port}")
 
-        # Second nRF sniffer dongle (if available)
         try:
             import os
-            if args.sim or os.path.exists(nrf_port_2):
-                nrf_sniffer_2 = make_nrf_sniffer(
-                    sim=args.sim,
-                    port=nrf_port_2,
-                )
-                print(f"[BlueShield] nRF52 sniffer #2: {nrf_type} → {nrf_port_2}")
+            if os.path.exists(nrf_port_2):
+                nrf_sniffer_2 = make_nrf_sniffer(port=nrf_port_2)
+                print(f"[BlueShield] nRF52 sniffer #2: HARDWARE -> {nrf_port_2}")
             else:
                 print(f"[BlueShield] nRF52 sniffer #2: NOT FOUND ({nrf_port_2})")
         except Exception as e:
