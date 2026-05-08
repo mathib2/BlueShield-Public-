@@ -1,18 +1,16 @@
 """
-Sniffle Engine — BLE packet capture backend.
+Sniffle Engine — BLE packet capture backend (real hardware only).
 
-Tries to import the real Sniffle library (nccgroup/Sniffle).
-If unavailable, falls back to SimulatedSniffleEngine which produces
-realistic synthetic BLE traffic for UI development and testing.
-
-Real hardware: TI CC1352R / CC26x2 / LAUNCHXL-CC26X2R1 on /dev/ttyACM0
+Tries to import the real Sniffle library (nccgroup/Sniffle) for TI CC1352/CC2652
+hardware. On systems without that hardware, the WhadSniffleEngine backend is
+used instead (nRF52840 + WHAD ButteRFly firmware — what BlueShield ships).
 
 Packet types emitted via callback:
   "adv"         — ADV_IND / ADV_NONCONN_IND / ADV_EXT_IND
   "scan_rsp"    — SCAN_RSP
   "connect_ind" — CONNECT_IND (connection setup)
   "data"        — LL data PDU (L2CAP, ATT, SMP)
-  "state"       — sniffer state change (SCANNING → CONNECTED, etc.)
+  "state"       — sniffer state change (SCANNING -> CONNECTED, etc.)
   "error"       — hardware/decode error
 """
 
@@ -20,7 +18,6 @@ from __future__ import annotations
 
 import math
 import os
-import random
 import struct
 import threading
 import time
@@ -469,289 +466,23 @@ class SniffleEngine(_BaseSniffleEngine):
         return None
 
 
-# ── Simulated engine (no hardware required) ──────────────────────────────────
-
-_SIMULATED_DEVICES = [
-    ("E4:28:B2:11:A0:01", "iPhone 15",           0x004C, "ADV_IND"),
-    ("A0:B1:C2:D3:E4:F5", "Galaxy Buds2 Pro",    0x0075, "ADV_IND"),
-    ("11:22:33:44:55:66", "Tile Slim",            0x00E0, "ADV_NONCONN_IND"),
-    ("AA:BB:CC:DD:EE:01", "Smart Thermostat",     0x0000, "ADV_IND"),
-    ("DE:AD:BE:EF:00:01", "Unknown BLE Device",  None,   "ADV_NONCONN_IND"),
-    ("B8:27:EB:12:34:56", "Raspberry Pi",         None,   "ADV_IND"),
-    ("C0:FF:EE:BA:BE:01", "Fitbit Sense 2",       0x0000, "ADV_IND"),
-    ("08:3A:88:AB:CD:EF", "MacBook Pro",          0x004C, "ADV_IND"),
-]
-
-_CONN_PAIRS = [
-    ("E4:28:B2:11:A0:01", "AA:BB:CC:DD:EE:01"),
-    ("08:3A:88:AB:CD:EF", "C0:FF:EE:BA:BE:01"),
-]
-
-
-class SimulatedSniffleEngine(_BaseSniffleEngine):
-    """
-    Simulated BLE sniffer that generates realistic synthetic traffic.
-
-    Produces:
-      - Advertisement floods from _SIMULATED_DEVICES at realistic intervals
-      - Periodic CONNECT_IND pairs followed by L2CAP/ATT data PDUs
-      - One complete SMP legacy Just Works pairing sequence (crackable)
-      - One LESC pairing sequence
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.hardware_available = False   # mark as simulated
-        self._adv_seq   = 0
-        self._conn_aas: Dict[str, int] = {}   # peripheral → access address
-
-    def _run_loop(self, target_mac, rssi_min, coded_phy):
-        self._emit_state("SCANNING")
-        adv_timer      = 0.0
-        conn_timer     = 15.0
-        legacy_pair_ts = 30.0
-        lesc_pair_ts   = 60.0
-        t0 = time.monotonic()
-
-        while self._running:
-            elapsed = time.monotonic() - t0
-
-            # Advertisement flood every ~0.5s
-            if elapsed >= adv_timer:
-                self._emit_simulated_advs(target_mac, rssi_min)
-                adv_timer = elapsed + 0.5 + random.uniform(-0.1, 0.1)
-
-            # Simulate a connection setup
-            if elapsed >= conn_timer and len(self.connections) < 4:
-                self._emit_simulated_connection()
-                conn_timer = elapsed + 20.0 + random.uniform(-3, 3)
-
-            # Legacy Just Works pairing (crackable demo)
-            if elapsed >= legacy_pair_ts and not hasattr(self, "_legacy_done"):
-                self._emit_legacy_pairing()
-                self._legacy_done = True
-
-            # LESC pairing demo
-            if elapsed >= lesc_pair_ts and not hasattr(self, "_lesc_done"):
-                self._emit_lesc_pairing()
-                self._lesc_done = True
-
-            # Data PDUs on active connections
-            if self._conn_aas and random.random() < 0.3:
-                self._emit_data_pdu()
-
-            time.sleep(0.05)
-
-    # ── simulated emission helpers ────────────────────────────────────────────
-
-    def _emit_simulated_advs(self, target_mac, rssi_min):
-        now = time.time()
-        n = random.randint(2, 5)
-        for _ in range(n):
-            mac, name, mfr_id, pdu_type_name = random.choice(_SIMULATED_DEVICES)
-            if target_mac and mac.upper() != target_mac.upper():
-                continue
-
-            rssi = random.randint(-85, -40)
-            if rssi < rssi_min:
-                continue
-
-            channel = random.choice([37, 38, 39])
-            adv_type = {"ADV_IND": 0x00, "ADV_NONCONN_IND": 0x02}.get(pdu_type_name, 0x00)
-
-            payload = self._build_adv_payload(name, mfr_id)
-
-            pkt = BLEPacket(
-                ts=now,
-                pkt_type="adv",
-                channel=channel,
-                rssi=rssi,
-                access_address=0x8E89BED6,
-                adv_address=mac,
-                adv_type=adv_type,
-                adv_type_name=ADV_PDU_TYPES.get(adv_type),
-                payload=payload,
-                adv_name=name,
-                manufacturer=self._mfr_name(mfr_id),
-            )
-            self._emit_packet(pkt)
-
-    def _emit_simulated_connection(self):
-        if not _CONN_PAIRS:
-            return
-        central, peripheral = random.choice(_CONN_PAIRS)
-        conn_aa   = random.randint(0x10000000, 0xEFFFFFFF)
-        hop_inc   = random.randint(5, 16)
-        crc_init  = random.randint(0, 0xFFFFFF)
-
-        # Build a minimal CONNECT_IND payload
-        def mac_to_bytes(mac):
-            return bytes(int(b, 16) for b in reversed(mac.split(":")))
-
-        init_a = mac_to_bytes(central)
-        adv_a  = mac_to_bytes(peripheral)
-        aa_b   = struct.pack("<I", conn_aa)
-        crc_b  = crc_init.to_bytes(3, "little")
-        rest   = bytes([1, 0, 0, 6, 0, 0, 1, 0, 200, 0]) + b'\xff\xff\xff\xff\x1f' + bytes([hop_inc])
-
-        # PDU header: type=CONNECT_IND(5), length=34
-        pdu_hdr = bytes([0x05, 34])
-        pdu_payload = pdu_hdr + init_a + adv_a + aa_b + crc_b + rest
-
-        pkt = BLEPacket(
-            ts=time.time(),
-            pkt_type="connect_ind",
-            channel=random.choice([37, 38, 39]),
-            rssi=random.randint(-70, -45),
-            access_address=0x8E89BED6,
-            adv_address=peripheral,
-            adv_type=0x05,
-            adv_type_name="CONNECT_IND",
-            payload=pdu_payload,
-        )
-        self._emit_packet(pkt)
-        self._handle_connect_ind(pkt)
-        self._conn_aas[peripheral] = conn_aa
-        self._emit_state("CONNECTED")
-
-    def _emit_data_pdu(self):
-        if not self._conn_aas:
-            return
-        peripheral, conn_aa = random.choice(list(self._conn_aas.items()))
-        # Simulate ATT Read Response
-        att_op = random.choice([0x0b, 0x1b, 0x09])
-        att_val = bytes(random.getrandbits(8) for _ in range(random.randint(2, 18)))
-        l2cap = struct.pack("<HH", len(att_val) + 1, 0x0004) + bytes([att_op]) + att_val
-        ll_hdr = struct.pack("<BB", 0x02, len(l2cap))  # LLID=2, length
-
-        pkt = BLEPacket(
-            ts=time.time(),
-            pkt_type="data",
-            channel=random.randint(0, 36),
-            rssi=random.randint(-75, -40),
-            access_address=conn_aa,
-            adv_address=None,
-            adv_type=None,
-            adv_type_name=None,
-            payload=ll_hdr + l2cap,
-            llid=2,
-            data_length=len(l2cap),
-        )
-        self._emit_packet(pkt)
-        self._handle_data_pdu(pkt)
-
-    def _emit_legacy_pairing(self):
-        """Emit a complete Legacy Just Works pairing (Just Works, TK=0)."""
-        # Use one of the active connections if available
-        if not self._conn_aas:
-            # create a synthetic connection first
-            self._emit_simulated_connection()
-            time.sleep(0.1)
-
-        if not self._conn_aas:
-            return
-
-        peripheral, conn_aa = next(iter(self._conn_aas.items()))
-        ts = time.time()
-
-        # io_cap=NoInputNoOutput, oob=none, auth_req=bonding(01)|SC=0 → legacy
-        pairing_req  = bytes([0x01, 0x03, 0x00, 0x01, 0x10, 0x05, 0x05])
-        pairing_rsp  = bytes([0x02, 0x03, 0x00, 0x01, 0x10, 0x05, 0x05])
-        mconfirm     = bytes([0x03]) + bytes(os.urandom(16))
-        sconfirm     = bytes([0x03]) + bytes(os.urandom(16))
-        mrand        = bytes([0x04]) + bytes(os.urandom(16))
-        srand        = bytes([0x04]) + bytes(os.urandom(16))
-
-        for smp_payload in [pairing_req, pairing_rsp, mconfirm, sconfirm, mrand, srand]:
-            l2cap  = struct.pack("<HH", len(smp_payload), 0x0006) + smp_payload
-            ll_hdr = struct.pack("<BB", 0x02, len(l2cap))
-            pkt = BLEPacket(
-                ts=ts, pkt_type="data", channel=random.randint(0, 36),
-                rssi=-55, access_address=conn_aa, adv_address=None,
-                adv_type=None, adv_type_name=None,
-                payload=ll_hdr + l2cap, llid=2, data_length=len(l2cap),
-            )
-            self._emit_packet(pkt)
-            self._handle_data_pdu(pkt)
-            ts += 0.015
-
-    def _emit_lesc_pairing(self):
-        """Emit a LESC pairing sequence (LE Secure Connections)."""
-        if not self._conn_aas:
-            return
-
-        peripheral, conn_aa = list(self._conn_aas.items())[-1]
-        ts = time.time()
-
-        # auth_req with SC bit set (0x08+0x01=0x09)
-        pairing_req  = bytes([0x01, 0x01, 0x00, 0x09, 0x10, 0x09, 0x09])
-        pairing_rsp  = bytes([0x02, 0x01, 0x00, 0x09, 0x10, 0x09, 0x09])
-        pub_key_init = bytes([0x0C]) + bytes(os.urandom(64))
-        pub_key_resp = bytes([0x0C]) + bytes(os.urandom(64))
-        dhkey_check  = bytes([0x0D]) + bytes(os.urandom(16))
-
-        for smp_payload in [pairing_req, pairing_rsp, pub_key_init, pub_key_resp, dhkey_check]:
-            l2cap  = struct.pack("<HH", len(smp_payload), 0x0006) + smp_payload
-            ll_hdr = struct.pack("<BB", 0x02, len(l2cap))
-            pkt = BLEPacket(
-                ts=ts, pkt_type="data", channel=random.randint(0, 36),
-                rssi=-52, access_address=conn_aa, adv_address=None,
-                adv_type=None, adv_type_name=None,
-                payload=ll_hdr + l2cap, llid=2, data_length=len(l2cap),
-            )
-            self._emit_packet(pkt)
-            self._handle_data_pdu(pkt)
-            ts += 0.02
-
-    # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _build_adv_payload(self, name: str, mfr_id: Optional[int]) -> bytes:
-        b = bytearray()
-        # Flags: LE General Discoverable, no BR/EDR
-        b += bytes([2, 0x01, 0x06])
-        # Complete local name
-        name_b = name.encode("utf-8")[:29]
-        b += bytes([len(name_b) + 1, 0x09]) + name_b
-        # Manufacturer specific
-        if mfr_id is not None:
-            mfr_b = struct.pack("<H", mfr_id) + bytes(os.urandom(4))
-            b += bytes([len(mfr_b) + 1, 0xFF]) + mfr_b
-        return bytes(b)
-
-    def _mfr_name(self, mfr_id: Optional[int]) -> Optional[str]:
-        names = {0x004C: "Apple", 0x0075: "Samsung", 0x00E0: "Google",
-                 0x0006: "Microsoft", 0x0059: "Nordic"}
-        return names.get(mfr_id) if mfr_id is not None else None
 
 
 # ── Factory function ─────────────────────────────────────────────────────────
 
 def make_sniffer(
-    sim: bool = False,
     serial_port: str = "/dev/ttyACM0",
     pcap_dir: str = "/tmp/blueshield_pcaps",
 ) -> _BaseSniffleEngine:
     """
-    Return a sniffer engine — REAL hardware by default, sim only if explicit.
+    Return a real sniffer engine. No simulation paths — real hardware only.
+    If hardware is unavailable, returns an engine with hardware_available=False
+    so the dashboard surfaces "sniffer unavailable" rather than fake data.
 
-    IMPORTANT: This function will NEVER silently return simulated data.
-    If the user did not pass sim=True and real hardware is not available,
-    returns a disabled engine that surfaces `hardware_available=False` to
-    the dashboard, which must show "sniffer unavailable" instead of fake data.
-
-    Args:
-        sim:         Only set True when --sim CLI flag is explicit.
-        serial_port: Serial port for real Sniffle hardware.
-        pcap_dir:    Directory for PCAP output files.
+    Backend selection:
+      1. TI CC1352/CC2652 with Sniffle firmware (if `/dev/ttyACM*` matches)
+      2. nRF52840 ButteRFly via WHAD (this is what BlueShield ships with)
     """
-    if sim:
-        # Explicit simulation request (e.g., development without hardware)
-        eng = SimulatedSniffleEngine(pcap_dir=pcap_dir)
-        eng._is_simulated_explicit = True
-        return eng
-
-    # Prefer Sniffle-firmware if installed; otherwise fall back to ButteRFly
-    # via WHAD (this is what we ship with — see whad_sniffer_engine.py).
     sniffle_eng = SniffleEngine(serial_port=serial_port, pcap_dir=pcap_dir)
     if sniffle_eng.hardware_available:
         return sniffle_eng
@@ -764,6 +495,5 @@ def make_sniffer(
     except Exception:
         pass
 
-    # Neither backend available — return the Sniffle engine so the UI can
-    # surface hardware_available=False (never silently switch to sim).
+    # Neither backend available — surface hardware_available=False to UI.
     return sniffle_eng

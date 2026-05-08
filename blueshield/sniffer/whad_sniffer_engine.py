@@ -2,12 +2,14 @@
 WHAD/ButteRFly BLE sniffer backend.
 
 Plugs into the same _BaseSniffleEngine interface as SniffleEngine, but uses a
-ButteRFly-flashed nRF52840 dongle over WHAD instead of the TI CC1352 +
-Sniffle-firmware stack. This is the backend BlueShield actually ships with,
-since the nRF dongles we own are flashed with ButteRFly v1.1.3.
+ButteRFly-flashed nRF52840 dongle over WHAD. This is the backend BlueShield
+ships with, since the nRF dongles we own are flashed with ButteRFly firmware.
 
-Emits BLEPacket records compatible with the rest of the dashboard
-(pcap writer, pairing detector, correlator, UI packet list).
+Logic mirrors the canonical WHAD reference example
+(whad-client/examples/ble/ble_advertisements_sniffer.py and
+ble_new_connection_sniffer.py): use Sniffer.configure() with explicit
+advertisements / connection flags, iterate Sniffer.sniff(), and pull
+RSSI / channel from the per-packet metadata that real hardware always emits.
 """
 from __future__ import annotations
 
@@ -51,20 +53,31 @@ class WhadSniffleEngine(_BaseSniffleEngine):
             self._running = False
             return
 
+        target = (target_mac or "").upper().strip() or None
+
         try:
             self._dev = WhadDevice.create(f"uart:{self.serial_port}")
             self._dev.open()
             self._dev.discover()
             self._conn = BLESniffer(self._dev)
-            self._conn.sniff_advertisements()
+            # Modern API per WHAD reference: configure() with explicit flags.
+            # We turn on connection-following too so CONNECT_IND + LL data PDUs
+            # flow into the dashboard (legacy sniff_advertisements() suppressed
+            # them).
+            self._conn.configure(advertisements=True, connection=True)
+            if target and hasattr(self._conn, "filter"):
+                # Push the MAC filter into the firmware where supported — saves
+                # USB traffic vs filtering host-side.
+                try:
+                    self._conn.filter = target
+                except Exception:
+                    pass
             self._conn.start()
         except Exception as e:
             self._emit_error(f"butterfly sniffer start: {e}")
             self._running = False
             self._cleanup()
             return
-
-        target = (target_mac or "").upper().strip() or None
 
         try:
             while self._running:
@@ -100,12 +113,40 @@ class WhadSniffleEngine(_BaseSniffleEngine):
                 BTLE_SCAN_RSP, BTLE_CONNECT_REQ, BTLE_DATA) -> Optional[BLEPacket]:
         try:
             raw = bytes(pkt)
-            channel = int(getattr(pkt, "Channel", getattr(pkt, "channel", 37)) or 37)
-            rssi = int(getattr(pkt, "rssi", getattr(pkt, "RSSI", -70)) or -70)
-            aa = int(getattr(pkt, "access_addr",
-                             getattr(pkt, "AA", 0x8E89BED6)) or 0x8E89BED6)
         except Exception:
             return None
+
+        # Real hardware places rssi / channel / access_address on pkt.metadata
+        # (BLEMetadata in whad.ble). Fall back to scapy field access for the
+        # rare path where metadata is absent.
+        md = getattr(pkt, "metadata", None)
+        rssi = None
+        channel = None
+        aa = None
+        if md is not None:
+            rssi = getattr(md, "rssi", None)
+            channel = getattr(md, "channel", None)
+            aa = getattr(md, "access_address", None)
+        if rssi is None:
+            rssi = getattr(pkt, "rssi", getattr(pkt, "RSSI", None))
+        if channel is None:
+            channel = getattr(pkt, "Channel", getattr(pkt, "channel", None))
+        if aa is None:
+            aa = getattr(pkt, "access_addr", getattr(pkt, "AA", None))
+
+        # Sanity defaults for telemetry sinks that require numeric fields.
+        try:
+            channel = int(channel) if channel is not None else 37
+        except (TypeError, ValueError):
+            channel = 37
+        try:
+            rssi = int(rssi) if rssi is not None else None
+        except (TypeError, ValueError):
+            rssi = None
+        try:
+            aa = int(aa) if aa is not None else 0x8E89BED6
+        except (TypeError, ValueError):
+            aa = 0x8E89BED6
 
         pkt_type = "adv"
         adv_type = None

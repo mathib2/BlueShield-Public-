@@ -1,0 +1,10 @@
+# Force LF line endings on shell scripts, systemd units, and udev rules — these
+# break with CRLF when shipped to Linux. Everything else uses git's default
+# autocrlf behavior (works fine for Python, JS, HTML, CSS).
+*.sh                    text eol=lf
+*.service               text eol=lf
+*.rules                 text eol=lf
+scripts/**              text eol=lf
+udev/**                 text eol=lf
+systemd/**              text eol=lf
+blueshield/scanner/oui_db.tsv  text eol=lf

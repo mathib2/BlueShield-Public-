@@ -35,3 +35,40 @@ pptx_extract/
 
 # Claude
 .claude/
+
+# Captures (runtime PCAP / Crackle output)
+captures/
+*.pcap
+*.pcapng
+
+# Crypto material (Ed25519 keypair generated per-install — never commit)
+keys/
+
+# Heatmap survey state (per-deployment, not source)
+blueshield/scanner/heatmap.json
+blueshield/scanner/heatmap.json.tmp
+
+# Personal scratch / test scripts (not part of the product)
+tools/test_*.py
+tools/probe_*.py
+tools/*.tmp
+
+# Firmware binaries (download from upstream — Sniffle, ButteRFly, etc.)
+tools/*.hex
+tools/*.zip
+tools/*.bin
+tools/*.uf2
+
+# Random external .deb packages stashed in the workspace
+*.deb
+
+# Unrelated personal docs accidentally placed in the workspace
+NCL_Spring_Team_2026/
+
+# Backup files
+*.bak
+*.orig
+
+# Local sandbox state
+.scheduled_tasks.lock
+memory.lock

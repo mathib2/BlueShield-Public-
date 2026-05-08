@@ -260,9 +260,48 @@ class AIDeviceClassifier:
                  is_known: bool = False,
                  tracker_suspect: bool = False,
                  mac_count: int = 1,
+                 apple_info: dict = None,
                  ) -> ClassificationResult:
         """Classify a device and return ranked hypotheses."""
         service_uuids = service_uuids or []
+
+        # Apple Continuity short-circuit — when the TLV decoder resolves a
+        # specific Apple device class with high confidence, that beats every
+        # heuristic in the rule engine. Reference: hexway/apple_bleee +
+        # furiousMAC/continuity (proximity-pairing model is exact, not a guess).
+        if apple_info and apple_info.get("confidence", 0) >= 0.7:
+            cls_to_dtype = {
+                "airpods":  "earbuds",
+                "beats":    "earbuds",
+                "watch":    "smartwatch",
+                "iphone":   "smartphone",
+                "ipad":     "smartphone",
+                "mac":      "laptop",
+                "airtag":   "tracker_tag",
+                "findmy":   "tracker_tag",
+                "homepod":  "smart_speaker",
+                "apple_tv": "smart_tv",
+            }
+            dtype = cls_to_dtype.get(apple_info.get("device_class"))
+            if dtype:
+                profile = DEVICE_PROFILES.get(dtype, {})
+                top = DeviceClassification(
+                    device_type=dtype,
+                    label=apple_info.get("label") or profile.get("label", dtype),
+                    icon=profile.get("icon", "?"),
+                    description=profile.get("description", apple_info.get("raw_summary", "")),
+                    confidence=float(apple_info["confidence"]),
+                    reasons=[
+                        f"Apple Continuity TLV: {apple_info.get('label')}",
+                        f"Source: {' + '.join(hex(t) for t in apple_info.get('tlv_types', []))}",
+                    ],
+                )
+                return ClassificationResult(
+                    device_id=device_id,
+                    top_classification=top,
+                    alternatives=[],
+                    ai_summary=apple_info.get("raw_summary") or top.label,
+                )
 
         # Resolve service UUID hints
         svc_hints = set()

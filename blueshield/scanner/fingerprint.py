@@ -59,6 +59,9 @@ class AdvertisementRecord:
     manufacturer_name: str = "Unknown"
     mfr_data_bytes: bytes = b""       # raw manufacturer data
     raw_adv_data: dict = field(default_factory=dict)  # full raw advertisement
+    apple_info: dict = field(default_factory=dict)    # Apple Continuity decode
+    resolved: dict = field(default_factory=dict)      # unified resolver decode
+    resolved: dict = field(default_factory=dict)      # unified device_resolver result
 
 
 @dataclass
@@ -94,6 +97,8 @@ class DeviceFingerprint:
     movement_indicator: str = "stationary"
     rssi_history: list = field(default_factory=list)  # [(timestamp, rssi), ...]
     raw_adv_data: dict = field(default_factory=dict)  # latest raw advertisement
+    apple_info: dict = field(default_factory=dict)    # Continuity decode (model, battery, state, ...)
+    resolved: dict = field(default_factory=dict)      # unified device_resolver result (vendor, label, conf, ...)
 
     def to_dict(self):
         d = asdict(self)
@@ -163,7 +168,9 @@ class BLEFingerprintEngine:
                               category: str = "unknown", category_icon: str = "",
                               manufacturer_name: str = "Unknown",
                               mfr_data_bytes: bytes = b"",
-                              raw_adv_data: dict = None):
+                              raw_adv_data: dict = None,
+                              apple_info: dict = None,
+                              resolved: dict = None):
         """Record a single BLE advertisement observation."""
         record = AdvertisementRecord(
             timestamp=time.time(),
@@ -179,6 +186,8 @@ class BLEFingerprintEngine:
             manufacturer_name=manufacturer_name,
             mfr_data_bytes=mfr_data_bytes if isinstance(mfr_data_bytes, bytes) else b"",
             raw_adv_data=raw_adv_data or {},
+            apple_info=apple_info or {},
+            resolved=resolved or {},
         )
         self.observations.append(record)
         self._mac_observations[mac.upper()].append(record)
@@ -244,6 +253,8 @@ class BLEFingerprintEngine:
         # Latest raw advertisement data
         latest_raw = {}
         latest_mfr_bytes = b""
+        latest_apple_info: dict = {}
+        latest_resolved: dict = {}
         for r in reversed(records):
             if r.raw_adv_data:
                 latest_raw = r.raw_adv_data
@@ -251,6 +262,14 @@ class BLEFingerprintEngine:
         for r in reversed(records):
             if r.mfr_data_bytes:
                 latest_mfr_bytes = r.mfr_data_bytes
+                break
+        for r in reversed(records):
+            if r.apple_info:
+                latest_apple_info = r.apple_info
+                break
+        for r in reversed(records):
+            if r.resolved:
+                latest_resolved = r.resolved
                 break
 
         return {
@@ -273,6 +292,8 @@ class BLEFingerprintEngine:
             "rssi_history": [(r.timestamp, r.rssi) for r in records if r.rssi != 0],
             "raw_adv_data": latest_raw,
             "mfr_data_bytes": latest_mfr_bytes,
+            "apple_info": latest_apple_info,
+            "resolved": latest_resolved,
         }
 
     def _similarity_score(self, fp1: dict, fp2: dict) -> int:
@@ -511,12 +532,35 @@ class BLEFingerprintEngine:
             for t, r in merged_rssi:
                 self._rssi_history[fp_id].append((t, r))
 
-            # Get latest raw advertisement data
+            # Get latest raw advertisement data + decode results
             latest_raw = {}
+            latest_apple: dict = {}
+            latest_resolved: dict = {}
             for fp in reversed(cluster_fps):
-                if fp.get("raw_adv_data"):
+                if fp.get("raw_adv_data") and not latest_raw:
                     latest_raw = fp["raw_adv_data"]
+                if fp.get("apple_info") and not latest_apple:
+                    latest_apple = fp["apple_info"]
+                if fp.get("resolved") and not latest_resolved:
+                    latest_resolved = fp["resolved"]
+                if latest_raw and latest_apple and latest_resolved:
                     break
+
+            # Promote a high-confidence resolver label into best_name when the
+            # advertised GAP name is missing. This is what makes the Apple
+            # Continuity model / Galaxy Buds model / Fast Pair model show in
+            # the table even when the device hides its name.
+            if latest_resolved:
+                rconf = latest_resolved.get("confidence", 0)
+                rlabel = latest_resolved.get("label")
+                rmodel = latest_resolved.get("model")
+                if rconf >= 0.6 and (not best_name or best_name in ("Unknown", "")):
+                    best_name = rmodel or rlabel or best_name
+            elif latest_apple:
+                model_name = latest_apple.get("model")
+                label = latest_apple.get("label")
+                if (not best_name) or best_name in ("Unknown", "Apple Device", ""):
+                    best_name = model_name or label or best_name
 
             device_fp = DeviceFingerprint(
                 fingerprint_id=fp_id,
@@ -540,6 +584,8 @@ class BLEFingerprintEngine:
                 ecosystem=ecosystem,
                 rssi_history=list(self._rssi_history[fp_id]),
                 raw_adv_data=latest_raw,
+                apple_info=latest_apple,
+                resolved=latest_resolved,
             )
 
             new_clusters[fp_id] = device_fp

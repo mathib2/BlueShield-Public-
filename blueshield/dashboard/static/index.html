@@ -5,10 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BLUESHIELD — Tactical BLE Intelligence</title>
     <link rel="icon" href="/static/img/blueshield-sigil.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css?v=v10-oui">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/animejs/dist/bundles/anime.umd.min.js"></script>
+    <!-- heatmap.js — patrick-wied/heatmap.js, 6.4k⭐. Same lib used by jantman/python-wifi-survey-heatmap and most WiFi survey tools. -->
+    <script src="https://cdn.jsdelivr.net/npm/heatmap.js@2.0.5/build/heatmap.min.js"></script>
 </head>
 <body>
     <!-- Subtle system status strip (replaces loud green banner) -->
@@ -33,7 +37,7 @@
                     <path d="M22 42 L32 38 L42 42"/>
                 </svg>
                 <span class="brand-name">BLUESHIELD</span>
-                <span class="brand-ver">v7.0</span>
+                <span class="brand-ver">v7.8</span>
             </div>
             <div class="operator-strip" id="operator-strip">
                 <span class="op-label">OPERATOR</span>
@@ -55,9 +59,43 @@
         </div>
         <div class="topbar-right">
             <span class="topbar-clock" id="clock">--:--:--</span>
-            <button class="icon-btn adv-toggle" id="btn-advanced" title="Toggle Advanced Mode">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </button>
+
+            <!-- Settings dropdown -->
+            <div class="settings-wrap">
+                <button class="icon-btn adv-toggle" id="btn-advanced" title="Settings" aria-haspopup="true" aria-expanded="false">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                </button>
+                <div class="settings-menu" id="settings-menu" role="menu" aria-hidden="true">
+                    <div class="sm-header">
+                        <div class="sm-eyebrow">Operator</div>
+                        <div class="sm-name" id="sm-name">admin</div>
+                        <div class="sm-sid mono">SID <span id="sm-sid">----</span></div>
+                    </div>
+                    <div class="sm-section">
+                        <button class="sm-item" id="sm-toggle-theme" role="menuitem">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                            <span>Toggle theme</span>
+                            <span class="sm-tag mono" id="sm-theme-tag">DARK</span>
+                        </button>
+                        <button class="sm-item" id="sm-toggle-advanced" role="menuitem">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                            <span>Advanced mode</span>
+                            <span class="sm-tag mono" id="sm-adv-tag">OFF</span>
+                        </button>
+                        <button class="sm-item" id="sm-open-config" role="menuitem">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                            <span>Open config</span>
+                        </button>
+                    </div>
+                    <div class="sm-section sm-section-foot">
+                        <a class="sm-item sm-item-danger" href="/logout" id="sm-logout" role="menuitem">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                            <span>Sign out</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+
             <button class="icon-btn" id="btn-theme" title="Toggle theme">
                 <svg id="ico-sun" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
                 <svg id="ico-moon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -65,6 +103,9 @@
             <button class="icon-btn ghost-btn" id="btn-ghost" title="Emergency Stop">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10"/></svg>
             </button>
+            <a class="icon-btn icon-btn-logout" href="/logout" title="Sign out">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </a>
         </div>
     </header>
 
@@ -84,6 +125,10 @@
                 <button class="nav-item" data-tab="radar">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4"/></svg>
                     <span>Radar</span>
+                </button>
+                <button class="nav-item" data-tab="heatmap">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                    <span>Heatmap</span>
                 </button>
                 <button class="nav-item" data-tab="signals">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -201,6 +246,38 @@
                             <div class="ls-card"><div class="ls-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div><div class="ls-val" id="ls-new">0</div><div class="ls-label">New Today</div></div>
                         </div>
                     </div>
+                    <!-- 3D Hardware Topology (v7.7.2) -->
+                    <div class="live-hw3d-card">
+                        <div class="hw3d-head">
+                            <div class="hw3d-title">
+                                <span class="hw3d-eyebrow">HARDWARE TOPOLOGY · LIVE</span>
+                                <h3 class="hw3d-h">Raspberry Pi 3B + ButteRFly · BlueShield sensor stack</h3>
+                            </div>
+                            <div class="hw3d-meta">
+                                <span class="hw3d-pill"><span class="hw3d-dot hw3d-dot-bt"></span><span>BLE scanner</span></span>
+                                <span class="hw3d-pill"><span class="hw3d-dot hw3d-dot-jam"></span><span>Jammer</span></span>
+                                <span class="hw3d-pill"><span class="hw3d-dot hw3d-dot-sniff"></span><span>Sniffer</span></span>
+                                <button class="btn btn-ghost btn-xs" id="hw3d-reset" title="Reset view">
+                                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="hw3d-stage">
+                            <div id="hw3d-canvas-wrap"></div>
+                            <div class="hw3d-legend" id="hw3d-legend">
+                                <div class="hw3d-leg-row"><span class="hw3d-leg-key">SoC</span><span class="hw3d-leg-val">BCM2837 · 4×A53 · 1.2 GHz</span></div>
+                                <div class="hw3d-leg-row"><span class="hw3d-leg-key">RAM</span><span class="hw3d-leg-val">1 GB LPDDR2</span></div>
+                                <div class="hw3d-leg-row"><span class="hw3d-leg-key">Onboard BT</span><span class="hw3d-leg-val">Broadcom BT 4.1 (UART)</span></div>
+                                <div class="hw3d-leg-row"><span class="hw3d-leg-key">USB</span><span class="hw3d-leg-val">2× nRF52840 ButteRFly v1.1.3</span></div>
+                                <div class="hw3d-leg-row"><span class="hw3d-leg-key">USB</span><span class="hw3d-leg-val">Realtek BT5.4 USB</span></div>
+                                <div class="hw3d-leg-row"><span class="hw3d-leg-key">Net</span><span class="hw3d-leg-val">100 Mbit Ethernet · WiFi 2.4 GHz</span></div>
+                            </div>
+                        </div>
+                        <div class="hw3d-foot">
+                            <span class="mono" id="hw3d-status">Idle · drag to rotate, scroll to zoom</span>
+                        </div>
+                    </div>
+
                     <!-- AI Classification Feed -->
                     <div class="live-ai-feed">
                         <div class="aif-header"><span class="aif-dot"></span> AI Device Classification — Live Feed</div>
@@ -287,6 +364,136 @@
                         <div class="rl-item"><span class="rl-dot" style="background:#e67e22"></span> High Risk</div>
                         <div class="rl-item"><span class="rl-dot" style="background:var(--red)"></span> Critical Risk</div>
                         <div class="rl-item"><span class="rl-dot" style="background:var(--accent)"></span> Scanner (center)</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- HEATMAP TAB (BLE-Map v2 — heatmap.js + floor-plan + realtime locator) -->
+            <section class="tab-pane" id="tab-heatmap">
+                <div class="tab-toolbar">
+                    <div class="tb-left">
+                        <h2 class="tab-title">BLE-Map</h2>
+                        <div class="hm-mode-tabs" role="tablist">
+                            <button class="hm-mode-btn active" data-mode="survey"  title="Walk + tap cells to record a signal survey">Survey</button>
+                            <button class="hm-mode-btn"        data-mode="live"    title="Live radar: device pins update every scan">Live Radar</button>
+                            <button class="hm-mode-btn"        data-mode="edit"    title="Draw walls + rooms to model the floor plan">Edit</button>
+                        </div>
+                        <div class="heuristic-note" id="hm-mode-note" title="">// WALK · TAP · MAP</div>
+                    </div>
+                    <div class="tb-right">
+                        <select class="tb-select" id="hm-device-picker"><option value="">Pick a device…</option></select>
+                        <select class="tb-select" id="hm-cmap-picker" title="Color palette">
+                            <option value="turbo">Turbo</option>
+                            <option value="viridis">Viridis</option>
+                            <option value="inferno">Inferno</option>
+                            <option value="rdylgn" selected>RdYlGn (WiFi)</option>
+                            <option value="heat">Heat</option>
+                            <option value="ble">BLE Amber</option>
+                        </select>
+                        <button class="btn" id="hm-grid-config" title="Configure grid dimensions">Grid…</button>
+                        <button class="btn" id="hm-floorplan-upload" title="Overlay a floor plan image">Floor plan…</button>
+                        <input type="file" id="hm-floorplan-file" accept="image/*" hidden>
+                        <button class="btn btn-danger" id="hm-clear-all" title="Wipe all samples">Clear all</button>
+                    </div>
+                </div>
+                <div class="hm-container">
+                    <div class="hm-stage">
+                        <div class="hm-info-bar">
+                            <span class="hm-pill" id="hm-pill-grid">6 × 8</span>
+                            <span class="hm-pill" id="hm-pill-cells">0 cells sampled</span>
+                            <span class="hm-pill" id="hm-pill-devices">0 devices in survey</span>
+                            <span class="hm-pill" id="hm-pill-selected">No device selected</span>
+                            <span class="hm-pill hm-pill-cov" id="hm-pill-cov">— coverage</span>
+                        </div>
+                        <!-- The render area: stack of (1) floor-plan image, (2) heatmap.js, (3) interactive grid overlay -->
+                        <div class="hm-stage-frame" id="hm-stage-frame">
+                            <img id="hm-floorplan" class="hm-layer hm-layer-floorplan" alt="" hidden>
+                            <div id="hm-heat" class="hm-layer hm-layer-heat"></div>
+                            <canvas id="hm-canvas" class="hm-layer hm-layer-grid" width="800" height="600"></canvas>
+                            <div class="hm-overlay-controls">
+                                <label class="hm-toggle"><input type="checkbox" id="hm-toggle-grid" checked> grid</label>
+                                <label class="hm-toggle"><input type="checkbox" id="hm-toggle-contours"> contours</label>
+                                <label class="hm-toggle"><input type="checkbox" id="hm-toggle-locator"> locator</label>
+                                <label class="hm-toggle"><input type="checkbox" id="hm-toggle-floorplan" checked> plan</label>
+                                <label class="hm-toggle"><input type="checkbox" id="hm-toggle-walls" checked> walls</label>
+                                <label class="hm-toggle"><input type="checkbox" id="hm-toggle-pins" checked> pins</label>
+                            </div>
+                            <!-- Edit-mode floating toolbar (visible only in Edit mode) -->
+                            <div class="hm-edit-tools" id="hm-edit-tools" hidden>
+                                <button class="hm-edit-btn active" data-tool="wall" title="Drag to draw a wall segment">Wall</button>
+                                <button class="hm-edit-btn"        data-tool="room" title="Drag to add a room rectangle">Room</button>
+                                <button class="hm-edit-btn"        data-tool="erase" title="Click an item to delete it">Erase</button>
+                                <span class="hm-edit-sep"></span>
+                                <button class="hm-edit-btn hm-edit-clear" data-tool="clear-walls" title="Wipe all walls">Clear walls</button>
+                                <button class="hm-edit-btn hm-edit-clear" data-tool="clear-rooms" title="Wipe all rooms">Clear rooms</button>
+                            </div>
+                            <!-- Live-radar status pill -->
+                            <div class="hm-live-status" id="hm-live-status" hidden>
+                                <span class="hm-live-dot"></span>
+                                <span id="hm-live-text">Live radar — 0 devices</span>
+                            </div>
+                            <div class="hm-tip" id="hm-tip"><strong>Tap a cell</strong> to record every visible BLE device's RSSI here. Pick a device above to see its smooth heatmap.</div>
+                        </div>
+                    </div>
+                    <aside class="hm-side">
+                        <div class="hm-panel">
+                            <div class="hm-panel-head">Legend</div>
+                            <canvas class="hm-legend-canvas" id="hm-legend-canvas" width="260" height="14"></canvas>
+                            <div class="hm-legend-labels"><span>-100 dBm</span><span>-50 dBm</span></div>
+                            <div class="hm-legend-note">Brighter = stronger signal at that cell. Default palette: <b id="hm-cmap-name">RdYlGn (WiFi)</b>.</div>
+                        </div>
+                        <div class="hm-panel" id="hm-locator-panel" style="display:none">
+                            <div class="hm-panel-head"><span class="hm-pulse"></span>Realtime locator</div>
+                            <div class="hm-locator-body" id="hm-locator-body">Waiting for live RSSI…</div>
+                        </div>
+                        <div class="hm-panel" id="hm-pins-panel" style="display:none">
+                            <div class="hm-panel-head"><span class="hm-pulse"></span>Live pins</div>
+                            <div class="hm-pins-list" id="hm-pins-list"></div>
+                        </div>
+                        <div class="hm-panel">
+                            <div class="hm-panel-head">Coverage stats</div>
+                            <div class="hm-cov-grid">
+                                <div class="hm-cov-row"><span class="hm-cov-bar"><span class="hm-cov-fill hm-cov-good" id="hm-cov-bar-good"></span></span><span class="hm-cov-label">≥-65 dBm <em id="hm-cov-good">—</em></span></div>
+                                <div class="hm-cov-row"><span class="hm-cov-bar"><span class="hm-cov-fill hm-cov-mid"  id="hm-cov-bar-mid"></span></span><span class="hm-cov-label">-65 to -80 <em id="hm-cov-mid">—</em></span></div>
+                                <div class="hm-cov-row"><span class="hm-cov-bar"><span class="hm-cov-fill hm-cov-bad"  id="hm-cov-bar-bad"></span></span><span class="hm-cov-label">≤-80 dBm <em id="hm-cov-bad">—</em></span></div>
+                            </div>
+                        </div>
+                        <div class="hm-panel">
+                            <div class="hm-panel-head">Quick guide</div>
+                            <ol class="hm-steps">
+                                <li>(Optional) <b>Floor plan…</b> — upload a room image.</li>
+                                <li><b>Grid…</b> — set rows/cols for your room.</li>
+                                <li>Walk to a cell, tap it on the map.</li>
+                                <li>Pick a device — see its smoothed heatmap.</li>
+                                <li>Toggle <b>locator</b> to pulse the device's likely current position.</li>
+                            </ol>
+                        </div>
+                        <div class="hm-panel" id="hm-cell-detail" style="display:none">
+                            <div class="hm-panel-head" id="hm-cell-detail-head">Cell</div>
+                            <div id="hm-cell-detail-body" class="hm-cell-body"></div>
+                            <button class="btn btn-danger" id="hm-cell-clear">Clear this cell</button>
+                        </div>
+                    </aside>
+                </div>
+                <!-- Grid-config modal -->
+                <div class="hm-modal" id="hm-grid-modal">
+                    <div class="hm-modal-card">
+                        <div class="hm-modal-head">Grid configuration</div>
+                        <div class="hm-modal-body">
+                            <label class="hm-field">Label
+                                <input type="text" id="hm-cfg-label" maxlength="60" placeholder="Room">
+                            </label>
+                            <div class="hm-field-row">
+                                <label class="hm-field">Rows<input type="number" id="hm-cfg-rows" min="1" max="50" value="6"></label>
+                                <label class="hm-field">Cols<input type="number" id="hm-cfg-cols" min="1" max="50" value="8"></label>
+                                <label class="hm-field">Cell (m)<input type="number" id="hm-cfg-cellsize" min="0.1" max="10" step="0.1" value="1.0"></label>
+                            </div>
+                            <div class="hm-modal-warn">Resizing drops samples in cells outside the new dimensions.</div>
+                        </div>
+                        <div class="hm-modal-foot">
+                            <button class="btn" id="hm-cfg-cancel">Cancel</button>
+                            <button class="btn btn-accent" id="hm-cfg-save">Save</button>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -825,6 +1032,343 @@
         <span class="mono" style="color:var(--accent)">BLUESHIELD v7.0</span>
     </footer>
 
-    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/dashboard.js?v=v10-oui"></script>
+
+    <!-- 3D Hardware Topology — Three.js scene built from primitives.
+         Renders a stylized Raspberry Pi 3B with the project's actual
+         hardware loadout (onboard BT chip, USB ports each labeled with
+         their role). Hooks into the same scan-state socket events so
+         the BT chip pulses when a scan is active. ES module — does
+         not pollute global scope. -->
+    <script type="module">
+    import * as THREE from "https://esm.sh/three@0.165.0";
+    import { OrbitControls } from "https://esm.sh/three@0.165.0/examples/jsm/controls/OrbitControls.js";
+
+    const wrap = document.getElementById("hw3d-canvas-wrap");
+    let initialized = false;
+    function tryInit(){
+        if (initialized) return;
+        if (!wrap || wrap.clientWidth < 50 || wrap.clientHeight < 50) return;
+        initialized = true;
+        boot3D();
+    }
+    // Defer until the Live tab is visible — the parent .tab-pane is
+    // display:none initially, so wrap.clientWidth=0 at page load.
+    if (wrap) {
+        // 1. Try immediately (Live is the default tab on some routes).
+        requestAnimationFrame(tryInit);
+        // 2. Re-check whenever the wrap becomes visible — IntersectionObserver
+        //    fires when display:none → display:flex transition flips it
+        //    into the layout.
+        const io = new IntersectionObserver(entries => {
+            entries.forEach(e => { if (e.isIntersecting) tryInit(); });
+        });
+        io.observe(wrap);
+        // 3. Also hook into the existing tab-switch handler — when the
+        //    user clicks Live, force a re-check on next frame.
+        document.querySelectorAll('[data-tab="live"]').forEach(el => {
+            el.addEventListener("click", () => requestAnimationFrame(tryInit));
+        });
+    }
+
+    function boot3D(){
+        const tooltip = document.createElement("div");
+        tooltip.className = "hw3d-tooltip";
+        tooltip.id = "hw3d-tooltip";
+        wrap.appendChild(tooltip);
+
+        const W = () => wrap.clientWidth;
+        const H = () => wrap.clientHeight || 360;
+
+        const scene = new THREE.Scene();
+        scene.background = null;
+        scene.fog = new THREE.FogExp2(0x06070C, 0.025);
+
+        const camera = new THREE.PerspectiveCamera(35, W()/H(), 0.1, 200);
+        camera.position.set(14, 11, 14);
+
+        const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(W(), H());
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        wrap.appendChild(renderer.domElement);
+
+        // Lights — give the PCB depth without anime-shading
+        const amb = new THREE.AmbientLight(0xffffff, 0.55);
+        scene.add(amb);
+        const key = new THREE.DirectionalLight(0xfff2d8, 1.0);
+        key.position.set(10, 14, 8);
+        scene.add(key);
+        const rim = new THREE.DirectionalLight(0x6db8ff, 0.45);
+        rim.position.set(-12, 6, -8);
+        scene.add(rim);
+        const fill = new THREE.PointLight(0xffb000, 0.6, 30);
+        fill.position.set(0, 5, 0);
+        scene.add(fill);
+
+        const root = new THREE.Group();
+        scene.add(root);
+
+        // Pi 3B form factor: 85mm × 56mm × 1.5mm. Scale 1 unit = 1 cm.
+        const PCB_W = 8.5, PCB_D = 5.6, PCB_H = 0.18;
+
+        // Helpers ───────────────────────────────────────────────
+        const labels = []; // { mesh, name, role, pos3 }
+        function chip(w, d, h, color, name, role){
+            const g = new THREE.BoxGeometry(w, h, d);
+            const m = new THREE.MeshStandardMaterial({
+                color, metalness: 0.6, roughness: 0.45,
+            });
+            const mesh = new THREE.Mesh(g, m);
+            mesh.userData = { name, role };
+            return mesh;
+        }
+        function silkText(txt){
+            // Tiny silkscreen via canvas texture — purely decorative
+            const c = document.createElement("canvas");
+            c.width = 256; c.height = 64;
+            const ctx = c.getContext("2d");
+            ctx.fillStyle = "rgba(255,255,255,0.85)";
+            ctx.font = "bold 26px JetBrains Mono, monospace";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(txt, c.width/2, c.height/2);
+            return new THREE.CanvasTexture(c);
+        }
+
+        // PCB body — green BlueShield variant: keep the iconic Pi green
+        const pcbMat = new THREE.MeshStandardMaterial({
+            color: 0x0E5C2F, metalness: 0.25, roughness: 0.55,
+        });
+        const pcb = new THREE.Mesh(new THREE.BoxGeometry(PCB_W, PCB_H, PCB_D), pcbMat);
+        pcb.position.y = 0;
+        root.add(pcb);
+
+        // Trace pattern (subtle grid on top of PCB)
+        const traceMat = new THREE.MeshStandardMaterial({
+            color: 0x0a4a25, metalness: 0.5, roughness: 0.4, opacity:0.7, transparent:true,
+        });
+        for (let i = 0; i < 12; i++) {
+            const x = (i - 6) * 0.6;
+            const t = new THREE.Mesh(
+                new THREE.BoxGeometry(0.025, PCB_H + 0.001, PCB_D - 0.6), traceMat);
+            t.position.set(x, PCB_H/2 + 0.002, 0);
+            root.add(t);
+        }
+
+        // SoC — BCM2837 large black chip in center
+        const soc = chip(2.0, 2.0, 0.45, 0x111111, "BCM2837", "SoC · 4×Cortex-A53");
+        soc.position.set(-0.4, PCB_H/2 + 0.225, -0.4);
+        root.add(soc);
+        // Silk on top of SoC
+        const socTopMat = new THREE.MeshStandardMaterial({
+            color: 0x111111, metalness: 0.9, roughness: 0.35,
+            map: silkText("BROADCOM"),
+        });
+        const socTop = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.7), socTopMat);
+        socTop.rotation.x = -Math.PI/2;
+        socTop.position.copy(soc.position);
+        socTop.position.y = soc.position.y + 0.226;
+        root.add(socTop);
+
+        // RAM — small black chip beside SoC
+        const ram = chip(0.9, 1.6, 0.30, 0x191919, "LPDDR2", "RAM · 1 GB");
+        ram.position.set(2.0, PCB_H/2 + 0.15, -0.4);
+        root.add(ram);
+
+        // Onboard BT/WiFi combo — BCM43438
+        const btChip = chip(1.0, 1.0, 0.32, 0x222222, "BCM43438", "Onboard BT 4.1 / WiFi · Scanner");
+        btChip.position.set(-3.1, PCB_H/2 + 0.16, -1.6);
+        root.add(btChip);
+        // Pulsing halo above BT chip — scan indicator
+        const haloMat = new THREE.MeshBasicMaterial({
+            color: 0x3B82F6, transparent:true, opacity:0.0,
+        });
+        const halo = new THREE.Mesh(new THREE.RingGeometry(0.65, 0.95, 32), haloMat);
+        halo.rotation.x = -Math.PI/2;
+        halo.position.set(-3.1, PCB_H/2 + 0.36, -1.6);
+        root.add(halo);
+
+        // 4× USB ports (Pi 3B layout — right edge, two stacks of two)
+        const usbMat = new THREE.MeshStandardMaterial({
+            color: 0xC0C0C0, metalness: 0.95, roughness: 0.25,
+        });
+        const usbPorts = [];
+        const usbZ = [-1.4, -0.0, 1.4]; // 3 visible — top stack + lower stack visualised
+        const usbInfo = [
+            { name:"USB0", role:"ButteRFly · sniff/hijack /dev/ttyACM0" },
+            { name:"USB1", role:"ButteRFly · injector /dev/ttyACM1" },
+            { name:"USB2", role:"Realtek BT 5.4 USB" },
+        ];
+        usbZ.forEach((z, i) => {
+            const port = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.7, 1.0), usbMat);
+            port.position.set(PCB_W/2 - 0.7, PCB_H/2 + 0.35, z);
+            port.userData = usbInfo[i];
+            root.add(port);
+            usbPorts.push(port);
+
+            // Dongle plugged in — small green stub sticking out
+            if (i < 3) {
+                const dongleColor = i < 2 ? 0xffb000 : 0x3B82F6;
+                const dongle = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.3, 0.55, 0.85),
+                    new THREE.MeshStandardMaterial({
+                        color: dongleColor, metalness: 0.4, roughness: 0.5,
+                        emissive: dongleColor, emissiveIntensity: 0.18,
+                    })
+                );
+                dongle.position.set(port.position.x + 1.4, port.position.y, port.position.z);
+                dongle.userData = { name: `nRF52840 #${i+1}`, role: i<2 ? "ButteRFly · WHAD" : "Realtek BT5.4" };
+                root.add(dongle);
+                usbPorts.push(dongle);
+            }
+        });
+
+        // Ethernet jack — bottom-right
+        const eth = chip(1.6, 1.0, 0.7, 0xC0C0C0, "RJ45", "100 Mbit Ethernet");
+        eth.position.set(PCB_W/2 - 0.8, PCB_H/2 + 0.35, 1.9);
+        root.add(eth);
+
+        // GPIO header — 40 pins along the long edge
+        const gpioMat = new THREE.MeshStandardMaterial({
+            color: 0x1a1a1a, metalness:0.5, roughness:0.6,
+        });
+        const pinMat = new THREE.MeshStandardMaterial({
+            color: 0xffd060, metalness:0.95, roughness:0.2,
+        });
+        const gpioBase = new THREE.Mesh(new THREE.BoxGeometry(5.1, 0.18, 0.5), gpioMat);
+        gpioBase.position.set(0.5, PCB_H/2 + 0.09, -PCB_D/2 + 0.35);
+        root.add(gpioBase);
+        for (let r = 0; r < 2; r++) {
+            for (let p = 0; p < 20; p++) {
+                const pin = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.40, 0.07), pinMat);
+                pin.position.set(-1.95 + p * 0.245, gpioBase.position.y + 0.20, -PCB_D/2 + 0.20 + r * 0.30);
+                root.add(pin);
+            }
+        }
+
+        // SD card slot stub on the underside (left edge)
+        const sd = new THREE.Mesh(
+            new THREE.BoxGeometry(2.4, 0.30, 1.4),
+            new THREE.MeshStandardMaterial({ color:0x666, metalness:0.7, roughness:0.4 })
+        );
+        sd.position.set(-PCB_W/2 + 0.6, -0.25, 0);
+        root.add(sd);
+
+        // Mounting holes (decorative)
+        const holeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+            const h = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.18, 0.18, PCB_H + 0.02, 24),
+                holeMat
+            );
+            h.position.set(sx * (PCB_W/2 - 0.3), PCB_H/2 + 0.005, sz * (PCB_D/2 - 0.3));
+            root.add(h);
+        });
+
+        // Collect labels
+        labels.push(
+            { mesh: soc,    name: "BCM2837",     role:"SoC · 4×Cortex-A53 · 1.2 GHz" },
+            { mesh: ram,    name: "LPDDR2 RAM",  role:"1 GB system memory" },
+            { mesh: btChip, name: "BCM43438",    role:"Onboard BT 4.1 + WiFi 2.4 · Scanner" },
+            { mesh: eth,    name: "RJ45",        role:"100 Mbit Ethernet · for SSH / dev" },
+        );
+        usbPorts.forEach(p => labels.push({ mesh:p, name:p.userData.name, role:p.userData.role }));
+
+        // Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.07;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.6;
+        controls.minDistance = 9;
+        controls.maxDistance = 26;
+        controls.target.set(0, 0.5, 0);
+
+        // Hover tooltip
+        const raycaster = new THREE.Raycaster();
+        const ndc = new THREE.Vector2();
+        wrap.addEventListener("pointermove", e => {
+            const rect = wrap.getBoundingClientRect();
+            ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            raycaster.setFromCamera(ndc, camera);
+            const hits = raycaster.intersectObjects(labels.map(l => l.mesh), false);
+            if (hits.length){
+                const item = labels.find(l => l.mesh === hits[0].object);
+                if (item){
+                    tooltip.innerHTML = `<b style="color:var(--accent)">${item.name}</b> <span style="color:var(--tx-3);margin-left:6px">${item.role}</span>`;
+                    tooltip.style.left = (e.clientX - rect.left) + "px";
+                    tooltip.style.top  = (e.clientY - rect.top)  + "px";
+                    tooltip.classList.add("show");
+                    controls.autoRotate = false;
+                    return;
+                }
+            }
+            tooltip.classList.remove("show");
+            controls.autoRotate = true;
+        });
+        wrap.addEventListener("pointerleave", () => {
+            tooltip.classList.remove("show");
+            controls.autoRotate = true;
+        });
+
+        // Reset view
+        const resetBtn = document.getElementById("hw3d-reset");
+        if (resetBtn) resetBtn.addEventListener("click", () => {
+            camera.position.set(14, 11, 14);
+            controls.target.set(0, 0.5, 0);
+            controls.autoRotate = true;
+        });
+
+        // Pulse the BT chip when a scan is active. Hook into the
+        // existing socket if present.
+        let scanActive = false;
+        try {
+            if (typeof io !== "undefined" && window.location) {
+                const s = io();
+                s.on("scan_state", st => {
+                    scanActive = !!(st && (st.state === "SCANNING" || st.scanning));
+                    document.getElementById("hw3d-status").textContent =
+                        scanActive ? "BLE scan active · onboard BT chip transmitting"
+                                   : "Idle · drag to rotate, scroll to zoom";
+                });
+            }
+        } catch {}
+
+        // Render loop
+        const clock = new THREE.Clock();
+        function loop(){
+            const dt = clock.getDelta();
+            const t  = clock.elapsedTime;
+
+            // BT halo pulse
+            const target = scanActive ? 0.55 : 0.0;
+            haloMat.opacity += (target - haloMat.opacity) * Math.min(1, dt * 4);
+            halo.scale.setScalar(1.0 + 0.15 * Math.sin(t * 2.4));
+
+            // Dongle subtle breathing emissive
+            usbPorts.forEach((p, i) => {
+                if (p.material && p.material.emissive){
+                    const e = 0.18 + 0.08 * Math.sin(t * 1.4 + i);
+                    p.material.emissiveIntensity = e;
+                }
+            });
+
+            controls.update();
+            renderer.render(scene, camera);
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+
+        // Resize
+        const ro = new ResizeObserver(() => {
+            renderer.setSize(W(), H(), false);
+            camera.aspect = W() / H();
+            camera.updateProjectionMatrix();
+        });
+        ro.observe(wrap);
+    }
+    </script>
 </body>
 </html>

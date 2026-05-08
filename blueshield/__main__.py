@@ -2,7 +2,6 @@
 
 Usage:
     python -m blueshield              # Web dashboard (default)
-    python -m blueshield --sim        # Web dashboard with simulated data
     python -m blueshield --terminal   # Legacy terminal (curses) dashboard
 """
 
