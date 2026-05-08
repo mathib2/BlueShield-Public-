@@ -281,12 +281,18 @@ button,input,select,textarea{font-family:inherit}
 .live-badge{background:rgba(0,223,162,0.12)!important;color:var(--green)!important;border:1px solid rgba(0,223,162,0.2)!important}
 
 .sidebar-footer{
-    margin-top:auto;padding:10px 12px 14px;
-    border-top:1px solid var(--border);font-size:.7rem;
+    /* Sticky to the bottom of the sidebar's scroll viewport so the SCANS /
+       UPTIME counters stay visible even when nav items overflow. */
+    margin-top:auto;
+    position:sticky;bottom:0;z-index:5;
+    padding:10px 14px 14px;
+    border-top:1px solid var(--border);
+    background:var(--bg-1);    /* opaque so scrolling content doesn't bleed through */
+    font-size:.78rem;
 }
-.sf-row{display:flex;justify-content:space-between;padding:3px 0}
-.sf-l{color:var(--tx-3);font-size:.67rem;text-transform:uppercase;letter-spacing:.5px}
-.sf-v{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--accent);font-size:.73rem}
+.sf-row{display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;gap:10px}
+.sf-l{color:var(--tx-2);font-size:.72rem;text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+.sf-v{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--accent);font-size:.92rem;line-height:1.1}
 
 /* ── Content ─────────────────────────────────────────────────── */
 .content{flex:1;overflow:hidden;display:flex;flex-direction:column}
@@ -2231,9 +2237,10 @@ body.tactical-login{background:var(--bg-0)}
 [data-theme="dark"] .sidebar-footer{
     border-top:1px solid var(--line);
     padding:12px 16px 16px;
+    background:var(--bg-1);   /* sticky footer needs an opaque backdrop */
 }
-[data-theme="dark"] .sf-l{color:var(--tx-3);font-size:.6rem}
-[data-theme="dark"] .sf-v{color:var(--accent);font-weight:600}
+[data-theme="dark"] .sf-l{color:var(--tx-2);font-size:.72rem;font-weight:600}
+[data-theme="dark"] .sf-v{color:var(--accent);font-weight:700;font-size:.92rem}
 
 /* ── Tighter scrollbars ──────────────────────────────────────── */
 [data-theme="dark"] *::-webkit-scrollbar{width:8px;height:8px}
@@ -2444,6 +2451,45 @@ body.tactical-login{background:var(--bg-0)}
     .hw3d-legend{border-left:none;border-top:1px solid var(--line)}
     #hw3d-canvas-wrap{min-height:300px}
 }
+
+/* ── Hardware-topology 3D card — light-mode overrides ─────────────────────
+   The default styling assumes a dark canvas behind the WebGL scene; on the
+   light theme that black box looks misplaced next to the rest of the page.
+   Soften the card backdrop to match the rest of the light layout while
+   keeping enough contrast for the 3D model to read. */
+[data-theme="light"] .live-hw3d-card{
+    background:linear-gradient(180deg, #F4F6F9 0%, #EAEEF4 100%);
+    border:1px solid var(--border);
+    box-shadow:0 1px 3px rgba(15,23,42,0.06), 0 8px 24px rgba(15,23,42,0.04);
+}
+[data-theme="light"] .hw3d-head{
+    border-bottom:1px solid var(--border);
+}
+[data-theme="light"] #hw3d-canvas-wrap{
+    background:
+        radial-gradient(ellipse at center, rgba(37,99,235,0.06), transparent 70%),
+        radial-gradient(ellipse at 30% 30%, rgba(255,176,0,0.04), transparent 60%),
+        linear-gradient(180deg, #FAFBFD 0%, #ECF0F5 100%);
+}
+[data-theme="light"] .hw3d-tooltip{
+    background:rgba(255,255,255,0.96);
+    color:#1A2332;
+    border-color:rgba(15,23,42,0.10);
+}
+[data-theme="light"] .hw3d-legend{
+    background:#FAFBFD;
+    border-left-color:var(--border);
+}
+[data-theme="light"] .hw3d-foot{
+    background:rgba(244,246,249,0.85);
+    border-top-color:var(--border);
+    color:var(--tx-2);
+}
+[data-theme="light"] .hw3d-pill{
+    background:#FFFFFF;border-color:var(--border);color:var(--tx-2);
+}
+[data-theme="light"] .hw3d-leg-key{color:var(--tx-3)}
+[data-theme="light"] .hw3d-leg-val{color:var(--tx-1)}
 
 /* ── Mobile overhaul (≤768px) ────────────────────────────────── */
 @media(max-width:768px){
