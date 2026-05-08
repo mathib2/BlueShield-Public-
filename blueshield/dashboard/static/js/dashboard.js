@@ -300,6 +300,10 @@ $("device-search").addEventListener("input", e => { searchFilter = e.target.valu
 
 /* ── Ghost Mode ────────────────────────────────────────────── */
 function ghostMode() {
+    if (window._currentUser && window._currentUser.is_public) {
+        alert("DEMO MODE: This account cannot shut down the Pi.");
+        return;
+    }
     if (confirm("GHOST MODE: This will immediately shut down the system.\nAre you sure?")) {
         if (confirm("FINAL WARNING: The Raspberry Pi will power off NOW.\nContinue?")) {
             fetch("/api/ghost", { method: "POST" });
@@ -309,8 +313,72 @@ function ghostMode() {
 $("btn-ghost").addEventListener("click", ghostMode);
 if ($("btn-ghost-cfg")) $("btn-ghost-cfg").addEventListener("click", ghostMode);
 
+/* ── Role-aware UI (v8.2) ──────────────────────────────────────
+   Public/demo users see the full dashboard but offensive controls
+   (jammer start/stop, ghost mode, USB reset, nRF sniffer) are
+   hidden + disabled. Backend enforces 403 either way — this is
+   pure UX so judges/audience don't accidentally hit a wall. */
+async function applyRoleUI() {
+    try {
+        const r = await fetch("/api/auth/whoami", { credentials: "same-origin" });
+        if (!r.ok) return;
+        const me = await r.json();
+        window._currentUser = me;
+        if (!me.is_public) return;   // admin keeps full UI
+
+        // 1. Hide top-bar ghost button
+        const bg = document.getElementById("btn-ghost");
+        if (bg) bg.style.display = "none";
+
+        // 2. Hide config-tab ghost button + USB reset
+        const bg2 = document.getElementById("btn-ghost-cfg");
+        if (bg2) bg2.style.display = "none";
+        document.querySelectorAll(".usb-reset-btn").forEach(b => b.style.display = "none");
+
+        // 3. Disable jam-start button + show "demo mode" hint
+        const bj = document.getElementById("btn-jam");
+        if (bj) {
+            bj.disabled = true;
+            bj.textContent = "🔒 Jammer (admin only)";
+            bj.style.opacity = "0.4";
+            bj.style.cursor = "not-allowed";
+            bj.title = "Demo accounts cannot start the jammer.";
+        }
+
+        // 4. Disable nRF sniffer toggle (active RF capture)
+        const sn = document.getElementById("nrf-toggle-btn");
+        if (sn) {
+            sn.disabled = true;
+            sn.style.opacity = "0.4";
+            sn.title = "Demo accounts cannot drive the nRF sniffer.";
+        }
+
+        // 5. Replace the audit "OPERATOR" tag in the top bar with a DEMO badge
+        const opEl = document.querySelector(".op-id, [data-op-id]");
+        if (opEl) opEl.classList.add("demo-mode");
+
+        // 6. Inject a small "PUBLIC DEMO" pill near the top so it's obvious
+        const top = document.querySelector(".topbar, .top-bar, header");
+        if (top && !document.getElementById("demo-pill")) {
+            const pill = document.createElement("span");
+            pill.id = "demo-pill";
+            pill.textContent = "PUBLIC DEMO  ·  READ-ONLY";
+            pill.style.cssText = "margin-left:12px;padding:3px 10px;border-radius:10px;background:#FFB000;color:#0a0e16;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:1.5px";
+            top.appendChild(pill);
+        }
+        console.log("[BlueShield] Public/demo mode active — offensive controls hidden");
+    } catch (e) {
+        console.warn("[BlueShield] role check failed:", e);
+    }
+}
+applyRoleUI();
+
 /* ── USB Reset ────────────────────────────────────────────── */
 async function usbReset() {
+    if (window._currentUser && window._currentUser.is_public) {
+        alert("DEMO MODE: This account cannot reset the USB hub.");
+        return;
+    }
     if (!confirm("Reset USB hub? This will briefly disconnect all USB devices and remap adapters.")) return;
     try {
         const r = await fetch("/api/usb-reset", { method: "POST" });
@@ -1757,6 +1825,10 @@ $("j-mode").addEventListener("change", e => {
 setTimeout(() => $("j-mode").dispatchEvent(new Event("change")), 300);
 
 $("btn-jam").addEventListener("click", async () => {
+    if (window._currentUser && window._currentUser.is_public) {
+        alert("DEMO MODE: This account cannot operate the jammer.");
+        return;
+    }
     if (jammerActive) {
         await fetch("/api/jammer/stop", { method: "POST" });
         addTimelineEvent("jam", "Jammer stopped");

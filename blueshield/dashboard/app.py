@@ -130,15 +130,31 @@ def _verify_password(pw: str, stored_hash: str) -> bool:
 def _load_users():
     if _USERS_PATH.exists():
         try:
-            return _json_mod.loads(_USERS_PATH.read_text())
+            users = _json_mod.loads(_USERS_PATH.read_text())
+            # v8.2: ensure a public/demo user exists. Idempotent — only added
+            # if missing, never overwrites an operator-customized password.
+            if "guest" not in users:
+                users["guest"] = {"pw": _hash_password("bluetooth123"), "role": "public"}
+                try:
+                    _USERS_PATH.write_text(_json_mod.dumps(users, indent=2))
+                    os.chmod(_USERS_PATH, 0o600)
+                    print("[BlueShield] Seeded public/demo user: guest / bluetooth123 (read-only — cannot jam or shutdown)")
+                except Exception:
+                    pass
+            return users
         except Exception:
             pass
-    # Seed with default admin — hash, not plaintext. User is warned on login.
-    default = {"admin": _hash_password("admin123"), "_seeded_default": True}
+    # Fresh install: seed admin + guest. Hashes only, no plaintext on disk.
+    default = {
+        "admin": _hash_password("admin123"),
+        "_seeded_default": True,
+        "guest": {"pw": _hash_password("bluetooth123"), "role": "public"},
+    }
     try:
         _USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
         _USERS_PATH.write_text(_json_mod.dumps(default, indent=2))
         os.chmod(_USERS_PATH, 0o600)
+        print("[BlueShield] Seeded users: admin / admin123 (admin) + guest / bluetooth123 (public — view-only)")
     except Exception:
         pass
     return default
@@ -150,6 +166,22 @@ def _save_users(users: dict):
     except Exception:
         pass
 
+# v8.2: role support. User records may now be either:
+#   {username: "<bcrypt-hash>"}                          (legacy, role=admin)
+#   {username: {"pw": "<hash>", "role": "admin"|"public"}}  (v8.2+)
+# The "public" role is for demo/audience accounts: they can view everything
+# but cannot start the jammer, shutdown the Pi, reset USB, or drive the
+# active nRF sniffer.
+def _user_pw_hash(record):
+    if isinstance(record, dict):
+        return record.get("pw", "") or ""
+    return record if isinstance(record, str) else ""
+
+def _user_role(record):
+    if isinstance(record, dict):
+        return record.get("role", "admin")
+    return "admin"  # legacy bare-hash records are admin
+
 USERS = _load_users()
 
 def login_required(f):
@@ -159,6 +191,31 @@ def login_required(f):
             if request.is_json or request.path.startswith("/api/") or request.path.startswith("/socket.io"):
                 return jsonify({"error": "Unauthorized"}), 401
             return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_only(f):
+    """Require role='admin'. Public/demo users get 403 with an audit-logged
+    explanation. Apply to offensive ops + system control (jammer, shutdown,
+    USB reset, active sniffer)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            return jsonify({"error": "Unauthorized"}), 401
+        if session.get("role", "admin") != "admin":
+            try:
+                log_event_chained("forbidden_action_blocked", {
+                    "username": session.get("username", "?"),
+                    "role": session.get("role", "?"),
+                    "path": request.path,
+                    "method": request.method,
+                })
+            except Exception:
+                pass
+            return jsonify({
+                "error": "Forbidden",
+                "reason": "This action requires the admin role. Demo / public accounts cannot start the jammer, shutdown the Pi, or perform other privileged operations.",
+            }), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -672,20 +729,26 @@ def login():
         username = (data.get("username", "") or "").strip()
         password = data.get("password", "") or ""
         stored = USERS.get(username)
-        # stored may be bcrypt hash (string) or, on very old configs, plaintext
+        # stored is dict ({pw, role}) or bcrypt hash string (legacy admin records).
         ok = False
-        if stored and isinstance(stored, str):
-            ok = _verify_password(password, stored)
+        hash_str = _user_pw_hash(stored) if stored is not None else ""
+        if hash_str:
+            ok = _verify_password(password, hash_str)
         if ok:
+            role = _user_role(stored)
             session.permanent = True
             session["logged_in"] = True
             session["username"] = username
-            # v7.5: audit trail for successful auth
-            try: log_event_chained("login_success", {"username": username})
+            session["role"] = role
+            # v7.5: audit trail for successful auth (v8.2: now records role)
+            try: log_event_chained("login_success", {"username": username, "role": role})
             except: pass
             if request.is_json:
                 return jsonify({
                     "success": True,
+                    "username": username,
+                    "role": role,
+                    "is_admin": role == "admin",
                     "using_default_password": USERS.get("_seeded_default") and username == "admin" and password == "admin123",
                 })
             return redirect("/")
@@ -718,14 +781,34 @@ def api_change_password():
     u = session.get("username", "")
     if not u or u not in USERS:
         return jsonify({"error": "Session user invalid"}), 401
-    if not _verify_password(old_pw, USERS[u]):
+    record = USERS[u]
+    if not _verify_password(old_pw, _user_pw_hash(record)):
         return jsonify({"error": "Current password incorrect"}), 401
-    USERS[u] = _hash_password(new_pw)
+    new_hash = _hash_password(new_pw)
+    # Preserve the v8.2 dict shape (with role) when present, else stay legacy.
+    if isinstance(record, dict):
+        record["pw"] = new_hash
+        USERS[u] = record
+    else:
+        USERS[u] = new_hash
     USERS.pop("_seeded_default", None)
     _save_users(USERS)
     try: log_event_chained("password_changed", {"username": u})
     except: pass
     return jsonify({"success": True})
+
+@app.route("/api/auth/whoami")
+@login_required
+def api_whoami():
+    """Current user info — frontend uses this to hide admin-only UI elements
+    when the operator is logged in as a public/demo user."""
+    role = session.get("role", "admin")
+    return jsonify({
+        "username": session.get("username", ""),
+        "role": role,
+        "is_admin": role == "admin",
+        "is_public": role == "public",
+    })
 
 @app.route("/")
 def index():
@@ -1026,6 +1109,7 @@ def api_jammer_status():
 
 
 @app.route("/api/jammer/start", methods=["POST"])
+@admin_only
 def api_jammer_start():
     if jammer is None:
         return jsonify({"error": "Jammer offline — hardware unavailable"}), 503
@@ -1050,6 +1134,7 @@ def api_jammer_start():
 
 
 @app.route("/api/jammer/stop", methods=["POST"])
+@admin_only
 def api_jammer_stop():
     if jammer is None:
         return jsonify(JAMMER_UNAVAILABLE_STATUS)
@@ -1402,7 +1487,7 @@ def api_system():
 
 
 @app.route("/api/usb-reset", methods=["POST"])
-@login_required
+@admin_only
 def api_usb_reset():
     """Reset the USB hub to recover crashed adapters, then re-detect and remap."""
     global jammer
@@ -1626,8 +1711,10 @@ def log_event_chained(event_type: str, data: dict):
 
 
 @app.route("/api/ghost", methods=["POST"])
+@admin_only
 def api_ghost():
-    """Emergency shutdown (Ghost Mode) — only works on Linux/RPi."""
+    """Emergency shutdown (Ghost Mode) — only works on Linux/RPi.
+    v8.2: admin-only. Public/demo accounts cannot shutdown the Pi."""
     if platform_info.get("os") == "Linux":
         socketio.emit("ghost_mode", {"status": "shutting_down"})
         logger.log_event("ghost_mode", {"status": "activated"})
@@ -2210,7 +2297,7 @@ def api_nrf_sniffer_status():
 
 
 @app.route("/api/nrf-sniffer/start", methods=["POST"])
-@login_required
+@admin_only
 def api_nrf_sniffer_start():
     """Start the nRF52840 sniffer and the bridge to dashboard."""
     global _nrf_bridge_running
@@ -2245,7 +2332,7 @@ def api_nrf_sniffer_start():
 
 
 @app.route("/api/nrf-sniffer/stop", methods=["POST"])
-@login_required
+@admin_only
 def api_nrf_sniffer_stop():
     """Stop the nRF52840 sniffer."""
     global _nrf_bridge_running
@@ -2270,7 +2357,7 @@ def api_nrf_sniffer_stop():
 
 
 @app.route("/api/nrf-sniffer/follow", methods=["POST"])
-@login_required
+@admin_only
 def api_nrf_sniffer_follow():
     """Follow a specific BLE device by MAC address."""
     if nrf_sniffer is None:
