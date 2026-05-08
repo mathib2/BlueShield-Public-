@@ -142,7 +142,25 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
         ok "${INSTALL_DIR} is a checkout but origin isn't GitHub — keeping as-is"
     fi
 elif [[ -d "${INSTALL_DIR}" && -f "${INSTALL_DIR}/requirements.txt" ]]; then
-    ok "using existing ${INSTALL_DIR} (no git remote — local copy)"
+    # Existing local copy WITHOUT a git remote. If install.sh was invoked
+    # from a NEWER checkout (LOCAL_ROOT), refresh the install in place by
+    # syncing only the files that exist in the source — that catches the
+    # case of upgrading from a pre-v8.0 install that doesn't have udev/,
+    # systemd/, or scripts/ yet.
+    if [[ -f "${LOCAL_ROOT}/requirements.txt" && "${LOCAL_ROOT}" != "${INSTALL_DIR}" ]]; then
+        log "  refreshing ${INSTALL_DIR} from local checkout ${LOCAL_ROOT}"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --update \
+                --exclude '.git' --exclude '__pycache__' --exclude 'venv' \
+                --exclude 'captures' --exclude 'keys' \
+                --exclude 'blueshield/logs/*.json' \
+                --exclude 'blueshield/scanner/heatmap.json*' \
+                "${LOCAL_ROOT}/" "${INSTALL_DIR}/"
+        fi
+        ok "merged newer files from ${LOCAL_ROOT} → ${INSTALL_DIR}"
+    else
+        ok "using existing ${INSTALL_DIR} (no git remote — local copy)"
+    fi
 elif [[ -f "${LOCAL_ROOT}/requirements.txt" && "${LOCAL_ROOT}" != "${INSTALL_DIR}" ]]; then
     # Run from a local checkout; copy it to INSTALL_DIR so installs are atomic.
     log "  copying local checkout ${LOCAL_ROOT} → ${INSTALL_DIR}"
