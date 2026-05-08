@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
 # BlueShield one-shot installer for Raspberry Pi (3B+ / 4 / 5).
 #
-# Usage:
+# Usage (public mirror — anonymous, no auth needed):
 #   curl -fsSL https://raw.githubusercontent.com/mathib2/BlueShield-Public-/master/scripts/install.sh | sudo bash
 #
-# Or, if you have the repo cloned locally:
+# Usage (private origin — auth required, two options):
+#   # Option A: GitHub Personal Access Token (PAT) — simplest
+#   sudo INSTALL_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx \
+#        REPO_URL=https://github.com/pineconegoat/BlueShield.git \
+#        bash -c "$(curl -fsSL -H 'Authorization: token ghp_xxxx' \
+#            https://raw.githubusercontent.com/pineconegoat/BlueShield/master/scripts/install.sh)"
+#
+#   # Option B: from a local clone (best when the Pi already has SSH keys)
+#   git clone git@github.com:pineconegoat/BlueShield.git
+#   cd BlueShield && sudo bash scripts/install.sh
+#
+# Usage (local checkout, any case):
 #   sudo bash scripts/install.sh
 #
 # This is idempotent — re-running upgrades the install in place.
@@ -35,6 +46,10 @@ REPO_URL="${REPO_URL:-https://github.com/mathib2/BlueShield-Public-.git}"
 REPO_BRANCH="${REPO_BRANCH:-master}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-pi}}"
 PORT="${PORT:-8080}"
+# INSTALL_TOKEN: optional GitHub PAT for cloning a private repo. If set, it's
+# spliced into the HTTPS REPO_URL just for the clone step (never persisted to
+# disk, never logged).
+INSTALL_TOKEN="${INSTALL_TOKEN:-}"
 
 # ── 0. Root check ─────────────────────────────────────────────────────────────
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -181,10 +196,22 @@ elif [[ -f "${LOCAL_ROOT}/requirements.txt" && "${LOCAL_ROOT}" != "${INSTALL_DIR
     fi
     ok "copied ${LOCAL_ROOT} → ${INSTALL_DIR}"
 else
-    log "  cloning ${REPO_URL} (branch ${REPO_BRANCH})"
-    git clone --quiet --branch "${REPO_BRANCH}" "${REPO_URL}" "${INSTALL_DIR}" \
+    # Splice INSTALL_TOKEN into the HTTPS URL for private-repo clones, but
+    # do NOT log the resulting URL — bash -x would otherwise leak it.
+    CLONE_URL="${REPO_URL}"
+    if [[ -n "${INSTALL_TOKEN}" && "${REPO_URL}" =~ ^https://github\.com/ ]]; then
+        CLONE_URL="${REPO_URL/https:\/\/github.com\//https://${INSTALL_TOKEN}@github.com/}"
+        log "  cloning private repo (auth via INSTALL_TOKEN)"
+    else
+        log "  cloning ${REPO_URL} (branch ${REPO_BRANCH})"
+    fi
+    { git clone --quiet --branch "${REPO_BRANCH}" "${CLONE_URL}" "${INSTALL_DIR}"; } 2>/dev/null \
         && ok "cloned to ${INSTALL_DIR}" \
-        || die "git clone failed — ${REPO_URL} unreachable or private. Run install.sh from a local checkout instead."
+        || die "git clone failed — ${REPO_URL} unreachable or auth missing. Set INSTALL_TOKEN= for a private repo, or run install.sh from a local checkout."
+    # Strip the token from .git/config so it doesn't sit on disk.
+    if [[ -n "${INSTALL_TOKEN}" ]]; then
+        git -C "${INSTALL_DIR}" remote set-url origin "${REPO_URL}"
+    fi
 fi
 
 # Owner: the operator user, not root. install.sh ran as root for system steps.

@@ -56,6 +56,73 @@ cd BlueShield-Public-
 sudo bash scripts/install.sh
 ```
 
+### Installing from the private repo (`pineconegoat/BlueShield`)
+
+The private repo gets the same code as the public mirror; install from the
+public one unless you specifically need an unreleased branch from the private
+side. If you do need it, pick whichever auth path fits:
+
+#### Option A — GitHub Personal Access Token (fastest)
+
+1. Make a PAT at https://github.com/settings/tokens with the **`repo`** scope.
+2. Run on the Pi:
+
+```bash
+sudo INSTALL_TOKEN=ghp_yourtoken_here \
+     REPO_URL=https://github.com/pineconegoat/BlueShield.git \
+     bash -c "$(curl -fsSL -H 'Authorization: token ghp_yourtoken_here' \
+         https://raw.githubusercontent.com/pineconegoat/BlueShield/master/scripts/install.sh)"
+```
+
+The token is spliced into the clone URL just for the clone step; the installer
+removes it from `/opt/blueshield/.git/config` afterwards so it doesn't sit on
+the filesystem.
+
+#### Option B — SSH deploy key (most secure, recommended for headless Pis)
+
+A deploy key is a per-repo read-only SSH key that doesn't need your account's
+2FA. Setup is one-time:
+
+```bash
+# On the Pi, as the user that will own /opt/blueshield (default: pi)
+ssh-keygen -t ed25519 -f ~/.ssh/blueshield_deploy -N "" -C "blueshield-pi"
+cat ~/.ssh/blueshield_deploy.pub
+```
+
+Copy the printed public key, go to
+`https://github.com/pineconegoat/BlueShield/settings/keys` → **Add deploy key** →
+paste it (read-only is fine). Then on the Pi:
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+Host github-blueshield
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/blueshield_deploy
+    IdentitiesOnly yes
+EOF
+
+sudo REPO_URL=git@github-blueshield:pineconegoat/BlueShield.git \
+     bash scripts/install.sh
+```
+
+After this, future updates work with no token: `cd /opt/blueshield && sudo
+git pull` will use the deploy key automatically.
+
+#### Option C — clone first, install from local checkout
+
+If you've already got the private repo cloned (any auth method), just run
+`install.sh` from inside it. The installer detects a local checkout and
+copies it to `/opt/blueshield` without touching GitHub at all:
+
+```bash
+git clone git@github.com:pineconegoat/BlueShield.git
+cd BlueShield
+sudo bash scripts/install.sh
+```
+
+This is the simplest path on a Pi that already has your SSH keys configured.
+
 ### Default credentials
 
 `admin` / `admin123` — **change this** in Config → Operators before exposing the
