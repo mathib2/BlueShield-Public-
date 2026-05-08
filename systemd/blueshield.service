@@ -37,7 +37,10 @@ StandardError=journal
 
 # Hardening (systemd defaults Bookworm 252+ are fine; we add a couple extras).
 ProtectSystem=full
-ProtectHome=read-only
+# ProtectHome must allow writes when installed under /home/pi/... (the typical
+# clone-then-install path). Only switch to "read-only" if your INSTALL_DIR is
+# under /opt/blueshield as the installer's default expects.
+ProtectHome=false
 NoNewPrivileges=false   # We need setcap or root for HCI raw access
 PrivateTmp=true
 
