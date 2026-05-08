@@ -1450,39 +1450,85 @@ def api_usb_reset():
             if "Manufacturer:" in line:
                 detected[current_name]["vendor"] = line.split("Manufacturer:")[-1].strip()
 
-    # Step 5: Auto-map roles based on bus type
-    # UART = Pi's built-in Broadcom (scanner), USB = Realtek (jammers)
-    scanner_iface = None
-    jammer_ifaces = []
-    for name, info in sorted(detected.items()):
-        if not info["up"]:
-            continue
-        if info["bus"] == "UART":
-            scanner_iface = name
-        elif info["bus"] == "USB":
-            jammer_ifaces.append(name)
+    # Step 5: Pick role-stable adapter mappings.
+    # Goal: preserve the operator's existing scanner/jammer assignments
+    # whenever possible. Bus-type guessing (UART=scanner / USB=jammer) is
+    # only a fallback for first-boot or when an adapter the user picked
+    # truly disappeared.
+    up_adapters = sorted([n for n, info in detected.items() if info["up"]])
+    up_uart     = [n for n in up_adapters if detected[n]["bus"] == "UART"]
+    up_usb      = [n for n in up_adapters if detected[n]["bus"] == "USB"]
+
+    prev_scanner    = config.get("interface", "hci2")
+    prev_jammer1    = config.get("jammer_interface", "hci0")
+    prev_jammer2    = config.get("jammer_secondary_interface", "hci3")
+
+    # Scanner: keep the previous one if it survived the reset; otherwise
+    # prefer a USB Realtek (typically the operator's chosen high-power
+    # adapter) and only fall back to the Pi's onboard UART when no USB
+    # adapter is up.
+    if prev_scanner in up_adapters:
+        scanner_iface = prev_scanner
+    elif up_usb:
+        scanner_iface = up_usb[0]
+    elif up_uart:
+        scanner_iface = up_uart[0]
+    else:
+        scanner_iface = prev_scanner   # nothing's up — keep the stale name
+
+    # Jammer primary: prefer the previous one; otherwise the UART (Pi
+    # onboard Broadcom is the most reliable jammer); else any other USB
+    # not already grabbed by the scanner.
+    if prev_jammer1 in up_adapters and prev_jammer1 != scanner_iface:
+        jammer_iface = prev_jammer1
+    elif up_uart and up_uart[0] != scanner_iface:
+        jammer_iface = up_uart[0]
+    else:
+        jammer_iface = next((n for n in up_adapters if n != scanner_iface), prev_jammer1)
+
+    # Jammer secondary: prefer the previous; else the first UP USB that
+    # isn't already the scanner or the primary jammer.
+    if prev_jammer2 in up_adapters and prev_jammer2 not in (scanner_iface, jammer_iface):
+        jammer_secondary = prev_jammer2
+    else:
+        jammer_secondary = next(
+            (n for n in up_adapters if n not in (scanner_iface, jammer_iface)),
+            None,
+        )
 
     mapping = {
-        "scanner": scanner_iface or config.get("interface", "hci2"),
-        "jammer_primary": jammer_ifaces[0] if len(jammer_ifaces) >= 1 else config.get("jammer_interface", "hci0"),
-        "jammer_secondary": jammer_ifaces[1] if len(jammer_ifaces) >= 2 else None,
+        "scanner": scanner_iface,
+        "jammer_primary": jammer_iface,
+        "jammer_secondary": jammer_secondary,
         "adapters": detected,
+        "preserved_roles": (
+            scanner_iface == prev_scanner
+            and jammer_iface == prev_jammer1
+            and (jammer_secondary or "") == (prev_jammer2 or "")
+        ),
     }
 
     # Step 6: Update config in memory
-    if scanner_iface:
-        config["interface"] = scanner_iface
-    if len(jammer_ifaces) >= 1:
-        config["jammer_interface"] = jammer_ifaces[0]
-    if len(jammer_ifaces) >= 2:
-        config["jammer_secondary_interface"] = jammer_ifaces[1]
+    config["interface"] = scanner_iface
+    config["jammer_interface"] = jammer_iface
+    if jammer_secondary:
+        config["jammer_secondary_interface"] = jammer_secondary
 
     # Step 7: Reinitialize jammer with new adapters
     try:
-        jammer_cfg = {**config, "interface": config.get("jammer_interface", "hci0")}
+        jammer_cfg = {**config, "interface": jammer_iface}
         jammer = BluetoothJammer(jammer_cfg)
     except Exception as e:
         mapping["jammer_reinit_error"] = str(e)
+
+    # Step 7b: Reinitialize scanner with new adapter so /api/devices/clustered
+    # picks up the newly-mapped interface without a full systemd restart.
+    try:
+        global scanner
+        scanner = BluetoothScanner(config)
+        mapping["scanner_reinit"] = "ok"
+    except Exception as e:
+        mapping["scanner_reinit_error"] = str(e)
 
     # Step 8: Check nRF dongles
     import os
