@@ -56,6 +56,13 @@ if [[ "$(id -u)" -ne 0 ]]; then
     die "Please run as root (or via sudo)."
 fi
 
+# Verify SERVICE_USER exists — modern Pi OS lets you pick a custom username at
+# firstrun, so the historical default "pi" may not be there. Fail fast with a
+# clear message instead of letting chown/sudo -u/usermod crash later.
+if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    die "SERVICE_USER='${SERVICE_USER}' doesn't exist. Run with: sudo SERVICE_USER=<your-username> bash scripts/install.sh"
+fi
+
 # ── 1. Sanity checks ──────────────────────────────────────────────────────────
 log "Step 1/8: host sanity check"
 
