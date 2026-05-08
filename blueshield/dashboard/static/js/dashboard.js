@@ -4140,13 +4140,27 @@ function _hmRenderPinsList(pins) {
 }
 
 function _hmCategoryColor(cat) {
+    // Mapped to dashboard's existing eco-badge / category palette so the radar
+    // pin color matches the icon you see in the Devices tab. Includes the
+    // Apple-Continuity buckets ("apple") and a few extras that appear in the
+    // resolver output (audio, hid_*, smart_*, fmd_tag, etc.).
     const map = {
-        phone: "#58A6FF", tablet: "#58A6FF", computer: "#9C9D63",
-        watch: "#FF7B00", audio: "#FFB000", input: "#A5D6A7",
-        tracker: "#F85149", medical: "#26C6DA", iot: "#8B00FF",
-        fitness: "#3FB950", camera: "#FF9F43", proximity: "#A1A1AA",
-        gaming: "#D29922", tv: "#5C6BC0", vehicle: "#E91E63",
-        generic: "#888", unknown: "#666",
+        phone:    "#58A6FF",  tablet:   "#58A6FF",
+        computer: "#A78BFA",  laptop:   "#A78BFA",
+        apple:    "#FF6B6B",  // Apple ecosystem (red — distinct from tracker)
+        watch:    "#FF7B00",  smartwatch: "#FF7B00",
+        audio:    "#FFB000",  earbuds:  "#FFB000",  smart_speaker: "#FFB000",
+        input:    "#3FB950",  hid_input: "#3FB950", hid_keyboard:  "#3FB950",
+        hid_mouse:"#3FB950",  hid_apple:"#3FB950",  hid_logitech:  "#3FB950",
+        tracker:  "#F85149",  tracker_tag: "#F85149", airtag: "#F85149", smarttag: "#F85149",
+        medical:  "#26C6DA",  cgm: "#26C6DA",       hearing_aid: "#26C6DA", insulin_pump: "#26C6DA",
+        iot:      "#8B00FF",  smart_light: "#8B00FF", smart_lock: "#8B00FF",
+        fitness:  "#22D3A5",  fitness_tracker: "#22D3A5", heart_rate_strap: "#22D3A5",
+        camera:   "#FF9F43",  proximity: "#A1A1AA",
+        gaming:   "#D29922",  controller: "#D29922",
+        tv:       "#5C6BC0",  smart_tv: "#5C6BC0",   streaming_device: "#5C6BC0",
+        vehicle:  "#E91E63",  car: "#E91E63",
+        generic:  "#888",     unknown: "#999",
     };
     return map[cat] || map.unknown;
 }
@@ -4254,54 +4268,128 @@ function _hmDrawLivePins(ctx, w, h) {
     const cw = w / _hmGrid.cols;
     const ch = h / _hmGrid.rows;
     const t = (Date.now() / 600) % 1;
+
+    // --- Group pins by cell so we can fan them out instead of stacking ---
+    const cellGroups = new Map();
     for (const pin of _hmLivePins) {
         if (!pin.cell) continue;
-        const cx = pin.cell.col * cw + cw / 2;
-        const cy = pin.cell.row * ch + ch / 2;
-        const colorRaw = _hmCategoryColor(pin.category);
-        const conf = Math.max(0, Math.min(1, (pin.confidence || 0) / 100));
-        const minR = Math.max(7, Math.min(cw, ch) * 0.15);
-        const ringR = minR + (Math.max(cw, ch) * 0.45) * t;
+        const key = `${pin.cell.row},${pin.cell.col}`;
+        if (!cellGroups.has(key)) cellGroups.set(key, []);
+        cellGroups.get(key).push(pin);
+    }
 
-        // Outer pulse ring
-        ctx.save();
-        ctx.strokeStyle = colorRaw;
-        ctx.globalAlpha = (1 - t) * (0.4 + 0.6 * conf);
-        ctx.lineWidth = 2.5 * _hmDpr;
-        ctx.beginPath();
-        ctx.arc(cx, cy, ringR, 0, 2 * Math.PI);
-        ctx.stroke();
-        // Solid dot core
-        ctx.globalAlpha = 0.95;
-        ctx.fillStyle = colorRaw;
-        ctx.beginPath();
-        ctx.arc(cx, cy, minR, 0, 2 * Math.PI);
-        ctx.fill();
-        // Outline
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = "rgba(0,0,0,0.55)";
-        ctx.lineWidth = 1.5 * _hmDpr;
-        ctx.stroke();
-        // Selected device gets an extra glow ring
-        if (pin.fingerprint_id === _hmSelectedFp) {
-            ctx.strokeStyle = "rgba(255,176,0,0.95)";
-            ctx.lineWidth = 3 * _hmDpr;
+    // Pin sizing — bigger and more readable than before.
+    // Use cell minimum so pins remain proportional but never tiny.
+    const cellMin = Math.min(cw, ch);
+    const baseR = Math.max(9 * _hmDpr, cellMin * 0.13);
+    const ringMaxAdd = Math.max(cw, ch) * 0.42;
+
+    for (const [, group] of cellGroups) {
+        const cellCx = group[0].cell.col * cw + cw / 2;
+        const cellCy = group[0].cell.row * ch + ch / 2;
+        // Fan-out radius for stacked pins. Stays inside cell bounds.
+        const fanR = group.length > 1
+            ? Math.min(cellMin * 0.30, baseR * 1.6 + group.length * 1.5)
+            : 0;
+
+        group.forEach((pin, i) => {
+            // Distribute around the cell center on a circle.
+            let cx, cy;
+            if (group.length === 1) {
+                cx = cellCx;
+                cy = cellCy;
+            } else {
+                const angle = (i / group.length) * Math.PI * 2 - Math.PI / 2;
+                cx = cellCx + Math.cos(angle) * fanR;
+                cy = cellCy + Math.sin(angle) * fanR;
+            }
+
+            const colorRaw = _hmCategoryColor(pin.category);
+            const conf = Math.max(0, Math.min(1, (pin.confidence || 0) / 100));
+            // Selected pin gets a slight size boost.
+            const isSel = pin.fingerprint_id === _hmSelectedFp;
+            const r = baseR * (isSel ? 1.25 : 1);
+            const ringR = r + ringMaxAdd * t;
+
+            ctx.save();
+
+            // Outer pulse ring — fades out as it expands
+            ctx.strokeStyle = colorRaw;
+            ctx.globalAlpha = (1 - t) * (0.55 + 0.45 * conf);
+            ctx.lineWidth = 2.8 * _hmDpr;
             ctx.beginPath();
-            ctx.arc(cx, cy, minR + 4 * _hmDpr, 0, 2 * Math.PI);
+            ctx.arc(cx, cy, ringR, 0, 2 * Math.PI);
             ctx.stroke();
+
+            // Soft glow halo around dot for visibility on bright heatmap
+            ctx.globalAlpha = 0.35;
+            ctx.fillStyle = colorRaw;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r * 1.7, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // Solid dot core
+            ctx.globalAlpha = 1.0;
+            ctx.fillStyle = colorRaw;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // White inner ring for contrast against any background
+            ctx.strokeStyle = "rgba(255,255,255,0.92)";
+            ctx.lineWidth = 1.6 * _hmDpr;
+            ctx.stroke();
+
+            // Dark outer outline keeps it readable on light theme too
+            ctx.strokeStyle = "rgba(0,0,0,0.7)";
+            ctx.lineWidth = 1.0 * _hmDpr;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r + 1.6 * _hmDpr, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            // Selected device gets an extra amber glow ring
+            if (isSel) {
+                ctx.strokeStyle = "rgba(255,176,0,0.98)";
+                ctx.lineWidth = 3 * _hmDpr;
+                ctx.beginPath();
+                ctx.arc(cx, cy, r + 5 * _hmDpr, 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+
+            // Label — pill behind text, only show first ~6 chars per pin if cell is crowded
+            const maxLabelLen = group.length >= 5 ? 10 : 22;
+            const txt = (pin.best_name || pin.category || "Unknown").slice(0, maxLabelLen);
+            ctx.font = `${Math.round(10 * _hmDpr)}px JetBrains Mono, monospace`;
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            const m = ctx.measureText(txt);
+            const lx = cx + r + 6 * _hmDpr;
+            const ly = cy;
+            ctx.globalAlpha = 0.88;
+            ctx.fillStyle = "rgba(10,14,22,0.85)";
+            ctx.fillRect(lx - 3 * _hmDpr, ly - 8 * _hmDpr, m.width + 8 * _hmDpr, 14 * _hmDpr);
+            ctx.globalAlpha = 1.0;
+            ctx.fillStyle = "rgba(240,240,245,0.98)";
+            ctx.fillText(txt, lx + 1 * _hmDpr, ly);
+            ctx.restore();
+        });
+
+        // Optional: small stack-count badge in cell corner if 4+ pins clustered
+        if (group.length >= 4) {
+            ctx.save();
+            ctx.fillStyle = "rgba(255,176,0,0.92)";
+            ctx.beginPath();
+            ctx.arc(cellCx + cw * 0.32, cellCy - ch * 0.32, 9 * _hmDpr, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(0,0,0,0.7)";
+            ctx.lineWidth = 1.2 * _hmDpr;
+            ctx.stroke();
+            ctx.font = `bold ${Math.round(10 * _hmDpr)}px JetBrains Mono, monospace`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillStyle = "#0a0e16";
+            ctx.fillText(String(group.length), cellCx + cw * 0.32, cellCy - ch * 0.32);
+            ctx.restore();
         }
-        // Label
-        const txt = (pin.best_name || "Unknown").slice(0, 22);
-        ctx.font = `${Math.round(10 * _hmDpr)}px JetBrains Mono, monospace`;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        const m = ctx.measureText(txt);
-        const lx = cx + minR + 6 * _hmDpr;
-        const ly = cy;
-        ctx.fillStyle = "rgba(10,14,22,0.78)";
-        ctx.fillRect(lx - 3 * _hmDpr, ly - 8 * _hmDpr, m.width + 8 * _hmDpr, 14 * _hmDpr);
-        ctx.fillStyle = "rgba(232,232,235,0.95)";
-        ctx.fillText(txt, lx + 1 * _hmDpr, ly);
-        ctx.restore();
     }
 }
