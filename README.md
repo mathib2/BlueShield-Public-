@@ -33,7 +33,7 @@ Raspberry Pi-based Bluetooth sniffing and jamming system with a real-time web da
 ### One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pineconegoat/BlueShield/master/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mathib2/BlueShield-Public-/master/scripts/install.sh | sudo bash
 ```
 
 That's it. The installer:
@@ -51,8 +51,8 @@ After ~2 minutes (mostly pip), open the LAN URL it printed.
 ### From a clone
 
 ```bash
-git clone https://github.com/pineconegoat/BlueShield.git
-cd BlueShield
+git clone https://github.com/mathib2/BlueShield-Public-.git
+cd BlueShield-Public-
 sudo bash scripts/install.sh
 ```
 

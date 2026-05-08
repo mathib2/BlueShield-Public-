@@ -1,6 +1,6 @@
 [Unit]
 Description=BlueShield Tactical BLE Intelligence Console
-Documentation=https://github.com/pineconegoat/BlueShield
+Documentation=https://github.com/mathib2/BlueShield-Public-
 # Wait for Bluetooth + network so HCI adapters are enumerated and the AP /
 # Cloudflare tunnel can bind to a working interface.
 After=bluetooth.target network-online.target

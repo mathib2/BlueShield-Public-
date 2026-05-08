@@ -2,7 +2,7 @@
 # BlueShield one-shot installer for Raspberry Pi (3B+ / 4 / 5).
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/pineconegoat/BlueShield/master/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/mathib2/BlueShield-Public-/master/scripts/install.sh | sudo bash
 #
 # Or, if you have the repo cloned locally:
 #   sudo bash scripts/install.sh
@@ -31,7 +31,7 @@ die()  { echo "${RED}✗ $*${RESET}" >&2; exit 1; }
 
 # ── Defaults (override via env) ───────────────────────────────────────────────
 INSTALL_DIR="${INSTALL_DIR:-/opt/blueshield}"
-REPO_URL="${REPO_URL:-https://github.com/pineconegoat/BlueShield.git}"
+REPO_URL="${REPO_URL:-https://github.com/mathib2/BlueShield-Public-.git}"
 REPO_BRANCH="${REPO_BRANCH:-master}"
 SERVICE_USER="${SERVICE_USER:-${SUDO_USER:-pi}}"
 PORT="${PORT:-8080}"
