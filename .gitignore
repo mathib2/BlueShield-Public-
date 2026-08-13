@@ -69,6 +69,12 @@ NCL_Spring_Team_2026/
 *.bak
 *.orig
 
+# Internal working notes (not part of the published repo)
+plan.md
+AUDIT_REPORT_*.md
+IMPROVEMENT_PLAN_*.md
+How to.txt
+
 # Local sandbox state
 .scheduled_tasks.lock
 memory.lock

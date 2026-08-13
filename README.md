@@ -1,34 +1,43 @@
 # BlueShield
 
-**Bluetooth Security Monitoring Platform v5.0**
+Bluetooth security monitoring for Raspberry Pi. BlueShield scans BLE and Classic
+Bluetooth, fingerprints devices across MAC rotation, flags trackers and
+following behaviour, and presents everything in a real-time web dashboard. A
+research-grade BLE jammer is included for authorised testing.
 
-Raspberry Pi-based Bluetooth sniffing and jamming system with a real-time web dashboard featuring AI device classification, tracker detection, following detection, and environment safety scoring.
+![BlueShield dashboard](assets/app_mockup.png)
 
-![BlueShield Logo](assets/logo.png)
-
-## Team
-
-- **Mathias Vera**
-- **Daniel Halbleib Jr**
-- **Andrew Sauls**
+> **Scope.** BlueShield is a security research and defensive monitoring tool.
+> Only operate the sniffer and jammer against devices and RF environments you
+> own or are explicitly authorised to test. Transmitting on Bluetooth bands to
+> disrupt third-party devices is illegal in most jurisdictions.
 
 ## Features
 
-- Real-time BLE and Classic Bluetooth device scanning
-- BLE fingerprinting engine with MAC rotation clustering
-- AI-powered device classification (phone, laptop, tracker, audio, etc.)
-- People estimation and environment safety scoring
-- Tracker detection (AirTag, SmartTag, Tile)
-- Following detection and shadow device analysis
-- Research-grade BLE jammer with sweep/reactive/targeted/continuous modes
-- Web dashboard with live device tracking, radar, signals, timeline
-- Mobile-responsive UI with bottom navigation
-- Login authentication (default: admin / admin123)
-- JSON audit logging for compliance and incident response
+**Monitoring**
+- BLE and Classic Bluetooth scanning with GATT service resolution
+- Fingerprint engine that clusters rotating MAC addresses into stable identities
+- Device classification (phone, laptop, wearable, audio, tracker) with OUI enrichment
+- Tracker detection for AirTag, Samsung SmartTag, and Tile
+- Following and shadow-device analysis; environment safety scoring
 
-## Quick Start
+**Dashboard**
+- Live device list, radar, signal timeline, and BLE heatmap
+- Mobile-responsive layout with bottom navigation
+- Role-based access (operator / read-only demo) and session authentication
+- JSON audit logging for incident review
 
-**Tested on Raspberry Pi 3B+ / 4 / 5 with Debian 12 (Bookworm).**
+**Testing (authorised use only)**
+- BLE jammer with sweep, reactive, targeted, and continuous modes
+- nRF52840 sniffer support (ButteRFly and Sniffle firmware)
+
+## Requirements
+
+- Raspberry Pi 3B+, 4, or 5 running Debian 12 (Bookworm)
+- Python 3.10 or newer
+- For sniffer/jammer roles, an external BLE adapter (see [Hardware](#hardware))
+
+## Installation
 
 ### One-line install
 
@@ -36,17 +45,12 @@ Raspberry Pi-based Bluetooth sniffing and jamming system with a real-time web da
 curl -fsSL https://raw.githubusercontent.com/mathib2/BlueShield-Public-/master/scripts/install.sh | sudo bash
 ```
 
-That's it. The installer:
-1. Sanity-checks your Pi model + Debian version + Python (≥ 3.10).
-2. `apt`-installs system deps (BlueZ, build tools, libcap, cloudflared).
-3. Clones the repo into `/opt/blueshield`.
-4. Creates a venv + pip-installs `requirements.txt` (Bleak, scapy, WHAD, Flask, etc.).
-5. Drops the udev rules so nRF52 dongles work without sudo.
-6. Adds your user to `dialout` + grants raw-HCI capabilities to the venv Python.
-7. Installs the systemd unit + starts the service.
-8. Prints the LAN URL and login.
-
-After ~2 minutes (mostly pip), open the LAN URL it printed.
+The installer verifies the Pi model, Debian version, and Python; installs system
+dependencies (BlueZ, build tools, libcap, cloudflared); clones the repo into
+`/opt/blueshield`; creates a virtualenv and installs `requirements.txt`; installs
+the udev rules for nRF52 dongles; grants raw-HCI capabilities to the venv Python;
+and installs and starts the systemd service. It finishes in roughly two minutes
+and prints the LAN URL and login.
 
 ### From a clone
 
@@ -56,148 +60,79 @@ cd BlueShield-Public-
 sudo bash scripts/install.sh
 ```
 
-### Installing from the private repo (`pineconegoat/BlueShield`)
+### From the private repository
 
-The private repo gets the same code as the public mirror; install from the
-public one unless you specifically need an unreleased branch from the private
-side. If you do need it, pick whichever auth path fits:
+The private repo (`pineconegoat/BlueShield`) tracks the same code as the public
+mirror. Install from the mirror unless you need an unreleased branch. When you
+do, choose the auth path that fits your setup — see
+[docs/INSTALL_PRIVATE.md](docs/INSTALL_PRIVATE.md) for personal-access-token,
+SSH deploy-key, and local-checkout instructions.
 
-#### Option A — GitHub Personal Access Token (fastest)
+## First run
 
-1. Make a PAT at https://github.com/settings/tokens with the **`repo`** scope.
-2. Run on the Pi:
-
-```bash
-sudo INSTALL_TOKEN=ghp_yourtoken_here \
-     REPO_URL=https://github.com/pineconegoat/BlueShield.git \
-     bash -c "$(curl -fsSL -H 'Authorization: token ghp_yourtoken_here' \
-         https://raw.githubusercontent.com/pineconegoat/BlueShield/master/scripts/install.sh)"
-```
-
-The token is spliced into the clone URL just for the clone step; the installer
-removes it from `/opt/blueshield/.git/config` afterwards so it doesn't sit on
-the filesystem.
-
-#### Option B — SSH deploy key (most secure, recommended for headless Pis)
-
-A deploy key is a per-repo read-only SSH key that doesn't need your account's
-2FA. Setup is one-time:
-
-```bash
-# On the Pi, as the user that will own /opt/blueshield (default: pi)
-ssh-keygen -t ed25519 -f ~/.ssh/blueshield_deploy -N "" -C "blueshield-pi"
-cat ~/.ssh/blueshield_deploy.pub
-```
-
-Copy the printed public key, go to
-`https://github.com/pineconegoat/BlueShield/settings/keys` → **Add deploy key** →
-paste it (read-only is fine). Then on the Pi:
-
-```bash
-cat >> ~/.ssh/config <<'EOF'
-Host github-blueshield
-    HostName github.com
-    User git
-    IdentityFile ~/.ssh/blueshield_deploy
-    IdentitiesOnly yes
-EOF
-
-sudo REPO_URL=git@github-blueshield:pineconegoat/BlueShield.git \
-     bash scripts/install.sh
-```
-
-After this, future updates work with no token: `cd /opt/blueshield && sudo
-git pull` will use the deploy key automatically.
-
-#### Option C — clone first, install from local checkout
-
-If you've already got the private repo cloned (any auth method), just run
-`install.sh` from inside it. The installer detects a local checkout and
-copies it to `/opt/blueshield` without touching GitHub at all:
-
-```bash
-git clone git@github.com:pineconegoat/BlueShield.git
-cd BlueShield
-sudo bash scripts/install.sh
-```
-
-This is the simplest path on a Pi that already has your SSH keys configured.
-
-### Default credentials
-
-`admin` / `admin123` — **change this** in Config → Operators before exposing the
-dashboard to anyone you don't trust. The login page also surfaces a Cloudflare
-quick-tunnel URL (third QR code) you can share for off-LAN access.
+Default credentials are `admin` / `admin123`. **Change them** under
+Config → Operators before exposing the dashboard to an untrusted network. The
+login page also surfaces a Cloudflare quick-tunnel URL for off-LAN access.
 
 ### Service control
 
 ```bash
-sudo systemctl status blueshield     # is it running?
-sudo journalctl -u blueshield -f     # tail logs
-sudo systemctl restart blueshield    # after code changes
-sudo bash /opt/blueshield/scripts/uninstall.sh    # clean removal
+sudo systemctl status blueshield      # service state
+sudo journalctl -u blueshield -f      # follow logs
+sudo systemctl restart blueshield     # apply code changes
+sudo bash /opt/blueshield/scripts/uninstall.sh   # clean removal
 ```
 
-### External BLE adapters (recommended for sniffer / jammer)
+## Hardware
 
-The Pi's onboard Bluetooth radio works for the dashboard's basic BLE scanner,
-but for the **sniffer** and **jammer** BlueShield expects:
+The Pi's onboard radio drives the basic BLE scanner. The sniffer and jammer
+expect an external adapter:
 
 | Hardware | Role | Notes |
 |---|---|---|
-| Realtek BT 5.x USB dongle | Scanner / jammer | Cheap (~$5–10), 4–5 dBm tx |
-| nRF52840 dongle (ButteRFly firmware) | Sniffer + injection | [Flash guide](https://github.com/whad-team/butterfly) |
-| nRF52840 dongle (Sniffle firmware) | Sniffer | [Flash guide](https://github.com/nccgroup/Sniffle) |
+| Realtek BT 5.x USB dongle | Scanner / jammer | Low cost, 4–5 dBm tx |
+| nRF52840 dongle (ButteRFly firmware) | Sniffer + injection | [Flashing guide](https://github.com/whad-team/butterfly) |
+| nRF52840 dongle (Sniffle firmware) | Sniffer | [Flashing guide](https://github.com/nccgroup/Sniffle) |
 
-The installer's udev rules cover both `c0ff:eeee` (ButteRFly) and `1915:520f`
-(Sniffle) USB IDs out of the box.
+The installer's udev rules cover the ButteRFly (`c0ff:eeee`) and Sniffle
+(`1915:520f`) USB IDs. List adapters with `hciconfig -a`. If your scanner
+enumerates as `hci1` rather than the default `hci2`, set it from the dashboard:
 
-To check which HCI adapter is which:
-```bash
-hciconfig -a
-```
-
-If your scanner is `hci1` instead of the default `hci2`, set it from the
-running dashboard:
 ```bash
 curl -X POST -d '{"interface":"hci1"}' -H 'Content-Type: application/json' \
     http://localhost:8080/api/config
 ```
 
-## Platform Support
+## Platform support
 
-| Platform | BLE Scanning | Classic BT | Jammer | Dashboard |
-|----------|-------------|------------|--------|-----------|
-| Windows  | Bleak       | -          | Simulated | Full |
-| Linux/RPi | Bleak + hcitool | hcitool/hcidump | Real HCI (raw socket) | Full |
+| Platform  | BLE scanning     | Classic BT       | Jammer                | Dashboard |
+|-----------|------------------|------------------|-----------------------|-----------|
+| Linux/RPi | Bleak + hcitool  | hcitool/hcidump  | Real HCI (raw socket) | Full      |
+| Windows   | Bleak            | Not supported    | Simulated             | Full      |
 
-## Project Structure
+## Project structure
 
 ```
 blueshield/
-  scanner/
-    bt_scanner.py           # BLE + Classic BT scanning with GATT resolution
-    fingerprint.py          # BLE fingerprint engine (MAC clustering)
-    risk_engine.py          # Risk scoring per device
-    tracker_detector.py     # AirTag/SmartTag/Tile detection
-    ai_classifier.py        # AI device classification + people estimation
-    advanced_analysis.py    # Following, shadows, environment, life story
-  jammer/
-    bt_jammer.py            # BLE jammer (raw HCI + hcitool fallback)
-  dashboard/
-    app.py                  # Flask + Socket.IO web server
-    static/                 # Web dashboard frontend (HTML/CSS/JS)
-  logs/
-    logger.py               # JSON event logging + analytics tracker
-  config/
-    settings.py             # Configuration management
+  scanner/       BLE + Classic scanning, fingerprinting, classification, analysis
+  jammer/        BLE jammer (raw HCI with hcitool fallback)
+  sniffer/       nRF52840 capture (ButteRFly / Sniffle)
+  dashboard/     Flask + Socket.IO server and web frontend
+  logs/          JSON event logging and analytics
+  config/        Configuration management
 ```
 
 ## Documentation
 
-- **BlueShield_NABC.pptx** -- NABC Presentation
-- **BlueShield_Guide.pdf** -- Product & Technical Guide
+- [DESIGN.md](DESIGN.md) — dashboard design system and UI tokens
+- [docs/](docs/) — jamming research notes and demo playbook
+- `BlueShield_Guide.pdf` — product and technical guide
+
+## Team
+
+Mathias Vera · Daniel Halbleib Jr · Andrew Sauls
 
 ## License
 
-Research use only. Contact the team for commercial licensing.
+See [LICENSE](LICENSE). Research and defensive use only; contact the team for
+commercial licensing.

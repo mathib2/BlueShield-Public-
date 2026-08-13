@@ -1,0 +1,28 @@
+BlueShield — Research and Defensive Use License
+Copyright (c) 2026 BlueShield Team (Mathias Vera, Daniel Halbleib Jr, Andrew Sauls)
+
+All rights reserved.
+
+Permission is granted to use, copy, and modify this software solely for
+non-commercial security research, education, and defensive monitoring, subject
+to the following conditions:
+
+1. Authorised use only. The software's Bluetooth sniffing, injection, and
+   jamming capabilities may be operated only against devices and radio
+   environments that you own or have explicit written authorisation to test.
+   Transmitting to disrupt or intercept third-party devices may be illegal in
+   your jurisdiction; you are solely responsible for compliance with all
+   applicable laws and regulations.
+
+2. Attribution. The above copyright notice and this license shall be included
+   in all copies or substantial portions of the software.
+
+3. No commercial use. Commercial use, redistribution, or sublicensing requires
+   prior written permission from the BlueShield Team.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
